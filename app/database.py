@@ -23,5 +23,5 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     )
 
 
-supabase: Client = get_supabase_client()
+supabase_client: Client = get_supabase_client()
 admin: Client = get_supabase_client(use_service_role=True)
