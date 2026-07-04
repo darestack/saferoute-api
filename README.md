@@ -39,6 +39,67 @@ SafeRoute API is a secure, zero-config webhook proxy. Instead of spending hours 
 - **Deployment**: Vercel
 - **Payments**: Stripe Checkout
 
+## Infrastructure Decisions
+
+### Platform Comparison (June 2026)
+
+| Platform | Free Tier | Compute | Bandwidth | Latency | Best For |
+|----------|-----------|---------|-----------|---------|----------|
+| **Vercel** | ✅ 100GB/mo | Serverless Functions | 100GB free | Cold start: 1-3s | Frontends, zero-config deploys |
+| **Railway** | ❌ $5/mo minimum | Always-on containers | $0.10/GB | Persistent | Fastest time-to-deploy |
+| **Fly.io** | ❌ No free tier | MicroVMs, 30+ regions | Generous | ~300ms cold start | Global low-latency |
+| **Render** | ✅ 750hrs/mo | Web services | 100GB/mo | Persistent, but spins down after 15min idle | Predictable billing |
+
+### Why Vercel (Despite Known Limitations)
+
+**The constraint:** Zero budget. Time is the only resource.
+
+**The math:**
+- SafeRoute is bandwidth-light (webhook proxy, not file serving)
+- At 100 requests/day (~5MB bandwidth), Vercel's free tier handles this for **free**
+- You'd need **1.8M requests/month** before hitting Vercel's 100GB bandwidth limit
+- Cold starts (1-3s) are acceptable for hobbyist traffic; senders timeout at 5-10s
+
+**The trade-off accepted:**
+- ❌ Vercel charges $0.40/GB bandwidth overage (worst in class)
+- ❌ Python cold starts are slower than Node.js
+- ❌ Scale-to-zero means no persistent connections
+- ❌ No built-in background workers for async forwarding
+
+**Why it's still the right choice today:**
+1. **Ship in 1 day, not 1 week** — Railway needs Docker or buildpacks; Vercel auto-detects FastAPI
+2. **Zero risk** — no credit card required
+3. **Validation speed** — first $9 subscription pays for 2+ months of Railway
+
+### Migration Path
+
+When SafeRoute has **recurring revenue**:
+
+| Stage | Revenue | Platform | Cost | Why |
+|-------|---------|----------|------|-----|
+| **Now** | $0 | Vercel + Supabase | $0/mo | Ship fast, validate demand |
+| **Stage 1** | $9/mo+ | Railway | ~$10/mo | Better cold starts, always-on |
+| **Stage 2** | $99/mo+ | Fly.io | ~$15/mo | Multi-region, background workers, scale |
+| **Stage 3** | $490/mo+ | Self-hosted / Convoy | ~$418/mo infra | Enterprise customers need SLA |
+
+**Trigger for migration:** When bandwidth exceeds 50GB/month or cold starts cause user complaints.
+
+### What Would Change the Decision
+
+- **If you had $5/month:** Railway — better DX than Fly.io, automatic FastAPI detection
+- **If you needed global latency:** Fly.io — 30+ regions, sub-300ms cold starts
+- **If you wanted predictable billing:** Render — fixed $7-25/month tiers
+- **If you had enterprise customers:** Self-hosted Convoy — no VC-backed pricing tiers
+
+### Sources
+
+- [Vercel Python Runtime Docs](https://vercel.com/docs/functions/runtimes/python) (updated 2026-05-04)
+- [Vercel Functions Limits](https://vercel.com/docs/functions/limitations)
+- [Render Free Tier Docs](https://render.com/docs/free) — spins down after 15min idle
+- [StackCompare 2026 Cost Analysis](https://stackcompare.net/vercel-vs-railway-vs-fly-io-vs-render-2026-app-hosting-pricing-compared/)
+- [ProPicked Pricing Deep-Dive](https://propicked.com/blog/best-saas-hosting-2026-render-vs-railway-vs-fly-io-vs-vercel-real-cost-comparison)
+- [Why We Built EmitHQ: The $49–$490 Pricing Gap](https://dev.to/emithq/why-we-built-emithq-the-49-490-webhook-pricing-gap-npd)
+
 ## Project Structure
 
 ```
