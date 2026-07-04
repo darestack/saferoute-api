@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you find a security issue, please email **security@naisutech.com** or open a private security advisory on GitHub.
+If you find a security issue, please open a private security advisory on GitHub or email the maintainers.
 
 Do not open a public issue for security vulnerabilities.
 
