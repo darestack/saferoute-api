@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.routes import proxy
 
 app = FastAPI(
     title="SafeRoute API",
@@ -40,7 +41,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, max_size: int = 1024 * 1024):  # 1MB
+    def __init__(self, app, max_size: int = 1024 * 1024):
         super().__init__(app)
         self.max_size = max_size
 
@@ -55,6 +56,8 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(RequestSizeLimitMiddleware, max_size=1024 * 1024)
+
+app.include_router(proxy.router)
 
 
 @app.get("/")

@@ -3,9 +3,9 @@
 [![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI 0.139](https://img.shields.io/badge/FastAPI-0.139-green)](https://fastapi.tiangolo.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-Ready-3ECF8E)](https://supabase.com/)
-[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors/darestack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/YOUR_USERNAME/saferoute-api)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/darestack/saferoute-api)
 
 A lightweight, secure webhook proxy. Point your static forms or public webhooks at a SafeRoute URL and we'll forward them to Zapier, Make, Slack, or any destination — with spam filtering and rate limiting built in.
 
@@ -30,15 +30,7 @@ uvicorn app.main:app --reload
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
 
-## Deploy
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/YOUR_USERNAME/saferoute-api)
-
-1. Create a Supabase project and run `schema.sql` in the SQL Editor
-2. Set environment variables in Vercel: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `WEBHOOK_SECRET`
-3. Deploy
-
-## API
+## Stack
 
 ### Create a route
 
