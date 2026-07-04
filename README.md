@@ -20,7 +20,7 @@ Most static-site form backends either expose your webhook URLs to the client or 
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/saferoute-api.git
+git clone https://github.com/darestack/saferoute-api.git
 cd saferoute-api
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
