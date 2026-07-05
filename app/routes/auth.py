@@ -63,7 +63,7 @@ async def get_current_user_from_jwt(
     token = authorization.split(" ", 1)[1]
 
     try:
-        result = admin.auth.get_user(token)
+        result = await supabase_client.auth.get_user(token)
         if not result.user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
