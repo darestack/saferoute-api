@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.routes import proxy
+from app.routes import auth, proxy
 
 app = FastAPI(
     title="SafeRoute API",
@@ -100,6 +100,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_size=1024 * 1024)
 
 # Mount the proxy router so ``POST /v1/route/{slug}`` is available.
+app.include_router(auth.router)
 app.include_router(proxy.router)
 
 

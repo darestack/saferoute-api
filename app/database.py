@@ -49,5 +49,5 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
 
 # Shared module-level clients. Import these elsewhere rather than calling
 # ``get_supabase_client()`` repeatedly.
-supabase_client: Client = get_supabase_client()
+supabase: Client = get_supabase_client()
 admin: Client = get_supabase_client(use_service_role=True)
