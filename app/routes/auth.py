@@ -109,29 +109,12 @@ async def register_user(credentials: AuthCredentials):
     except HTTPException:
         raise
     except Exception as e:
-        # Supabase raises AuthApiError for HTTP errors like 429 rate limits.
-        error = getattr(e, "status_code", None)
-        if error == 429:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many registration attempts. Please wait a minute and try again.",
-            )
-        raise HTTPException(status_code=400, detail="Registration failed. Please try again.")
-
-    if result.session is None:
-        # Supabase returns an error but does not raise an exception.
-        error_message = getattr(result, "error", None)
-        detail = (
-            error_message.message
-            if error_message and error_message.message
-            else "Registration failed. Check that signups are enabled in Supabase Auth."
-        )
+        detail = "Registration failed. Please try again."
+        if hasattr(e, "message") and e.message:
+            detail = e.message
+        elif hasattr(e, "args") and e.args:
+            detail = str(e.args[0])
         raise HTTPException(status_code=400, detail=detail)
-
-    return Token(
-        access_token=result.session.access_token,
-        token_type="bearer",
-    )
 
 
 @router.post("/login", response_model=Token)
@@ -171,13 +154,12 @@ async def login_user(credentials: AuthCredentials):
     except HTTPException:
         raise
     except Exception as e:
-        error = getattr(e, "status_code", None)
-        if error == 429:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many login attempts. Please wait a minute and try again.",
-            )
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
+        detail = "Invalid email or password."
+        if hasattr(e, "message") and e.message:
+            detail = e.message
+        elif hasattr(e, "args") and e.args:
+            detail = str(e.args[0])
+        raise HTTPException(status_code=401, detail=detail)
 
 
 @router.get("/me", response_model=User)
