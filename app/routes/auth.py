@@ -85,12 +85,38 @@ async def register_user(credentials: AuthCredentials):
     Raises:
         HTTPException: 400 with detail from Supabase if registration fails.
     """
-    result = supabase_client.auth.sign_up(
-        {
-            "email": credentials.email,
-            "password": credentials.password,
-        }
-    )
+    try:
+        result = supabase_client.auth.sign_up(
+            {
+                "email": credentials.email,
+                "password": credentials.password,
+            }
+        )
+
+        if result.session is None:
+            error_message = getattr(result, "error", None)
+            detail = (
+                error_message.message
+                if error_message and error_message.message
+                else "Registration failed. Check that signups are enabled in Supabase Auth."
+            )
+            raise HTTPException(status_code=400, detail=detail)
+
+        return Token(
+            access_token=result.session.access_token,
+            token_type="bearer",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Supabase raises AuthApiError for HTTP errors like 429 rate limits.
+        error = getattr(e, "status_code", None)
+        if error == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many registration attempts. Please wait a minute and try again.",
+            )
+        raise HTTPException(status_code=400, detail="Registration failed. Please try again.")
 
     if result.session is None:
         # Supabase returns an error but does not raise an exception.
@@ -119,28 +145,39 @@ async def login_user(credentials: AuthCredentials):
         Access token for subsequent authenticated requests.
 
     Raises:
-        HTTPException: 401 if credentials are invalid.
+        HTTPException: 401 if credentials are invalid, 429 on rate limit.
     """
-    result = supabase_client.auth.sign_in_with_password(
-        {
-            "email": credentials.email,
-            "password": credentials.password,
-        }
-    )
-
-    if result.session is None:
-        error_message = getattr(result, "error", None)
-        detail = (
-            error_message.message
-            if error_message and error_message.message
-            else "Invalid email or password."
+    try:
+        result = supabase_client.auth.sign_in_with_password(
+            {
+                "email": credentials.email,
+                "password": credentials.password,
+            }
         )
-        raise HTTPException(status_code=401, detail=detail)
 
-    return Token(
-        access_token=result.session.access_token,
-        token_type="bearer",
-    )
+        if result.session is None:
+            error_message = getattr(result, "error", None)
+            detail = (
+                error_message.message
+                if error_message and error_message.message
+                else "Invalid email or password."
+            )
+            raise HTTPException(status_code=401, detail=detail)
+
+        return Token(
+            access_token=result.session.access_token,
+            token_type="bearer",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        error = getattr(e, "status_code", None)
+        if error == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Please wait a minute and try again.",
+            )
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
 
 
 @router.get("/me", response_model=User)
