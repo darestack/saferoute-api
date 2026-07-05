@@ -141,6 +141,47 @@ async def get_current_user_from_api_key(
     return user, route_id
 
 
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> tuple[User, Optional[str]]:
+    """Return the current user from either JWT or API key.
+
+    Tries JWT Bearer token first. Falls back to X-API-Key header.
+
+    Returns:
+        A tuple of ``(User, route_id_or_None)``. ``route_id`` is set when
+        the user authenticated via API key.
+    """
+    # Try JWT first.
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            token = authorization.split(" ", 1)[1]
+            result = admin.auth.get_user(token)
+            if result.user:
+                user = User(
+                    id=result.user.id,
+                    email=result.user.email,
+                    full_name=getattr(result.user, "full_name", None),
+                    created_at=result.user.created_at,
+                )
+                return user, None
+        except Exception:
+            pass
+
+    # Fall back to API key.
+    if x_api_key:
+        try:
+            return await get_current_user_from_api_key(x_api_key)
+        except HTTPException:
+            pass
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing Authorization header or X-API-Key",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Deprecated email/password auth
 # ---------------------------------------------------------------------------
@@ -190,7 +231,9 @@ async def login_user(credentials: AuthCredentials):
 # Session / profile
 # ---------------------------------------------------------------------------
 @router.get("/me", response_model=User)
-async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
+async def get_me(
+    current_user: User = Depends(get_current_user_from_jwt),
+):
     """Return the currently authenticated user's profile.
 
     Returns:
@@ -284,6 +327,8 @@ async def create_route(
 async def list_routes(current_user: User = Depends(get_current_user_from_jwt)):
     """List all routes owned by the authenticated user.
 
+    Requires JWT authentication. API keys cannot list all routes.
+
     Args:
         current_user: Injected authenticated user.
 
@@ -307,6 +352,8 @@ async def get_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID.
+
+    Requires JWT authentication.
 
     Args:
         route_id: The UUID of the route.
@@ -343,8 +390,7 @@ async def update_route(
 ):
     """Update an existing route's configuration.
 
-    Only the fields provided in the request body are updated. Unspecified
-    fields remain unchanged.
+    Requires JWT authentication.
 
     Args:
         route_id: The UUID of the route to update.
@@ -414,6 +460,8 @@ async def delete_route(
 ):
     """Delete a route owned by the authenticated user.
 
+    Requires JWT authentication.
+
     Args:
         route_id: The UUID of the route to delete.
         current_user: Injected authenticated user.
@@ -438,7 +486,7 @@ async def delete_route(
     return None
 
 
-@router.post("/routes/{route_id}/rotate-key", response_model=RouteResponse)
+@router.post("/routes/{route_id}/rotate-key", response_model=RouteCreateResponse)
 async def rotate_api_key(
     route_id: str,
     current_user: User = Depends(get_current_user_from_jwt),
@@ -453,7 +501,7 @@ async def rotate_api_key(
         current_user: Injected authenticated user.
 
     Returns:
-        The updated :class:`RouteResponse` with the new API key prefix.
+        The updated :class:`RouteCreateResponse` including the new API key.
 
     Raises:
         HTTPException: 404 if the route does not exist or belongs to another user.
@@ -480,10 +528,30 @@ async def rotate_api_key(
                 detail="Route not found",
             )
 
-        return RouteResponse(**result.data[0])
+        route = result.data[0]
+        return RouteCreateResponse(
+            id=route["id"],
+            user_id=route["user_id"],
+            name=route["name"],
+            slug=route["slug"],
+            destination_url=route["destination_url"],
+            method=route["method"],
+            headers=route["headers"],
+            is_active=route["is_active"],
+            requests_count=route["requests_count"],
+            last_used_at=route.get("last_used_at"),
+            api_key_prefix=route.get("api_key_prefix"),
+            created_at=route["created_at"],
+            updated_at=route["updated_at"],
+            api_key=full_key,
+        )
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rotate API key: {str(e)}",
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to rotate API key: {str(e)}",
