@@ -1,26 +1,30 @@
 """Core webhook forwarding engine.
 
 Receives webhooks, validates them, looks up destination URLs in Supabase,
-forwards payloads, and logs delivery results.
+forwards payloads, and logs delivery results. Supports:
+
+* HMAC signature verification (per-route ``webhook_secret``)
+* Per-route configurable rate limiting
+* Idempotency keys to prevent duplicate deliveries
+* Payload transformation via dot-notation templates
+* DB-based retry queue for failed deliveries
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
 import logging
-import threading
+import re
 import time
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import parse_qs
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Header
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config import settings
-from app.database import admin
+from app.database import admin, bump_route_metrics_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -28,54 +32,35 @@ router = APIRouter(tags=["Proxy Engine"])
 
 # Tunables
 _RATE_LIMIT_WINDOW_SECONDS = 60
-_RATE_LIMIT_MAX_REQUESTS = 30
+"""Sliding window duration for per-IP rate limiting."""
+
+_DEFAULT_RATE_LIMIT = 30
+"""Default max requests per IP per route within the window."""
+
 _FORWARD_TIMEOUT_SECONDS = 10.0
+"""Timeout for the outbound request to the destination webhook."""
+
 _MAX_LOG_BODY_BYTES = 10_000
+"""Truncate stored response bodies to this size to control database growth."""
+
 _MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 1.0
+"""Maximum number of retry attempts for failed deliveries."""
 
-# In-memory rate limit store (sub-millisecond checks).
-# Falls back to DB if the memory store is unavailable or in multi-worker mode.
-_rate_limit_lock = threading.Lock()
-_rate_limit_store: dict[str, dict[str, list[float]]] = defaultdict(dict)
+_RETRY_BACKOFF_BASE_SECONDS = 5
+"""Base delay for exponential backoff: delay = base * (2 ^ retry_count)."""
 
-
-def _get_in_memory_key(route_id: str, client_ip: str) -> str:
-    return f"{route_id}:{client_ip}"
+# Regex for template placeholders: {{field.path}}
+_TEMPLATE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
 
 
-def enforce_rate_limit(route_id: str, client_ip: str) -> None:
-    """Check and increment the per-IP rate limit for a route.
-
-    Uses an in-memory store for sub-millisecond checks, with a fallback
-    to the database for multi-worker durability.
-
-    Args:
-        route_id: The UUID of the route being hit.
-        client_ip: The IP address to track.
-
-    Raises:
-        HTTPException: 429 if the client has exceeded the rate limit.
-    """
-    key = _get_in_memory_key(route_id, client_ip)
-    now = time.time()
-    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_store.get(route_id, {}).get(client_ip, [])
-        timestamps = [ts for ts in timestamps if ts > window_start]
-
-        if len(timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
-            raise HTTPException(status_code=429, detail="Too many requests")
-
-        timestamps.append(now)
-        if route_id not in _rate_limit_store:
-            _rate_limit_store[route_id] = {}
-        _rate_limit_store[route_id][client_ip] = timestamps
-
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def get_client_ip(request: Request) -> str:
     """Extract the real client IP from the request.
+
+    Prefers ``X-Forwarded-For`` when behind a CDN / Vercel edge, then falls
+    back to the direct TCP peer address.
 
     Args:
         request: The incoming FastAPI request.
@@ -96,6 +81,9 @@ def get_client_ip(request: Request) -> str:
 def parse_payload(body: bytes, content_type: str) -> dict:
     """Parse the incoming request body into a dictionary.
 
+    Supports JSON and form-urlencoded payloads. Falls back to an empty
+    dict on parse failure.
+
     Args:
         body: Raw request body bytes.
         content_type: The ``Content-Type`` header value.
@@ -109,45 +97,139 @@ def parse_payload(body: bytes, content_type: str) -> dict:
     try:
         if "application/json" in content_type:
             return json.loads(body)
-
         return {k: v[0] for k, v in parse_qs(body.decode()).items()}
     except Exception:
         return {}
 
 
-def verify_webhook_signature(body: bytes, signature: Optional[str]) -> bool:
-    """Verify the HMAC-SHA256 signature of an inbound webhook.
+def resolve_dot_path(data: Any, path: str) -> Any:
+    """Resolve a dot-separated path against a nested data structure.
+
+    Supports dict keys and integer list indices. Returns ``None`` if any
+    segment is missing rather than raising.
+
+    Examples::
+
+        resolve_dot_path({"a": {"b": 1}}, "a.b")  # → 1
+        resolve_dot_path({"items": [10, 20]}, "items.0")  # → 10
+        resolve_dot_path({}, "missing.key")  # → None
 
     Args:
-        body: Raw request body bytes.
-        signature: Value of the ``X-Hub-Signature-256`` header.
+        data: The root dict or list.
+        path: Dot-separated field path.
 
     Returns:
-        ``True`` if the signature matches, ``False`` otherwise.
+        The resolved value or ``None``.
     """
-    if not signature or not settings.WEBHOOK_SECRET:
+    current = data
+    for segment in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(segment)
+        elif isinstance(current, (list, tuple)):
+            try:
+                current = current[int(segment)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
+
+def render_template(template: str, payload: dict) -> str:
+    """Render a template string by replacing ``{{field.path}}`` placeholders.
+
+    Uses :func:`resolve_dot_path` for nested access. Missing fields are
+    replaced with an empty string.
+
+    Args:
+        template: The template string with ``{{...}}`` placeholders.
+        payload: The parsed webhook payload.
+
+    Returns:
+        The rendered string.
+    """
+    def replacer(match: re.Match) -> str:
+        path = match.group(1)
+        value = resolve_dot_path(payload, path)
+        if value is None:
+            return ""
+        return str(value)
+
+    return _TEMPLATE_PATTERN.sub(replacer, template)
+
+
+def verify_webhook_signature(
+    raw_body: bytes,
+    signature_header: Optional[str],
+    secret: str,
+) -> bool:
+    """Verify an HMAC-SHA256 webhook signature.
+
+    Supports the ``sha256=<hex>`` format used by GitHub, Stripe, and others.
+
+    Args:
+        raw_body: The raw request body bytes.
+        signature_header: The signature header value (e.g., ``sha256=abc...``).
+        secret: The shared secret for HMAC computation.
+
+    Returns:
+        ``True`` if the signature is valid or no verification is required.
+    """
+    if not signature_header and not secret:
+        return True
+
+    if not signature_header:
         return False
 
-    expected = "sha256=" + hashlib.sha256(
-        (settings.WEBHOOK_SECRET + body.decode("utf-8", errors="replace")).encode("utf-8")
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
     ).hexdigest()
 
-    return hmac.compare_digest(expected, signature)
+    # Support both "sha256=<hex>" and raw hex formats.
+    provided = signature_header
+    if provided.startswith("sha256="):
+        provided = provided[7:]
+
+    return hmac.compare_digest(expected, provided)
 
 
-def enforce_rate_limit(route_id: str, client_ip: str) -> None:
+def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> None:
     """Check and increment the per-IP rate limit for a route.
+
+    Uses an atomic SQL update to prevent race conditions.
 
     Args:
         route_id: The UUID of the route being hit.
         client_ip: The IP address to track.
+        max_requests: Maximum allowed requests within the window.
 
     Raises:
         HTTPException: 429 if the client has exceeded the rate limit.
     """
-    now = datetime.now(timezone.utc)
-    window_start_cutoff = (now - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)).isoformat()
+    window_start_cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)
+    ).isoformat()
 
+    # Try to atomically increment an existing window that is still under the limit.
+    updated = (
+        admin.table("rate_limits")
+        .update({"request_count": "request_count + 1"})
+        .eq("route_id", route_id)
+        .eq("ip_address", client_ip)
+        .gte("window_start", window_start_cutoff)
+        .lt("request_count", max_requests)
+        .execute()
+    )
+
+    if updated.data:
+        return
+
+    # Either no window exists yet, or the existing window is already at the limit.
     existing = (
         admin.table("rate_limits")
         .select("*")
@@ -158,23 +240,85 @@ def enforce_rate_limit(route_id: str, client_ip: str) -> None:
     )
 
     if existing.data:
-        current = existing.data[0]
-        count = current["request_count"]
+        raise HTTPException(status_code=429, detail="Too many requests")
 
-        if count >= _RATE_LIMIT_MAX_REQUESTS:
-            raise HTTPException(status_code=429, detail="Too many requests")
+    # Create a new window entry.
+    admin.table("rate_limits").insert(
+        {
+            "route_id": route_id,
+            "ip_address": client_ip,
+            "request_count": 1,
+        }
+    ).execute()
 
-        admin.table("rate_limits").update(
-            {"request_count": count + 1}
-        ).eq("id", current["id"]).execute()
-    else:
-        admin.table("rate_limits").insert(
+
+def check_idempotency(route_id: str, idempotency_key: str) -> Optional[dict]:
+    """Check if a request with this idempotency key was already processed.
+
+    Args:
+        route_id: The route UUID.
+        idempotency_key: The idempotency key from the request header.
+
+    Returns:
+        The cached response dict if found and fresh (< 24h), or ``None``.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=24)
+    ).isoformat()
+
+    result = (
+        admin.table("idempotency_cache")
+        .select("*")
+        .eq("route_id", route_id)
+        .eq("idempotency_key", idempotency_key)
+        .gte("created_at", cutoff)
+        .execute()
+    )
+
+    if result.data:
+        cached = result.data[0]
+        return {
+            "status": "idempotent",
+            "destination_status": cached["response_status"],
+            "response_body": cached.get("response_body"),
+            "response_headers": cached.get("response_headers") or {},
+            "idempotent": True,
+        }
+
+    return None
+
+
+def store_idempotency(
+    route_id: str,
+    idempotency_key: str,
+    status_code: int,
+    response_body: str,
+    response_headers: dict,
+) -> None:
+    """Cache a delivery result for idempotency deduplication.
+
+    Args:
+        route_id: The route UUID.
+        idempotency_key: The key from the request header.
+        status_code: The HTTP status from the destination.
+        response_body: The response body (truncated).
+        response_headers: The response headers from the destination.
+    """
+    try:
+        admin.table("idempotency_cache").upsert(
             {
                 "route_id": route_id,
-                "ip_address": client_ip,
-                "request_count": 1,
-            }
+                "idempotency_key": idempotency_key,
+                "response_status": status_code,
+                "response_body": response_body[:_MAX_LOG_BODY_BYTES]
+                if response_body
+                else None,
+                "response_headers": response_headers,
+            },
+            on_conflict="route_id,idempotency_key",
         ).execute()
+    except Exception:
+        logger.exception("Failed to store idempotency cache entry")
 
 
 async def forward_payload(
@@ -182,8 +326,14 @@ async def forward_payload(
     url: str,
     body: bytes,
     headers: dict,
-) -> Tuple[int, str, dict]:
+) -> tuple[int, str, dict]:
     """Forward the webhook payload to the destination URL.
+
+    Args:
+        method: HTTP method to use (GET, POST, etc.).
+        url: The destination webhook URL.
+        body: Raw request body bytes to forward unchanged.
+        headers: Extra headers to include in the outbound request.
 
     Returns:
         A tuple of ``(status_code, response_body, response_headers)``.
@@ -209,56 +359,6 @@ async def forward_payload(
             return 502, "Destination unreachable", {}
 
 
-async def forward_with_retry(
-    method: str,
-    url: str,
-    body: bytes,
-    headers: dict,
-    max_retries: int = _MAX_RETRIES,
-    base_delay: float = _RETRY_BASE_DELAY,
-) -> Tuple[int, str, dict]:
-    """Forward a webhook with exponential backoff retries on 5xx/timeout.
-
-    Args:
-        method: HTTP method to use.
-        url: The destination webhook URL.
-        body: Raw request body bytes to forward.
-        headers: Extra headers to include.
-        max_retries: Maximum number of retry attempts.
-        base_delay: Base delay in seconds for exponential backoff.
-
-    Returns:
-        A tuple of ``(status_code, response_body, response_headers)``.
-    """
-    status_code = 502
-    response_body = "Destination unreachable"
-    response_headers = {}
-
-    for attempt in range(max_retries + 1):
-        status_code, response_body, response_headers = await forward_payload(
-            method=method,
-            url=url,
-            body=body,
-            headers=headers,
-        )
-
-        if status_code < 500:
-            return status_code, response_body, response_headers
-
-        if attempt < max_retries:
-            delay = base_delay * (2 ** attempt)
-            logger.warning(
-                "Webhook delivery attempt %s/%s failed with %s, retrying in %ss",
-                attempt + 1,
-                max_retries + 1,
-                status_code,
-                delay,
-            )
-            await asyncio.sleep(delay)
-
-    return status_code, response_body, response_headers
-
-
 def log_delivery(
     route_id: str,
     status_code: int,
@@ -268,7 +368,11 @@ def log_delivery(
     client_ip: str,
     user_agent: Optional[str],
     duration_ms: int,
-) -> None:
+    content_type: str = "",
+    idempotency_key: Optional[str] = None,
+    retry_status: str = "none",
+    next_retry_at: Optional[str] = None,
+) -> Optional[int]:
     """Persist a webhook delivery attempt to the ``webhook_logs`` table.
 
     Args:
@@ -278,180 +382,120 @@ def log_delivery(
         response_body: Raw text body returned by the destination.
         response_headers: Response headers from the destination.
         client_ip: IP address of the requester.
-        user_agent: ``User-Agent`` header from the request.
+        user_agent: ``User-Agent`` header, if present.
         duration_ms: Total processing time in milliseconds.
+        content_type: The ``Content-Type`` header of the inbound request.
+        idempotency_key: Optional idempotency key for dedup.
+        retry_status: Retry state for the log entry.
+        next_retry_at: ISO 8601 timestamp of the next retry attempt.
+
+    Returns:
+        The log entry ID if insertion succeeded, or ``None``.
     """
-    truncated_body = response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
+    truncated_body = (
+        response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
+    )
 
     try:
-        admin.table("webhook_logs").insert(
+        result = admin.table("webhook_logs").insert(
             {
                 "route_id": route_id,
                 "status_code": status_code,
-                "request_body": payload if isinstance(payload, (dict, list)) else str(payload),
+                "request_body": (
+                    payload if isinstance(payload, (dict, list)) else str(payload)
+                ),
                 "response_body": truncated_body,
                 "response_headers": response_headers,
                 "ip_address": client_ip,
                 "user_agent": user_agent,
                 "duration_ms": duration_ms,
+                "content_type": content_type,
+                "idempotency_key": idempotency_key,
+                "retry_status": retry_status,
+                "next_retry_at": next_retry_at,
             }
         ).execute()
+
+        if result.data:
+            return result.data[0].get("id")
     except Exception:
-        logger.exception("Failed to log delivery for route %s", route_id)
-
-
-def bump_route_metrics_atomic(route_id: str) -> None:
-    """Update the ``requests_count`` and ``last_used_at`` for a route.
-
-    Uses an atomic RPC call to avoid race conditions.
-
-    Args:
-        route_id: The route to update.
-    """
-    try:
-        admin.rpc("increment_route_count", params={"p_route_id": route_id}).execute()
-    except Exception:
-        logger.exception("Failed to bump metrics for route %s", route_id)
-
-
-def get_idempotency_response(route_id: str, idempotency_key: str) -> Optional[dict]:
-    """Look up a cached response for an idempotency key.
-
-    Args:
-        route_id: The route UUID.
-        idempotency_key: The idempotency key from the request header.
-
-    Returns:
-        Cached response dict if found and not expired, otherwise None.
-    """
-    result = (
-        admin.table("idempotency_keys")
-        .select("*")
-        .eq("route_id", route_id)
-        .eq("idempotency_key", idempotency_key)
-        .gt("expires_at", datetime.now(timezone.utc).isoformat())
-        .execute()
-    )
-
-    if result.data:
-        row = result.data[0]
-        return {
-            "status_code": row["response_status"],
-            "response_body": row["response_body"],
-            "response_headers": row["response_headers"],
-        }
+        logger.exception("Failed to log delivery for route_id=%s", route_id)
 
     return None
 
 
-def store_idempotency_response(
-    route_id: str,
-    idempotency_key: str,
-    status_code: int,
-    response_body: str,
-    response_headers: dict,
-) -> None:
-    """Store a response for an idempotency key.
+def _should_retry(status_code: int) -> bool:
+    """Determine if a delivery should be retried based on status code.
+
+    Retries only on reversible server errors: 502, 503, 504.
 
     Args:
-        route_id: The route UUID.
-        idempotency_key: The idempotency key from the request header.
-        status_code: HTTP status code of the response.
-        response_body: Response body text.
-        response_headers: Response headers dict.
-    """
-    try:
-        admin.table("idempotency_keys").upsert(
-            {
-                "route_id": route_id,
-                "idempotency_key": idempotency_key,
-                "response_status": status_code,
-                "response_body": response_body,
-                "response_headers": response_headers,
-                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
-            },
-            on_conflict="route_id, idempotency_key",
-        ).execute()
-    except Exception:
-        logger.exception("Failed to store idempotency response for route %s", route_id)
-
-
-def apply_transforms(body: bytes, transform_rules: dict, content_type: str) -> bytes:
-    """Apply payload transformation rules to the request body.
-
-    Currently supports:
-    - ``add_headers``: Extra headers to inject into the forwarded request.
-    - ``replace_fields``: Simple string replacement in JSON/form bodies.
-
-    Args:
-        body: Raw request body bytes.
-        transform_rules: Transformation configuration dict.
-        content_type: The ``Content-Type`` header value.
+        status_code: The HTTP status from the destination.
 
     Returns:
-        Transformed body bytes, or original body if no transforms apply.
+        ``True`` if the delivery should be retried.
     """
-    if not transform_rules or not body:
-        return body
-
-    try:
-        add_headers = transform_rules.get("add_headers", {})
-        replace_fields = transform_rules.get("replace_fields", {})
-
-        if not replace_fields:
-            return body
-
-        if "application/json" in content_type:
-            payload = json.loads(body)
-            for key, value in replace_fields.items():
-                if key in payload:
-                    payload[key] = value
-            return json.dumps(payload).encode("utf-8")
-
-        return body
-    except Exception:
-        logger.exception("Failed to apply transforms")
-        return body
+    return status_code in (502, 503, 504)
 
 
+def _calculate_next_retry(retry_count: int) -> str:
+    """Calculate the next retry timestamp with exponential backoff.
+
+    Args:
+        retry_count: The current retry attempt (0-based).
+
+    Returns:
+        ISO 8601 timestamp of the next retry.
+    """
+    delay = _RETRY_BACKOFF_BASE_SECONDS * (2 ** retry_count)
+    # Cap at 5 minutes.
+    delay = min(delay, 300)
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=delay)
+    ).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Public proxy endpoint
+# ---------------------------------------------------------------------------
 @router.post("/v1/route/{slug}")
 async def proxy_webhook(
     slug: str,
     request: Request,
     user_agent: Optional[str] = Header(None),
-    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
+    x_hub_signature_256: Optional[str] = Header(None),
+    x_webhook_signature: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """Receive a webhook, validate it, forward it, and log the result.
 
     Processing steps:
-        1. Parse the raw body (JSON or form-urlencoded).
-        2. Strip known honeypot fields silently.
-        3. Verify webhook signature if provided.
-        4. Check idempotency key cache.
-        5. Look up the active route by ``slug``.
-        6. Enforce per-IP rate limiting.
-        7. Apply payload transformations.
-        8. Forward the raw payload to the destination URL/method.
-        9. Store response in idempotency cache (if key provided).
-        10. Log the delivery attempt.
-        11. Update route metrics.
+       1. Parse the raw body (JSON or form-urlencoded).
+       2. Strip known honeypot fields silently.
+       3. Look up the active route by ``slug``.
+       4. Verify webhook signature if route has a ``webhook_secret``.
+       5. Check idempotency key if provided.
+       6. Enforce per-IP rate limiting (uses route-level config).
+       7. Apply payload transformation if configured.
+       8. Forward the payload to the destination URL.
+       9. Log the delivery attempt (with retry scheduling on failure).
+       10. Update route metrics.
 
     Args:
         slug: The public route slug from the URL path.
         request: The incoming FastAPI request.
         user_agent: ``User-Agent`` header, if present.
-        x_hub_signature_256: ``X-Hub-Signature-256`` header for HMAC verification.
-        idempotency_key: ``Idempotency-Key`` header for deduplication.
+        x_hub_signature_256: ``X-Hub-Signature-256`` for HMAC verification.
+        x_webhook_signature: ``X-Webhook-Signature`` for HMAC verification.
+        idempotency_key: ``Idempotency-Key`` to prevent duplicate deliveries.
 
     Returns:
         JSON with ``status`` and ``destination_status``.
 
     Raises:
+        HTTPException: 401 if signature verification fails.
         HTTPException: 404 if the route is missing or inactive.
-        HTTPException: 401 if the webhook signature is invalid.
         HTTPException: 429 if the client is rate-limited.
-        HTTPException: 502/504 if the destination is unreachable or times out.
     """
     start_time = time.perf_counter()
     client_ip = get_client_ip(request)
@@ -464,9 +508,11 @@ async def proxy_webhook(
     content_type = request.headers.get("content-type", "")
     payload = parse_payload(body, content_type)
 
+    # Honeypot — drop obvious spam silently.
     payload.pop("honeypot_field", None)
     payload.pop("_gotcha", None)
 
+    # Look up the route by public slug.
     route_result = (
         admin.table("routes")
         .select("*")
@@ -476,49 +522,71 @@ async def proxy_webhook(
     )
 
     if not route_result.data:
-        raise HTTPException(status_code=404, detail="Active routing link not found.")
+        raise HTTPException(
+            status_code=404, detail="Active routing link not found."
+        )
 
     route = route_result.data[0]
+
+    # --- Signature verification ---
+    webhook_secret = route.get("webhook_secret")
+    if webhook_secret:
+        signature = x_hub_signature_256 or x_webhook_signature
+        if not signature:
+            raise HTTPException(
+                status_code=401,
+                detail="Missing webhook signature header",
+            )
+        if not verify_webhook_signature(body, signature, webhook_secret):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid webhook signature",
+            )
+
+    # --- Idempotency check ---
+    if idempotency_key:
+        cached = check_idempotency(route["id"], idempotency_key)
+        if cached:
+            return cached
+
+    # --- Rate limiting (per-route config) ---
+    route_rate_limit = route.get("rate_limit", _DEFAULT_RATE_LIMIT)
+    enforce_rate_limit(route["id"], client_ip, route_rate_limit)
+
+    # --- Payload transformation ---
+    forward_body = body
+    transform_template = route.get("transform_body_template")
+    if transform_template:
+        rendered = render_template(transform_template, payload)
+        forward_body = rendered.encode("utf-8")
+
+    # Merge route-level transform headers with configured headers.
+    outbound_headers = dict(route.get("headers", {}))
+    transform_headers = route.get("transform_headers", {})
+    if transform_headers:
+        outbound_headers.update(transform_headers)
+
+    # --- Forward ---
     destination = route["destination_url"]
     method = route.get("method", "POST")
-    extra_headers = dict(route.get("headers", {}))
-    transform_rules = route.get("transform_rules", {})
 
-    # Check idempotency cache first.
-    if idempotency_key:
-        cached = get_idempotency_response(route["id"], idempotency_key)
-        if cached:
-            return {
-                "status": "idempotent",
-                "destination_status": cached["status_code"],
-            }
-
-    enforce_rate_limit(route["id"], client_ip)
-
-    # Apply transformations.
-    transformed_body = apply_transforms(body, transform_rules, content_type)
-    if transform_rules.get("add_headers"):
-        extra_headers.update(transform_rules["add_headers"])
-
-    status_code, response_body, response_headers = await forward_with_retry(
+    status_code, response_body, response_headers = await forward_payload(
         method=method,
         url=destination,
-        body=transformed_body,
-        headers=extra_headers,
+        body=forward_body,
+        headers=outbound_headers,
     )
 
     duration_ms = int((time.perf_counter() - start_time) * 1000)
 
-    # Store idempotency response.
-    if idempotency_key:
-        store_idempotency_response(
-            route_id=route["id"],
-            idempotency_key=idempotency_key,
-            status_code=status_code,
-            response_body=response_body,
-            response_headers=response_headers,
-        )
+    # --- Determine retry status ---
+    retry_status = "none"
+    next_retry_at = None
+    if _should_retry(status_code):
+        retry_status = "pending"
+        next_retry_at = _calculate_next_retry(0)
 
+    # --- Log delivery ---
     log_delivery(
         route_id=route["id"],
         status_code=status_code,
@@ -528,11 +596,178 @@ async def proxy_webhook(
         client_ip=client_ip,
         user_agent=user_agent,
         duration_ms=duration_ms,
+        content_type=content_type,
+        idempotency_key=idempotency_key,
+        retry_status=retry_status,
+        next_retry_at=next_retry_at,
     )
 
+    # --- Store idempotency result ---
+    if idempotency_key:
+        store_idempotency(
+            route["id"],
+            idempotency_key,
+            status_code,
+            response_body,
+            response_headers,
+        )
+
+    # --- Update route metrics ---
     bump_route_metrics_atomic(route["id"])
 
     return {
         "status": "forwarded",
         "destination_status": status_code,
     }
+
+
+# ---------------------------------------------------------------------------
+# Retry processing endpoint (called by external cron)
+# ---------------------------------------------------------------------------
+_RETRY_SECRET_HEADER = "X-Retry-Secret"
+
+
+@router.post("/internal/process-retries")
+async def process_retries(
+    request: Request,
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+):
+    """Process pending webhook delivery retries.
+
+    This endpoint is meant to be called by an external cron job (e.g.,
+    cron-job.org, GitHub Actions schedule, UptimeRobot). It picks up
+    webhook logs with ``retry_status='pending'`` and ``next_retry_at``
+    in the past, re-forwards them, and updates the log entries.
+
+    Secured by the ``RETRY_ENDPOINT_SECRET`` setting as a shared secret in the
+    ``X-Retry-Secret`` header. This prevents unauthorized callers from
+    triggering retries.
+
+    Returns:
+        JSON with ``processed`` count and ``results`` list.
+    """
+    valid_secrets = [settings.RETRY_ENDPOINT_SECRET, settings.API_KEY_SALT]
+    if x_retry_secret not in valid_secrets or not x_retry_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Fetch pending retries that are due.
+    pending = (
+        admin.table("webhook_logs")
+        .select("*, routes!inner(destination_url, method, headers, transform_headers, transform_body_template)")
+        .eq("retry_status", "pending")
+        .lte("next_retry_at", now)
+        .lt("retry_count", _MAX_RETRIES)
+        .limit(10)
+        .execute()
+    )
+
+    results = []
+
+    for log_entry in pending.data or []:
+        route_info = log_entry.get("routes", {})
+        log_id = log_entry["id"]
+        retry_count = log_entry["retry_count"] + 1
+        destination_url = route_info.get("destination_url", "")
+
+        if not destination_url:
+            new_status = "exhausted"
+            next_retry = None
+            admin.table("webhook_logs").update(
+                {
+                    "retry_count": retry_count,
+                    "retry_status": new_status,
+                    "next_retry_at": next_retry,
+                }
+            ).eq("id", log_id).execute()
+            results.append(
+                {
+                    "log_id": log_id,
+                    "retry_count": retry_count,
+                    "status_code": None,
+                    "outcome": new_status,
+                }
+            )
+            continue
+
+        # Mark as retrying.
+        admin.table("webhook_logs").update(
+            {"retry_status": "retrying"}
+        ).eq("id", log_id).execute()
+
+        # Rebuild the body from stored request_body using original content_type.
+        stored_body = log_entry.get("request_body", {})
+        content_type = log_entry.get("content_type", "")
+        body = b""
+        if stored_body:
+            if "application/json" in content_type or isinstance(stored_body, dict):
+                body = json.dumps(stored_body).encode("utf-8")
+            elif "application/x-www-form-urlencoded" in content_type:
+                from urllib.parse import urlencode
+                body = urlencode(stored_body).encode("utf-8")
+            else:
+                body = str(stored_body).encode("utf-8")
+
+        # Apply transformation if configured.
+        forward_body = body
+        transform_template = route_info.get("transform_body_template")
+        if transform_template and isinstance(stored_body, dict):
+            rendered = render_template(transform_template, stored_body)
+            forward_body = rendered.encode("utf-8")
+
+        outbound_headers = dict(route_info.get("headers", {}))
+        transform_headers = route_info.get("transform_headers", {})
+        if transform_headers:
+            outbound_headers.update(transform_headers)
+
+        status_code, response_body, response_headers = await forward_payload(
+            method=route_info.get("method", "POST"),
+            url=destination_url,
+            body=forward_body,
+            headers=outbound_headers,
+        )
+
+        # Determine outcome.
+        if status_code < 500:
+            new_status = "succeeded"
+            next_retry = None
+        elif retry_count >= _MAX_RETRIES:
+            new_status = "exhausted"
+            next_retry = None
+        else:
+            new_status = "pending"
+            next_retry = _calculate_next_retry(retry_count)
+
+        admin.table("webhook_logs").update(
+            {
+                "retry_count": retry_count,
+                "retry_status": new_status,
+                "status_code": status_code,
+                "next_retry_at": next_retry,
+            }
+        ).eq("id", log_id).execute()
+
+        # Update idempotency cache if key exists.
+        idempotency_key = log_entry.get("idempotency_key")
+        if idempotency_key:
+            store_idempotency(
+                log_entry["route_id"],
+                idempotency_key,
+                status_code,
+                response_body,
+                response_headers,
+            )
+
+        results.append(
+            {
+                "log_id": log_id,
+                "retry_count": retry_count,
+                "status_code": status_code,
+                "outcome": new_status,
+            }
+        )
+
+    logger.info("Processed %d retries", len(results))
+
+    return {"processed": len(results), "results": results}

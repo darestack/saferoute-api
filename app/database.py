@@ -49,6 +49,15 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     return create_client(url, key)
 
 
+def _hash_api_key(full_key: str) -> str:
+    """Compute the SHA-256 HMAC hash of an API key."""
+    return hmac.new(
+        settings.API_KEY_SALT.encode(),
+        full_key.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """Generate a new API key for route authentication.
 
@@ -63,17 +72,12 @@ def generate_api_key() -> tuple[str, str, str]:
     random_hex = secrets.token_hex(16)
     full_key = f"sk_live_{random_hex}"
     prefix = full_key[:12]
-
-    key_hash = hmac.new(
-        settings.API_KEY_SALT.encode(),
-        full_key.encode(),
-        hashlib.sha256,
-    ).hexdigest()
+    key_hash = _hash_api_key(full_key)
 
     return full_key, prefix, key_hash
 
 
-def verify_api_key(full_key: str) -> Optional[str]:
+def verify_api_key(full_key: Optional[str]) -> Optional[str]:
     """Verify an API key and return the route ID if valid.
 
     Args:
@@ -82,11 +86,10 @@ def verify_api_key(full_key: str) -> Optional[str]:
     Returns:
         The route ID (UUID string) if the key is valid, or ``None`` if not.
     """
-    key_hash = hmac.new(
-        settings.API_KEY_SALT.encode(),
-        full_key.encode(),
-        hashlib.sha256,
-    ).hexdigest()
+    if not full_key:
+        return None
+
+    key_hash = _hash_api_key(full_key)
 
     try:
         result = (
@@ -97,7 +100,7 @@ def verify_api_key(full_key: str) -> Optional[str]:
         )
 
         if result.data:
-            return result.data[0]["id"]
+            return result.data[0]["id"]  # type: ignore
     except Exception:
         logger.exception("Failed to verify API key")
 

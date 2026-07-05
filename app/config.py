@@ -17,11 +17,11 @@ class Settings(BaseSettings):
         SUPABASE_SERVICE_ROLE_KEY: Supabase service-role key for server-side
             operations that bypass Row Level Security.
         WEBHOOK_SECRET: Shared secret used for webhook signature verification.
-            Not yet consumed by the proxy engine but reserved for future use.
+        API_KEY_SALT: Salt used for HMAC hashing of API keys.
+        RETRY_ENDPOINT_SECRET: Shared secret for the internal retry endpoint.
+        FRONTEND_URL: Frontend origin for CORS and OAuth redirects.
         ENVIRONMENT: Deployment environment. Affects CORS, logging, and
             error detail. Defaults to ``development``.
-        is_production: Computed property that returns ``True`` when
-            ``ENVIRONMENT`` is ``"production"``.
     """
 
     model_config = SettingsConfigDict(
@@ -33,9 +33,9 @@ class Settings(BaseSettings):
     SUPABASE_URL: str
     SUPABASE_KEY: str
     SUPABASE_SERVICE_ROLE_KEY: str
-    # Reserved for future inbound webhook HMAC signature verification.
     WEBHOOK_SECRET: str = ""
     API_KEY_SALT: str
+    RETRY_ENDPOINT_SECRET: str = ""
     FRONTEND_URL: str = "http://localhost:8000"
     ENVIRONMENT: str = "development"
 
@@ -49,4 +49,4 @@ class Settings(BaseSettings):
         return self.ENVIRONMENT == "production"
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]

@@ -1,7 +1,7 @@
 """Authentication and route management endpoints.
 
-Provides JWT-based authentication, route CRUD, API key rotation, and
-webhook log retrieval.
+Provides JWT-based authentication, route CRUD, API key rotation,
+webhook log retrieval, and route analytics.
 """
 
 import asyncio
@@ -16,7 +16,6 @@ import jwt
 from jwt.algorithms import RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field, ConfigDict
 
 from app.config import settings
 from app.database import admin, verify_api_key, generate_api_key
@@ -25,10 +24,9 @@ from app.models import (
     RouteResponse,
     RouteUpdate,
     RouteCreateResponse,
-    RouteStats,
+    RouteStatsResponse,
     User,
     UserCreate,
-    Token,
     WebhookLogResponse,
 )
 
@@ -39,22 +37,14 @@ router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
 # ---------------------------------------------------------------------------
 # JWKS cache
 # ---------------------------------------------------------------------------
-_JWKS_CACHE_TTL_SECONDS = 300  # 5 minutes
+_JWKS_CACHE_TTL_SECONDS = 300
 _jwks_cache: Optional[dict] = None
 _jwks_cache_expiry: float = 0.0
 _jwks_lock = asyncio.Lock()
 
 
 async def _get_cached_jwks() -> dict:
-    """Fetch Supabase JWKS, using a TTL-based cache to avoid fetching on
-    every authenticated request.
-
-    Returns:
-        The parsed JWKS response dict.
-
-    Raises:
-        HTTPException: 401 if the JWKS endpoint is unreachable.
-    """
+    """Fetch Supabase JWKS with a TTL-based cache."""
     global _jwks_cache, _jwks_cache_expiry
 
     now = time.monotonic()
@@ -62,7 +52,6 @@ async def _get_cached_jwks() -> dict:
         return _jwks_cache
 
     async with _jwks_lock:
-        # Re-check after acquiring lock (another coroutine may have refreshed).
         now = time.monotonic()
         if _jwks_cache is not None and now < _jwks_cache_expiry:
             return _jwks_cache
@@ -89,20 +78,7 @@ async def _get_cached_jwks() -> dict:
 async def get_current_user_from_jwt(
     authorization: Optional[str] = Header(None),
 ) -> User:
-    """Return the current authenticated user from a JWT Bearer token.
-
-    Validates the token locally using PyJWT and Supabase JWKS, then fetches
-    the user profile from Supabase Auth using the service-role client.
-
-    Args:
-        authorization: ``Authorization: Bearer <token>`` header.
-
-    Returns:
-        The authenticated :class:`User`.
-
-    Raises:
-        HTTPException: 401 if the token is missing, invalid, or expired.
-    """
+    """Return the current authenticated user from a JWT Bearer token."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -145,7 +121,6 @@ async def get_current_user_from_jwt(
                 detail="Invalid token: missing user ID",
             )
 
-        # Handle both sync and async Supabase clients gracefully.
         result = admin.auth.admin.get_user_by_id(user_id)
         if inspect.isawaitable(result):
             result = await result
@@ -187,17 +162,7 @@ async def get_current_user_from_jwt(
 async def get_current_user_from_api_key(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> tuple[User, str]:
-    """Return the route owner and route ID from a valid API key.
-
-    Args:
-        x_api_key: ``X-API-Key: sk_live_xxx`` header.
-
-    Returns:
-        A tuple of ``(route_owner_user, route_id)``.
-
-    Raises:
-        HTTPException: 401 if the API key is missing or invalid.
-    """
+    """Return the route owner and route ID from a valid API key."""
     if not x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -223,7 +188,6 @@ async def get_current_user_from_api_key(
 
     user_id = route_result.data[0]["user_id"]
 
-    # Fetch the user profile (handle sync/async).
     result = admin.auth.admin.get_user_by_id(user_id)
     if inspect.isawaitable(result):
         result = await result
@@ -246,39 +210,58 @@ async def get_current_user_from_api_key(
 
 
 def _generate_slug(name: str, user_id: str) -> str:
-    """Generate a collision-safe slug from a route name.
-
-    Appends a random 6-character hex suffix to prevent collisions when
-    a user recreates a route with the same name or when two users share
-    the same user-ID prefix.
-
-    Args:
-        name: The human-readable route name.
-        user_id: The owner's user ID.
-
-    Returns:
-        A slug string like ``my-route-a3f9b1``.
-    """
+    """Generate a collision-safe slug from a route name."""
     slug_base = name.lower().replace(" ", "-")
     random_suffix = secrets.token_hex(3)
     return f"{slug_base}-{random_suffix}"
 
 
 def _safe_error_detail(exc: Exception) -> str:
-    """Return a safe error detail string.
-
-    In development, includes the full exception message.
-    In production, returns a generic message to avoid leaking internals.
-
-    Args:
-        exc: The caught exception.
-
-    Returns:
-        A user-safe error detail string.
-    """
+    """Return a safe error detail — verbose in dev, generic in prod."""
     if settings.ENVIRONMENT == "development":
         return str(exc)
     return "An internal error occurred"
+
+
+def _route_to_response(route: dict, api_key: Optional[str] = None) -> dict:
+    """Build a RouteResponse-compatible dict from a DB route row.
+
+    Computes ``has_webhook_secret`` and ``has_transform`` from the raw
+    data, and strips sensitive fields.
+
+    Args:
+        route: The raw route dict from Supabase.
+        api_key: If provided, includes the API key (for create/rotate).
+
+    Returns:
+        A dict suitable for constructing RouteResponse or RouteCreateResponse.
+    """
+    response = {
+        "id": route["id"],
+        "user_id": route["user_id"],
+        "name": route["name"],
+        "slug": route["slug"],
+        "destination_url": route["destination_url"],
+        "method": route["method"],
+        "headers": route["headers"],
+        "is_active": route["is_active"],
+        "requests_count": route["requests_count"],
+        "last_used_at": route.get("last_used_at"),
+        "api_key_prefix": route.get("api_key_prefix"),
+        "rate_limit": route.get("rate_limit", 30),
+        "has_webhook_secret": bool(route.get("webhook_secret")),
+        "has_transform": bool(
+            route.get("transform_body_template")
+            or route.get("transform_headers")
+        ),
+        "transform_headers": route.get("transform_headers") or {},
+        "transform_body_template": route.get("transform_body_template"),
+        "created_at": route["created_at"],
+        "updated_at": route["updated_at"],
+    }
+    if api_key is not None:
+        response["api_key"] = api_key
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -286,14 +269,7 @@ def _safe_error_detail(exc: Exception) -> str:
 # ---------------------------------------------------------------------------
 @router.post("/register", status_code=status.HTTP_410_GONE)
 async def register_user(credentials: UserCreate):
-    """Register a new user with email and password.
-
-    .. deprecated::
-        Email/password registration is deprecated. Use OAuth instead.
-
-    Returns:
-        410 Gone with instructions to use OAuth.
-    """
+    """Register (deprecated). Use OAuth instead."""
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail="Email/password registration is deprecated. "
@@ -303,14 +279,7 @@ async def register_user(credentials: UserCreate):
 
 @router.post("/login", status_code=status.HTTP_410_GONE)
 async def login_user(credentials: UserCreate):
-    """Login with email and password.
-
-    .. deprecated::
-        Email/password login is deprecated. Use OAuth instead.
-
-    Returns:
-        410 Gone with instructions to use OAuth.
-    """
+    """Login (deprecated). Use OAuth instead."""
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail="Email/password login is deprecated. "
@@ -323,11 +292,7 @@ async def login_user(credentials: UserCreate):
 # ---------------------------------------------------------------------------
 @router.get("/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
-    """Return the currently authenticated user's profile.
-
-    Returns:
-        The :class:`User` profile for the caller.
-    """
+    """Return the currently authenticated user's profile."""
     return current_user
 
 
@@ -345,37 +310,32 @@ async def create_route(
 ):
     """Create a new proxy route for the authenticated user.
 
-    Generates a public ``slug`` from the route name and a unique API key
-    for programmatic route management. The full API key is returned only
-    once — store it securely.
-
-    Args:
-        route_data: Route configuration (name, destination URL, method).
-        current_user: Injected authenticated user.
-
-    Returns:
-        The created :class:`RouteCreateResponse` including the API key.
-
-    Raises:
-        HTTPException: 409 if a route with the same name already exists.
-        HTTPException: 500 if database insertion fails.
+    Generates a public ``slug`` and a unique API key. The full API key
+    is returned only once — store it securely.
     """
     slug = _generate_slug(route_data.name, current_user.id)
     full_key, key_prefix, key_hash = generate_api_key()
 
+    insert_data = {
+        "user_id": current_user.id,
+        "name": route_data.name,
+        "slug": slug,
+        "destination_url": str(route_data.destination_url),
+        "method": route_data.method,
+        "headers": route_data.headers,
+        "api_key_prefix": key_prefix,
+        "api_key_hash": key_hash,
+        "rate_limit": route_data.rate_limit,
+        "transform_headers": route_data.transform_headers,
+    }
+
+    if route_data.webhook_secret:
+        insert_data["webhook_secret"] = route_data.webhook_secret
+    if route_data.transform_body_template:
+        insert_data["transform_body_template"] = route_data.transform_body_template
+
     try:
-        result = admin.table("routes").insert(
-            {
-                "user_id": current_user.id,
-                "name": route_data.name,
-                "slug": slug,
-                "destination_url": str(route_data.destination_url),
-                "method": route_data.method,
-                "headers": route_data.headers,
-                "api_key_prefix": key_prefix,
-                "api_key_hash": key_hash,
-            }
-        ).execute()
+        result = admin.table("routes").insert(insert_data).execute()
 
         if not result.data:
             raise HTTPException(
@@ -384,22 +344,7 @@ async def create_route(
             )
 
         route = result.data[0]
-        return RouteCreateResponse(
-            id=route["id"],
-            user_id=route["user_id"],
-            name=route["name"],
-            slug=route["slug"],
-            destination_url=route["destination_url"],
-            method=route["method"],
-            headers=route["headers"],
-            is_active=route["is_active"],
-            requests_count=route["requests_count"],
-            last_used_at=route.get("last_used_at"),
-            api_key_prefix=route.get("api_key_prefix"),
-            created_at=route["created_at"],
-            updated_at=route["updated_at"],
-            api_key=full_key,
-        )
+        return RouteCreateResponse(**_route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
     except Exception as exc:
@@ -421,18 +366,7 @@ async def list_routes(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
-    """List all routes owned by the authenticated user.
-
-    Supports pagination via ``limit`` and ``offset`` query parameters.
-
-    Args:
-        current_user: Injected authenticated user.
-        limit: Maximum number of routes to return (1–100, default 20).
-        offset: Number of routes to skip (default 0).
-
-    Returns:
-        A list of :class:`RouteResponse` ordered by creation date.
-    """
+    """List all routes owned by the authenticated user (paginated)."""
     result = (
         admin.table("routes")
         .select("*")
@@ -442,7 +376,7 @@ async def list_routes(
         .execute()
     )
 
-    return [RouteResponse(**row) for row in result.data]
+    return [RouteResponse(**_route_to_response(row)) for row in result.data]
 
 
 @router.get("/routes/{route_id}", response_model=RouteResponse)
@@ -450,18 +384,7 @@ async def get_route(
     route_id: str,
     current_user: User = Depends(get_current_user_from_jwt),
 ):
-    """Retrieve a single route by its internal UUID.
-
-    Args:
-        route_id: The UUID of the route.
-        current_user: Injected authenticated user.
-
-    Returns:
-        The matching :class:`RouteResponse`.
-
-    Raises:
-        HTTPException: 404 if the route does not exist or belongs to another user.
-    """
+    """Retrieve a single route by its internal UUID."""
     result = (
         admin.table("routes")
         .select("*")
@@ -476,7 +399,7 @@ async def get_route(
             detail="Route not found",
         )
 
-    return RouteResponse(**result.data[0])
+    return RouteResponse(**_route_to_response(result.data[0]))
 
 
 @router.put("/routes/{route_id}", response_model=RouteResponse)
@@ -487,28 +410,13 @@ async def update_route(
 ):
     """Update an existing route's configuration.
 
-    Only the fields provided in the request body are updated. Unspecified
-    fields remain unchanged. When the ``name`` is updated, the ``slug``
-    is regenerated to stay in sync.
-
-    Args:
-        route_id: The UUID of the route to update.
-        route_data: Fields to update.
-        current_user: Injected authenticated user.
-
-    Returns:
-        The updated :class:`RouteResponse`.
-
-    Raises:
-        HTTPException: 404 if the route does not exist or belongs to another user.
-        HTTPException: 409 if the new slug conflicts with an existing route.
+    When ``name`` is updated, the ``slug`` is regenerated.
     """
     updates = route_data.model_dump(exclude_none=True)
 
     if "destination_url" in updates:
         updates["destination_url"] = str(updates["destination_url"])
 
-    # When name changes, regenerate slug to stay in sync.
     if "name" in updates:
         updates["slug"] = _generate_slug(updates["name"], current_user.id)
 
@@ -541,7 +449,7 @@ async def update_route(
                 detail="Route not found",
             )
 
-        return RouteResponse(**result.data[0])
+        return RouteResponse(**_route_to_response(result.data[0]))
     except HTTPException:
         raise
     except Exception as exc:
@@ -562,15 +470,7 @@ async def delete_route(
     route_id: str,
     current_user: User = Depends(get_current_user_from_jwt),
 ):
-    """Delete a route owned by the authenticated user.
-
-    Args:
-        route_id: The UUID of the route to delete.
-        current_user: Injected authenticated user.
-
-    Raises:
-        HTTPException: 404 if the route does not exist or belongs to another user.
-    """
+    """Delete a route owned by the authenticated user."""
     result = (
         admin.table("routes")
         .delete()
@@ -593,21 +493,7 @@ async def rotate_api_key(
     route_id: str,
     current_user: User = Depends(get_current_user_from_jwt),
 ):
-    """Rotate the API key for a route.
-
-    Generates a new API key and invalidates the old one. The new key is
-    returned only once — store it securely.
-
-    Args:
-        route_id: The UUID of the route to rotate the key for.
-        current_user: Injected authenticated user.
-
-    Returns:
-        The updated :class:`RouteCreateResponse` including the new API key.
-
-    Raises:
-        HTTPException: 404 if the route does not exist or belongs to another user.
-    """
+    """Rotate the API key for a route. Returns the new key once."""
     full_key, key_prefix, key_hash = generate_api_key()
 
     try:
@@ -631,22 +517,7 @@ async def rotate_api_key(
             )
 
         route = result.data[0]
-        return RouteCreateResponse(
-            id=route["id"],
-            user_id=route["user_id"],
-            name=route["name"],
-            slug=route["slug"],
-            destination_url=route["destination_url"],
-            method=route["method"],
-            headers=route["headers"],
-            is_active=route["is_active"],
-            requests_count=route["requests_count"],
-            last_used_at=route.get("last_used_at"),
-            api_key_prefix=route.get("api_key_prefix"),
-            created_at=route["created_at"],
-            updated_at=route["updated_at"],
-            api_key=full_key,
-        )
+        return RouteCreateResponse(**_route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
     except Exception as exc:
@@ -670,23 +541,7 @@ async def list_route_logs(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
-    """List webhook delivery logs for a route owned by the authenticated user.
-
-    Returns logs in reverse chronological order (newest first).
-
-    Args:
-        route_id: The UUID of the route.
-        current_user: Injected authenticated user.
-        limit: Maximum number of log entries to return (1–100, default 20).
-        offset: Number of entries to skip (default 0).
-
-    Returns:
-        A list of :class:`WebhookLogResponse`.
-
-    Raises:
-        HTTPException: 404 if the route does not exist or belongs to another user.
-    """
-    # Verify the route belongs to the current user.
+    """List webhook delivery logs for a route (newest first, paginated)."""
     route_check = (
         admin.table("routes")
         .select("id")
@@ -713,9 +568,12 @@ async def list_route_logs(
     return [WebhookLogResponse(**row) for row in result.data]
 
 
+# ---------------------------------------------------------------------------
+# Route analytics
+# ---------------------------------------------------------------------------
 @router.get(
     "/routes/{route_id}/stats",
-    response_model=RouteStats,
+    response_model=RouteStatsResponse,
 )
 async def get_route_stats(
     route_id: str,
@@ -723,22 +581,12 @@ async def get_route_stats(
 ):
     """Get aggregated delivery statistics for a route.
 
-    Computes success rate, average latency, and request volume from
-    ``webhook_logs``.
-
-    Args:
-        route_id: The UUID of the route.
-        current_user: Injected authenticated user.
-
-    Returns:
-        A :class:`RouteStats` object with aggregated metrics.
-
-    Raises:
-        HTTPException: 404 if the route does not exist or belongs to another user.
+    Uses a single SQL aggregation query for performance, avoiding loading
+    all log rows into application memory.
     """
     route_check = (
         admin.table("routes")
-        .select("id, requests_count, last_used_at")
+        .select("id")
         .eq("id", route_id)
         .eq("user_id", current_user.id)
         .execute()
@@ -750,30 +598,29 @@ async def get_route_stats(
             detail="Route not found",
         )
 
-    route = route_check.data[0]
-
-    logs_result = (
-        admin.table("webhook_logs")
-        .select("status_code, duration_ms, created_at")
-        .eq("route_id", route_id)
+    stats = (
+        admin.rpc("get_route_stats", {"p_route_id": route_id})
         .execute()
+        .data
     )
 
-    logs = logs_result.data or []
-    total_requests = len(logs)
-    success_count = sum(1 for log in logs if log.get("status_code") and 200 <= log["status_code"] < 300)
-    error_count = total_requests - success_count
-    avg_duration_ms = (
-        sum(log["duration_ms"] for log in logs if log.get("duration_ms") is not None) / total_requests
-        if total_requests > 0
-        else None
-    )
+    if not stats:
+        return RouteStatsResponse(route_id=route_id)
 
-    return RouteStats(
+    row = stats[0]
+    total = row.get("total_deliveries", 0) or 0
+    successful = row.get("successful_deliveries", 0) or 0
+    success_rate = round((successful / total) * 100, 1) if total > 0 else 0.0
+
+    return RouteStatsResponse(
         route_id=route_id,
-        total_requests=total_requests,
-        success_count=success_count,
-        error_count=error_count,
-        avg_duration_ms=avg_duration_ms,
-        last_used_at=route.get("last_used_at"),
+        total_deliveries=total,
+        successful_deliveries=successful,
+        failed_deliveries=row.get("failed_deliveries", 0) or 0,
+        timeout_count=row.get("timeout_count", 0) or 0,
+        avg_latency_ms=row.get("avg_latency_ms"),
+        deliveries_24h=row.get("deliveries_24h", 0) or 0,
+        deliveries_7d=row.get("deliveries_7d", 0) or 0,
+        deliveries_30d=row.get("deliveries_30d", 0) or 0,
+        success_rate_percent=success_rate,
     )

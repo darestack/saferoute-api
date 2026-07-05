@@ -1,0 +1,32 @@
+# EditorConfig – https://editorconfig.org
+root = true
+
+# Defaults for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Python
+[*.py]
+indent_style = space
+indent_size = 4
+
+# YAML
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# JSON
+[*.json]
+indent_style = space
+indent_size = 2
+
+# Markdown – trailing spaces are intentional (line breaks)
+[*.md]
+trim_trailing_whitespace = false
+
+# Makefile – tabs are required
+[Makefile]
+indent_style = tab

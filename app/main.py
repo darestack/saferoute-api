@@ -5,55 +5,75 @@ trusted host restrictions. Mounts the proxy router so the app is runnable
 both locally and on Vercel via the Mangum ASGI handler.
 """
 
-import json
 import logging
 import uuid
 
-from fastapi import FastAPI, Request
+from typing import Callable, Awaitable, Any
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.routes import auth, oauth, proxy
+from app.logging_config import configure_logging, request_id_var
+
+# Configure logging before any other imports that use loggers.
+configure_logging(environment=settings.ENVIRONMENT)
+
+from app.routes import auth, oauth, proxy  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-
-def setup_logging() -> None:
-    """Configure structured JSON logging for production observability."""
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        json.dumps({
-            "level": "%(levelname)s",
-            "message": "%(message)s",
-            "logger": "%(name)s",
-            "time": "%(asctime)s",
-        }),
-        datefmt="%Y-%m-%dT%H:%M:%S%z",
-    )
-    handler.setFormatter(formatter)
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    level = logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO
-    root.setLevel(level)
-
-
-setup_logging()
-
 app = FastAPI(
     title="SafeRoute API",
-    description="Secure, Zero-Config Webhook Proxy Shield",
+    description=(
+        "Secure, Zero-Config Webhook Proxy Shield. "
+        "Forward webhooks safely without exposing your destination URLs."
+    ),
     version="1.0.0",
+    contact={
+        "name": "SafeRoute Team",
+        "url": "https://saferouteapi.app",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
 )
+
+# ---------------------------------------------------------------------------
+# Request ID middleware
+# ---------------------------------------------------------------------------
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Generate a unique request ID for every request.
+
+    Stores the ID in ``request.state.request_id`` and the logging
+    context variable so it propagates into JSON log records.
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        request_id = request.headers.get(
+            "X-Request-ID", str(uuid.uuid4())
+        )
+        request.state.request_id = request_id
+        request_id_var.set(request_id)
+
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            request_id_var.set("")
+
 
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-# In development we allow all origins for convenience. In production we
-# restrict to the known frontend domain to prevent credential theft.
 _ALLOWED_HEADERS_PRODUCTION = ["Authorization", "Content-Type", "X-API-Key"]
 
 app.add_middleware(
@@ -76,25 +96,8 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Trusted host
 # ---------------------------------------------------------------------------
-# ``*`` is intentional here because Vercel / CDN edge nodes act as proxies
-# and the canonical host is enforced at the edge / DNS level.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
-# ---------------------------------------------------------------------------
-# Request ID / correlation ID
-# ---------------------------------------------------------------------------
-class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Generate or propagate a request ID and attach it to logs and responses."""
-
-    async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-        request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request.state.request_id
-        return response
-
-
-app.add_middleware(RequestIdMiddleware)
 
 # ---------------------------------------------------------------------------
 # Security headers
@@ -102,7 +105,11 @@ app.add_middleware(RequestIdMiddleware)
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Inject standard security headers into every response."""
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -132,7 +139,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     the header).
     """
 
-    def __init__(self, app, max_size: int = _DEFAULT_MAX_BODY_BYTES):
+    def __init__(self, app: Any, max_size: int = _DEFAULT_MAX_BODY_BYTES) -> None:
         """Initialize the middleware.
 
         Args:
@@ -142,17 +149,12 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.max_size = max_size
 
-    async def dispatch(self, request: Request, call_next):
-        """Reject oversized requests before they reach route handlers.
-
-        Args:
-            request: The incoming request.
-            call_next: The next middleware / route handler.
-
-        Returns:
-            A ``413`` JSON response if the body is too large, otherwise the
-            normal response from the downstream handler.
-        """
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Reject oversized requests before they reach route handlers."""
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > self.max_size:
             return JSONResponse(
@@ -160,8 +162,6 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Request body too large"},
             )
 
-        # Also enforce on the actual body for clients that omit or falsify
-        # the Content-Length header.
         if request.method in ("POST", "PUT", "PATCH"):
             body = await request.body()
             if len(body) > self.max_size:
@@ -173,19 +173,22 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# Order matters: security headers should be outermost so they apply even
-# to error responses from later middleware.
+# Middleware ordering: outermost runs first.
+# Request ID → Security headers → Size limit → route handlers.
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_size=_DEFAULT_MAX_BODY_BYTES)
 
-# Mount the proxy router so ``POST /v1/route/{slug}`` is available.
+# Mount routers.
 app.include_router(auth.router)
 app.include_router(oauth.router)
 app.include_router(proxy.router)
 
+logger.info("SafeRoute API initialized (environment=%s)", settings.ENVIRONMENT)
+
 
 @app.get("/")
-async def health_check():
+async def health_check() -> dict[str, str]:
     """Return a minimal health-check payload.
 
     Returns:

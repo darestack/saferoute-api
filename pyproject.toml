@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+strict = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.database",
+    "app.routes.auth",
+    "app.routes.oauth",
+    "app.routes.proxy"
+]
+ignore_errors = true

@@ -20,8 +20,10 @@ create table public.routes (
     last_used_at timestamp with time zone,
     api_key_prefix text,
     api_key_hash text,
-    rate_limit_per_minute integer default 30,
-    transform_rules jsonb default '{}'::jsonb,
+    webhook_secret text,
+    rate_limit integer default 30,
+    transform_headers jsonb default '{}'::jsonb,
+    transform_body_template text,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -49,7 +51,12 @@ create table public.webhook_logs (
     ip_address inet,
     user_agent text,
     duration_ms integer,
+    content_type text,
     retry_count integer default 0,
+    max_retries integer default 3,
+    next_retry_at timestamp with time zone,
+    retry_status text default 'none' check (retry_status in ('none', 'pending', 'retrying', 'exhausted', 'succeeded')),
+    idempotency_key text,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
@@ -58,6 +65,27 @@ create index idx_webhook_logs_route_id on public.webhook_logs(route_id);
 
 -- Index for time-based queries
 create index idx_webhook_logs_created_at on public.webhook_logs(created_at desc);
+
+-- Index for retry processing
+create index idx_webhook_logs_retry on public.webhook_logs(retry_status, next_retry_at)
+    where retry_status = 'pending';
+
+-- ========================================
+-- Idempotency Cache Table
+-- ========================================
+create table public.idempotency_cache (
+    id uuid default uuid_generate_v4() primary key,
+    route_id uuid not null references public.routes(id) on delete cascade,
+    idempotency_key text not null,
+    response_status integer not null,
+    response_body text,
+    response_headers jsonb,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    unique(route_id, idempotency_key)
+);
+
+create index idx_idempotency_cache_lookup
+    on public.idempotency_cache(route_id, idempotency_key);
 
 -- ========================================
 -- Rate Limits Table
@@ -77,9 +105,6 @@ create index idx_rate_limits_route_ip on public.rate_limits(route_id, ip_address
 -- ========================================
 -- PKCE Verifiers Table (for OAuth flows)
 -- ========================================
--- Stores PKCE code_verifier values keyed by code_challenge so that the
--- OAuth callback (which may hit a different serverless worker) can
--- retrieve the verifier. Entries should be short-lived (< 10 minutes).
 create table public.pkce_verifiers (
     id uuid default uuid_generate_v4() primary key,
     code_challenge text not null unique,
@@ -96,6 +121,7 @@ alter table public.routes enable row level security;
 alter table public.webhook_logs enable row level security;
 alter table public.rate_limits enable row level security;
 alter table public.pkce_verifiers enable row level security;
+alter table public.idempotency_cache enable row level security;
 
 -- Routes: Users can only access their own routes
 create policy "Users can view own routes"
@@ -137,13 +163,7 @@ create policy "Users can view own route logs"
         )
     );
 
--- Service role can insert logs (for proxy backend)
-create policy "Service role insert logs"
-    on public.webhook_logs for insert
-    to service_role
-    with check (true);
-
--- Service role full access to webhook_logs (for reading in API)
+-- Service role full access to webhook_logs
 create policy "Service role full access webhook_logs"
     on public.webhook_logs for all
     to service_role
@@ -161,10 +181,15 @@ create policy "Service role full access pkce_verifiers"
     to service_role
     using (true);
 
+-- Idempotency cache: Service role full access only
+create policy "Service role full access idempotency_cache"
+    on public.idempotency_cache for all
+    to service_role
+    using (true);
+
 -- ========================================
 -- Triggers
 -- ========================================
--- Update updated_at timestamp
 create or replace function public.update_updated_at()
 returns trigger as $$
 begin
@@ -211,8 +236,47 @@ begin
 end;
 $$ language plpgsql;
 
+-- Clean up old idempotency cache entries (older than 24 hours)
+create or replace function public.cleanup_idempotency_cache()
+returns void as $$
+begin
+    delete from public.idempotency_cache
+    where created_at < timezone('utc'::text, now()) - interval '24 hours';
+end;
+$$ language plpgsql;
+
 -- ========================================
--- Cleanup job (optional, run via cron)
+-- Route stats aggregation function
+-- ========================================
+create or replace function public.get_route_stats(p_route_id uuid)
+returns table (
+    total_deliveries bigint,
+    successful_deliveries bigint,
+    failed_deliveries bigint,
+    timeout_count bigint,
+    avg_latency_ms double precision,
+    deliveries_24h bigint,
+    deliveries_7d bigint,
+    deliveries_30d bigint
+) as $$
+begin
+    return query
+    select
+        count(*)::bigint,
+        count(*) filter (where status_code between 200 and 299)::bigint,
+        count(*) filter (where status_code is not null and status_code not between 200 and 299)::bigint,
+        count(*) filter (where status_code = 504)::bigint,
+        avg(duration_ms),
+        count(*) filter (where created_at >= timezone('utc'::text, now()) - interval '24 hours')::bigint,
+        count(*) filter (where created_at >= timezone('utc'::text, now()) - interval '7 days')::bigint,
+        count(*) filter (where created_at >= timezone('utc'::text, now()) - interval '30 days')::bigint
+    from public.webhook_logs
+    where route_id = p_route_id;
+end;
+$$ language plpgsql stable;
+
+-- ========================================
+-- Cleanup jobs (optional, run via pg_cron)
 -- ========================================
 -- select cron.schedule('cleanup-old-logs', '0 0 * * *', $$
 --     delete from public.webhook_logs
@@ -227,42 +291,6 @@ $$ language plpgsql;
 --     select public.cleanup_pkce_verifiers();
 -- $$);
 
--- ========================================
--- Idempotency Keys Table
--- ========================================
-create table public.idempotency_keys (
-    id uuid default uuid_generate_v4() primary key,
-    route_id uuid not null references public.routes(id) on delete cascade,
-    idempotency_key text not null,
-    response_status integer not null,
-    response_body text,
-    response_headers jsonb,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    expires_at timestamp with time zone default timezone('utc'::text, now()) + interval '24 hours' not null,
-    unique(route_id, idempotency_key)
-);
-
-create index idx_idempotency_keys_route_key on public.idempotency_keys(route_id, idempotency_key);
-create index idx_idempotency_keys_expires_at on public.idempotency_keys(expires_at);
-
-alter table public.idempotency_keys enable row level security;
-
-create policy "Service role full access idempotency_keys"
-    on public.idempotency_keys for all
-    to service_role
-    using (true);
-
--- ========================================
--- Cleanup job for expired idempotency keys
--- ========================================
-create or replace function public.cleanup_idempotency_keys()
-returns void as $$
-begin
-    delete from public.idempotency_keys
-    where expires_at < timezone('utc'::text, now());
-end;
-$$ language plpgsql;
-
--- select cron.schedule('cleanup-idempotency-keys', '*/10 * * * *', $$
---     select public.cleanup_idempotency_keys();
+-- select cron.schedule('cleanup-idempotency-cache', '0 * * * *', $$
+--     select public.cleanup_idempotency_cache();
 -- $$);

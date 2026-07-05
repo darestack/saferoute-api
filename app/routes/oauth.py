@@ -19,7 +19,6 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import admin, supabase_client
-from app.models import Token
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +87,14 @@ def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
         if not result.data:
             return None
 
-        code_verifier = result.data[0]["code_verifier"]
+        code_verifier = result.data[0]["code_verifier"]  # type: ignore
 
         # Delete after retrieval (one-time use).
         admin.table("pkce_verifiers").delete().eq(
             "code_challenge", code_challenge
         ).execute()
 
-        return code_verifier
+        return code_verifier  # type: ignore
     except Exception:
         logger.exception("Failed to retrieve PKCE verifier")
         return None
@@ -212,13 +211,13 @@ async def oauth_callback(
 
     try:
         result = supabase_client.auth.exchange_code_for_session(
-            {
+            {  # type: ignore[arg-type, typeddict-item]
                 "auth_code": code,
                 "code_verifier": code_verifier,
             }
         )
 
-        if result.session is None:
+        if result.session is None or result.user is None:
             raise HTTPException(
                 status_code=400,
                 detail="Failed to exchange authorization code for session.",

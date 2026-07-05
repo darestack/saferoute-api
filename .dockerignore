@@ -1,0 +1,39 @@
+# Version control
+.git
+
+# Virtual environments & caches
+.venv
+__pycache__
+.mypy_cache
+.pytest_cache
+
+# Environment / secrets
+.env
+.env.local
+.env.example
+
+# Platform directories
+.vercel
+.github
+
+# Tests (not needed in production image)
+tests/
+
+# Compiled Python files
+*.pyc
+*.pyo
+
+# Docker meta (avoid recursive COPY)
+.dockerignore
+Dockerfile
+
+# Documentation & project files
+README.md
+CONTRIBUTING.md
+SECURITY.md
+LICENSE
+SETUP.md
+
+# Database scripts (applied separately)
+schema.sql
+migration_*.sql
