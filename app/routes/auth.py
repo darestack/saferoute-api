@@ -4,6 +4,7 @@ import httpx
 import jwt
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from typing import Optional
+import logging
 
 from app.config import settings
 from app.database import admin, verify_api_key, generate_api_key
@@ -18,6 +19,31 @@ from app.models import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
+
+logger = logging.getLogger(__name__)
+
+_JWKS_CACHE: Optional[dict] = None
+_JWKS_CACHE_TIME: float = 0
+_JWKS_CACHE_TTL_SECONDS = 3600
+
+
+async def _get_cached_jwks() -> dict:
+    """Fetch and cache JWKS from Supabase for 1 hour."""
+    global _JWKS_CACHE, _JWKS_CACHE_TIME
+    import time
+
+    now = time.time()
+    if _JWKS_CACHE and (now - _JWKS_CACHE_TIME) < _JWKS_CACHE_TTL_SECONDS:
+        return _JWKS_CACHE
+
+    jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
+    async with httpx.AsyncClient() as client:
+        jwks_response = await client.get(jwks_url)
+        jwks_response.raise_for_status()
+        _JWKS_CACHE = jwks_response.json()
+        _JWKS_CACHE_TIME = now
+
+    return _JWKS_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +87,9 @@ async def get_current_user_from_jwt(
     token = authorization.split(" ", 1)[1]
 
     try:
-        import httpx
         from jwt.algorithms import RSAAlgorithm
-        from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 
-        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
-        async with httpx.AsyncClient() as client:
-            jwks_response = await client.get(jwks_url)
-            jwks_response.raise_for_status()
-            jwks = jwks_response.json()
+        jwks = await _get_cached_jwks()
 
         unverified_header = jwt.get_unverified_header(token)
         key_id = unverified_header.get("kid")
@@ -123,91 +143,13 @@ async def get_current_user_from_jwt(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
         )
-    except InvalidTokenError as e:
+    except InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}",
+            detail="Invalid token",
         )
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token validation failed",
-        )
-
-    token = authorization.split(" ", 1)[1]
-
-    try:
-        # Validate JWT locally using Supabase JWKS.
-        import jwt
-        from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
-        import httpx
-
-        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
-        async with httpx.AsyncClient() as client:
-            jwks_response = await client.get(jwks_url)
-            jwks_data = jwks_response.json()
-
-        # Find the key matching the token's kid.
-        unverified_header = jwt.get_unverified_header(token)
-        key_id = unverified_header.get("kid")
-        public_key = None
-        for key in jwks_data.get("keys", []):
-            if key.get("kid") == key_id:
-                public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
-                break
-
-        if not public_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: signing key not found",
-            )
-
-        # Verify and decode the JWT.
-        payload = jwt.decode(
-            token,
-            public_key,
-            algorithms=["ES256", "RS256"],
-            audience="authenticated",
-            issuer=f"{settings.SUPABASE_URL}/auth/v1",
-        )
-
-        user_id = payload.get("sub")
-        email = payload.get("email")
-
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: missing user ID",
-            )
-
-        # Fetch full user profile from Supabase Auth.
-        user_result = await admin.auth.admin.get_user_by_id(user_id)
-        if not user_result.user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-            )
-
-        return User(
-            id=user_result.user.id,
-            email=user_result.user.email or email or "",
-            full_name=getattr(user_result.user, "full_name", None),
-            created_at=user_result.user.created_at,
-        )
-
-    except HTTPException:
-        raise
-    except ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-        )
-    except InvalidTokenError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}",
-        )
-    except Exception:
+    except Exception as e:
+        logger.exception("JWT validation failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token validation failed",
@@ -253,7 +195,6 @@ async def get_current_user_from_api_key(
 
     user_id = route_result.data[0]["user_id"]
 
-    # Fetch the user profile.
     user_result = await admin.auth.admin.get_user_by_id(user_id)
     if not user_result.user:
         raise HTTPException(
@@ -390,15 +331,10 @@ async def create_route(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="A route with this name already exists",
-            )
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create route: {str(e)}",
+            detail="Failed to create route",
         )
 
 
@@ -517,15 +453,10 @@ async def update_route(
         return RouteResponse(**result.data[0])
     except HTTPException:
         raise
-    except Exception as e:
-        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Slug already in use",
-            )
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update route: {str(e)}",
+            detail="Failed to update route",
         )
 
 
@@ -621,8 +552,8 @@ async def rotate_api_key(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to rotate API key: {str(e)}",
+            detail="Failed to rotate API key",
         )

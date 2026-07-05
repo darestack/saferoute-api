@@ -107,53 +107,6 @@ class RouteUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
-class WebhookLogResponse(BaseModel):
-    """Schema for a single webhook delivery log entry."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    route_id: str
-    status_code: Optional[int] = None
-    duration_ms: Optional[int] = None
-    error_message: Optional[str] = None
-    created_at: str
-
-
-class User(BaseModel):
-    """Public user profile returned by the API."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    email: str
-    full_name: Optional[str] = None
-    created_at: str
-
-
-class UserCreate(BaseModel):
-    """Schema for registering a new user."""
-
-    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
-
-    email: str = Field(..., pattern="^[^@]+@[^@]+\\.[^@]+$")
-    password: str = Field(..., min_length=8, max_length=128)
-    full_name: Optional[str] = Field(None, max_length=100)
-
-
-class Token(BaseModel):
-    """OAuth2-compatible token response."""
-
-    access_token: str
-    token_type: str = "bearer"
-
-
-class ApiKeyRotateRequest(BaseModel):
-    """Schema for rotating a route's API key."""
-
-    route_id: str
-
-
 # ---------------------------------------------------------------------------
 # Webhook log models
 # ---------------------------------------------------------------------------
@@ -226,3 +179,9 @@ class Token(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+class ApiKeyRotateRequest(BaseModel):
+    """Schema for rotating a route's API key."""
+
+    route_id: str

@@ -41,7 +41,7 @@ create table public.webhook_logs (
     route_id uuid not null references public.routes(id) on delete cascade,
     status_code integer,
     request_body jsonb,
-    response_body jsonb,
+    response_body text,
     response_headers jsonb,
     error_message text,
     ip_address inet,
@@ -56,6 +56,36 @@ create index idx_webhook_logs_route_id on public.webhook_logs(route_id);
 
 -- Index for time-based queries
 create index idx_webhook_logs_created_at on public.webhook_logs(created_at desc);
+
+-- ========================================
+-- OAuth PKCE Storage Table
+-- ========================================
+create table public.oauth_pkce (
+    code_challenge text primary key,
+    code_verifier text not null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Index for cleanup of expired PKCE entries
+create index idx_oauth_pkce_created_at on public.oauth_pkce(created_at);
+
+-- Enable RLS for oauth_pkce
+alter table public.oauth_pkce enable row level security;
+
+-- Service role full access for PKCE storage
+create policy "Service role full access oauth_pkce"
+    on public.oauth_pkce for all
+    to service_role
+    using (true);
+
+-- Cleanup old PKCE entries (older than 10 minutes)
+create or replace function public.cleanup_oauth_pkce()
+returns void as $$
+begin
+    delete from public.oauth_pkce
+    where created_at < timezone('utc'::text, now()) - interval '10 minutes';
+end;
+$$ language plpgsql;
 
 -- ========================================
 -- Rate Limits Table
@@ -78,6 +108,7 @@ create index idx_rate_limits_route_ip on public.rate_limits(route_id, ip_address
 alter table public.routes enable row level security;
 alter table public.webhook_logs enable row level security;
 alter table public.rate_limits enable row level security;
+alter table public.oauth_pkce enable row level security;
 
 -- Routes: Users can only access their own routes
 create policy "Users can view own routes"

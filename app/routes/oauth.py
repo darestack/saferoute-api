@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.config import settings
-from app.database import supabase_client
+from app.database import supabase_client, admin
 from app.models import Token
 
 router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
@@ -25,8 +25,6 @@ router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
 # ---------------------------------------------------------------------------
 # PKCE storage
 # ---------------------------------------------------------------------------
-# In production, replace this with a short-lived Redis / DB cache.
-_pkce_store: dict[str, str] = {}
 _PKCE_CODE_VERIFIER_LENGTH = 64
 
 
@@ -40,6 +38,45 @@ def _generate_pkce_pair() -> tuple[str, str]:
     hashed = hashlib.sha256(code_verifier.encode("utf-8")).digest()
     code_challenge = base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
     return code_verifier, code_challenge
+
+
+def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
+    """Store PKCE code verifier in Supabase for cross-worker accessibility.
+
+    Args:
+        code_challenge: The PKCE challenge to use as the key.
+        code_verifier: The PKCE verifier to store.
+    """
+    admin.table("oauth_pkce").upsert(
+        {
+            "code_challenge": code_challenge,
+            "code_verifier": code_verifier,
+        }
+    ).execute()
+
+
+def _get_and_remove_pkce_verifier(code_challenge: str) -> Optional[str]:
+    """Retrieve and delete PKCE code verifier from Supabase.
+
+    Args:
+        code_challenge: The PKCE challenge to look up.
+
+    Returns:
+        The code verifier string if found, else None.
+    """
+    result = (
+        admin.table("oauth_pkce")
+        .select("code_verifier")
+        .eq("code_challenge", code_challenge)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    verifier = result.data[0]["code_verifier"]
+    admin.table("oauth_pkce").delete().eq("code_challenge", code_challenge).execute()
+    return verifier
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +126,7 @@ async def oauth_redirect(provider: str):
         )
 
     code_verifier, code_challenge = _generate_pkce_pair()
-    _pkce_store[code_challenge] = code_verifier
+    _store_pkce_verifier(code_challenge, code_verifier)
 
     redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
 
@@ -108,11 +145,11 @@ async def oauth_redirect(provider: str):
         )
 
         return OAuthRedirectResponse(auth_url=auth_url)
-    except Exception as e:
-        _pkce_store.pop(code_challenge, None)
+    except Exception:
+        _get_and_remove_pkce_verifier(code_challenge)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to initiate OAuth flow: {str(e)}",
+            detail="Failed to initiate OAuth flow",
         )
 
 
@@ -137,13 +174,18 @@ async def oauth_callback(
     Raises:
         HTTPException: 400 if the code exchange fails or state is missing.
     """
-    if not code_challenge or code_challenge not in _pkce_store:
+    if not code_challenge:
         raise HTTPException(
             status_code=400,
-            detail="Missing or invalid code_challenge parameter.",
+            detail="Missing code_challenge parameter",
         )
 
-    code_verifier = _pkce_store.pop(code_challenge)
+    code_verifier = _get_and_remove_pkce_verifier(code_challenge)
+    if not code_verifier:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired code_challenge",
+        )
 
     try:
         result = supabase_client.auth.exchange_code_for_session(
@@ -156,7 +198,7 @@ async def oauth_callback(
         if result.session is None:
             raise HTTPException(
                 status_code=400,
-                detail="Failed to exchange authorization code for session.",
+                detail="Failed to exchange authorization code for session",
             )
 
         return CallbackResponse(
@@ -167,11 +209,8 @@ async def oauth_callback(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        detail = str(e)
-        if hasattr(e, "message") and e.message:
-            detail = e.message
+    except Exception:
         raise HTTPException(
             status_code=400,
-            detail=f"OAuth callback failed: {detail}",
+            detail="OAuth callback failed",
         )

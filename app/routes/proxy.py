@@ -13,8 +13,11 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, HTTPException, Request, Header
 from app.database import admin
 import httpx
+import logging
 
 router = APIRouter(tags=["Proxy Engine"])
+
+logger = logging.getLogger(__name__)
 
 # Tunables - adjust these based on your traffic and requirements.
 _RATE_LIMIT_WINDOW_SECONDS = 60
@@ -94,15 +97,18 @@ def enforce_rate_limit(route_id: str, client_ip: str) -> None:
     Raises:
         HTTPException: 429 if the client has exceeded the rate limit.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    from datetime import timedelta
 
-    # Look for an existing window for this IP + route.
+    now = datetime.now(timezone.utc)
+    window_threshold = (now - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)).isoformat()
+
+    # Look for an existing window within the last 60 seconds for this IP + route.
     existing = (
         admin.table("rate_limits")
         .select("*")
         .eq("route_id", route_id)
         .eq("ip_address", client_ip)
-        .gte("window_start", now)
+        .gte("window_start", window_threshold)
         .execute()
     )
 
@@ -191,7 +197,9 @@ def log_delivery(
         user_agent: ``User-Agent`` header from the request, if present.
         duration_ms: Total processing time in milliseconds.
     """
-    truncated_body = response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
+    truncated_body = (
+        response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
+    )
 
     admin.table("webhook_logs").insert(
         {
@@ -207,21 +215,15 @@ def log_delivery(
     ).execute()
 
 
-def bump_route_metrics(route_id: str, requests_count: int) -> None:
+def bump_route_metrics(route_id: str) -> None:
     """Update the ``requests_count`` and ``last_used_at`` for a route.
 
-    Uses an atomic update to avoid race conditions under concurrent traffic.
+    Uses an atomic RPC call to avoid race conditions under concurrent traffic.
 
     Args:
         route_id: The route to update.
-        requests_count: The current count before incrementing.
     """
-    admin.table("routes").update(
-        {
-            "requests_count": requests_count + 1,
-            "last_used_at": datetime.now(timezone.utc).isoformat(),
-        }
-    ).eq("id", route_id).execute()
+    admin.rpc("increment_route_count", params={"p_route_id": route_id}).execute()
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +296,7 @@ async def proxy_webhook(
     enforce_rate_limit(route["id"], client_ip)
 
     # Forward to the destination using the configured method.
-    status_code, response_body, response_headers = forward_payload(
+    status_code, response_body, response_headers = await forward_payload(
         method=method,
         url=destination,
         body=body,
@@ -315,7 +317,7 @@ async def proxy_webhook(
         duration_ms=duration_ms,
     )
 
-    bump_route_metrics(route["id"], route["requests_count"])
+    bump_route_metrics(route["id"])
 
     return {
         "status": "forwarded",
