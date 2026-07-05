@@ -108,7 +108,7 @@ SafeRoute validates the payload, rate-limits by IP, logs the request, and forwar
 Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup details.
 
 1. Fork and clone
-2. Create a `.env` with Supabase credentials
+2. Copy `.env.example` to `.env` and fill in your Supabase credentials
 3. Run `uvicorn app.main:app --reload`
 4. Open a PR
 

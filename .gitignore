@@ -15,7 +15,8 @@ build/
 .env
 .env.local
 .env.*.local
-README.md
+
+# IDE
 .vscode/
 .idea/
 *.swp
@@ -32,7 +33,3 @@ htmlcov/
 
 # Vercel
 .vercel/
-./README.md
-.env.local
-README.md
-node_modules/
