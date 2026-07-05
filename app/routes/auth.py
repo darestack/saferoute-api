@@ -110,11 +110,18 @@ async def register_user(credentials: AuthCredentials):
         raise
     except Exception as e:
         detail = "Registration failed. Please try again."
-        if hasattr(e, "message") and e.message:
+        status_code = 400
+
+        # Preserve rate-limit errors so clients see 429 instead of 400.
+        if hasattr(e, "status_code") and e.status_code == 429:
+            status_code = 429
+            detail = "Too many requests. Please wait a minute and try again."
+        elif hasattr(e, "message") and e.message:
             detail = e.message
         elif hasattr(e, "args") and e.args:
             detail = str(e.args[0])
-        raise HTTPException(status_code=400, detail=detail)
+
+        raise HTTPException(status_code=status_code, detail=detail)
 
 
 @router.post("/login", response_model=Token)
@@ -155,11 +162,17 @@ async def login_user(credentials: AuthCredentials):
         raise
     except Exception as e:
         detail = "Invalid email or password."
-        if hasattr(e, "message") and e.message:
+        status_code = 401
+
+        if hasattr(e, "status_code") and e.status_code == 429:
+            status_code = 429
+            detail = "Too many requests. Please wait a minute and try again."
+        elif hasattr(e, "message") and e.message:
             detail = e.message
         elif hasattr(e, "args") and e.args:
             detail = str(e.args[0])
-        raise HTTPException(status_code=401, detail=detail)
+
+        raise HTTPException(status_code=status_code, detail=detail)
 
 
 @router.get("/me", response_model=User)
