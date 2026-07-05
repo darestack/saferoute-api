@@ -9,7 +9,7 @@ for a Supabase JWT session.
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.config import settings
@@ -35,14 +35,17 @@ class CallbackResponse(BaseModel):
 
 
 @router.get("/oauth/{provider}", response_model=OAuthRedirectResponse)
-async def oauth_redirect(provider: str, request: Request):
+async def oauth_redirect(provider: str):
     """Initiate an OAuth flow with the given provider.
 
     Supported providers: ``google``, ``github``.
 
+    The post-auth redirect is controlled by the ``FRONTEND_URL`` environment
+    variable. After the user authenticates, Supabase redirects them back to
+    ``<FRONTEND_URL>/auth/callback``.
+
     Args:
         provider: The OAuth provider name.
-        request: The incoming request, used to build the redirect URI.
 
     Returns:
         The Supabase-hosted OAuth URL to redirect the user to.
@@ -56,7 +59,7 @@ async def oauth_redirect(provider: str, request: Request):
             detail=f"Unsupported provider: {provider}. Use 'google' or 'github'.",
         )
 
-    redirect_uri = str(request.base_url).rstrip("/") + "/auth/callback"
+    redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
 
     try:
         auth_url = supabase_client.auth.sign_in_with_oauth(

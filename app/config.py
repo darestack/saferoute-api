@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str
     WEBHOOK_SECRET: str
     API_KEY_SALT: str
+    FRONTEND_URL: str = "http://localhost:8000"
     ENVIRONMENT: str = "development"
 
     @property
