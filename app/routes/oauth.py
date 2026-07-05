@@ -5,9 +5,6 @@ should open the URL returned by ``/auth/oauth/{provider}`` in a browser
 or popup. After the user authenticates, the OAuth provider redirects to
 ``/auth/callback`` with an authorization code, which this module exchanges
 for a Supabase JWT session.
-
-PKCE is handled explicitly: a ``code_verifier`` is stored server-side per
-request and passed to ``exchange_code_for_session``.
 """
 
 import secrets
@@ -91,9 +88,8 @@ async def oauth_redirect(provider: str):
             detail=f"Unsupported provider: {provider}. Use 'google' or 'github'.",
         )
 
-    state = secrets.token_urlsafe(16)
     code_verifier, code_challenge = _generate_pkce_pair()
-    _pkce_store[state] = code_verifier
+    _pkce_store[code_challenge] = code_verifier
 
     redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
 
@@ -105,7 +101,6 @@ async def oauth_redirect(provider: str):
             "redirect_to": redirect_uri,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
-            "state": state,
         }
         auth_url = (
             f"{settings.SUPABASE_URL}/auth/v1/authorize?"
@@ -114,7 +109,7 @@ async def oauth_redirect(provider: str):
 
         return OAuthRedirectResponse(auth_url=auth_url)
     except Exception as e:
-        _pkce_store.pop(state, None)
+        _pkce_store.pop(code_challenge, None)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to initiate OAuth flow: {str(e)}",
@@ -124,7 +119,7 @@ async def oauth_redirect(provider: str):
 @router.get("/callback", response_model=CallbackResponse)
 async def oauth_callback(
     code: str = Query(...),
-    state: Optional[str] = Query(None),
+    code_challenge: Optional[str] = Query(None),
 ):
     """Handle the OAuth callback from Supabase.
 
@@ -134,7 +129,7 @@ async def oauth_callback(
 
     Args:
         code: The authorization code from the OAuth provider.
-        state: The ``state`` token returned by ``/auth/oauth/{provider}``.
+        code_challenge: The PKCE challenge from the authorize request.
 
     Returns:
         Access token and user info on success.
@@ -142,13 +137,13 @@ async def oauth_callback(
     Raises:
         HTTPException: 400 if the code exchange fails or state is missing.
     """
-    if not state or state not in _pkce_store:
+    if not code_challenge or code_challenge not in _pkce_store:
         raise HTTPException(
             status_code=400,
-            detail="Missing or invalid state parameter.",
+            detail="Missing or invalid code_challenge parameter.",
         )
 
-    code_verifier = _pkce_store.pop(state)
+    code_verifier = _pkce_store.pop(code_challenge)
 
     try:
         result = supabase_client.auth.exchange_code_for_session(
