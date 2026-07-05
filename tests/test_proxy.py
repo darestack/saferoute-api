@@ -6,6 +6,8 @@ import hmac
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 from app.routes.proxy import (
     get_client_ip,
@@ -78,6 +80,16 @@ class TestParsePayload:
     def test_invalid_json(self):
         result = parse_payload(b"not json", "application/json")
         assert result == {}
+
+    def test_json_without_content_type(self):
+        body = b'{"hello": "world"}'
+        result = parse_payload(body, "")
+        assert result == {"hello": "world"}
+
+    def test_form_without_content_type(self):
+        body = b"name=Alice&age=30"
+        result = parse_payload(body, "")
+        assert result == {"name": "Alice", "age": "30"}
 
 
 class TestResolveDotPath:
@@ -204,6 +216,9 @@ class TestShouldRetry:
         assert _should_retry(503) is True
         assert _should_retry(504) is True
 
+    def test_429_should_retry(self):
+        assert _should_retry(429) is True
+
     def test_non_retryable_5xx_should_not_retry(self):
         assert _should_retry(500) is False
         assert _should_retry(501) is False
@@ -217,7 +232,6 @@ class TestShouldRetry:
     def test_4xx_should_not_retry(self):
         assert _should_retry(400) is False
         assert _should_retry(404) is False
-        assert _should_retry(429) is False
 
 
 class TestCalculateNextRetry:
@@ -314,3 +328,76 @@ class TestProcessRetriesEmptyDestination:
             ))
             assert response["processed"] == 1
             assert response["results"][0]["outcome"] == "exhausted"
+            assert response["results"][0]["status_code"] == 0
+
+
+class TestEnforceRateLimit:
+    """Tests for atomic rate limit enforcement."""
+
+    def test_allows_under_limit(self):
+        from app.routes.proxy import enforce_rate_limit
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+            enforce_rate_limit("route-1", "1.2.3.4", 30)
+            mock_admin.rpc.assert_called_once()
+
+    def test_denies_over_limit(self):
+        from app.routes.proxy import enforce_rate_limit
+        from fastapi import HTTPException
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": False, "new_count": 30}
+            ]
+            with pytest.raises(HTTPException) as exc_info:
+                enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert exc_info.value.status_code == 429
+
+    def test_fails_open_on_rpc_error(self):
+        from app.routes.proxy import enforce_rate_limit
+        from fastapi import HTTPException
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = []
+            with pytest.raises(HTTPException) as exc_info:
+                enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert exc_info.value.status_code == 429
+
+
+class TestOAuthCallbackPost:
+    """Tests for POST-based OAuth callback."""
+
+    def test_post_callback_success(self):
+        from app.routes.oauth import _exchange_code
+
+        with patch("app.routes.oauth._retrieve_and_delete_pkce_verifier", return_value="verifier"), \
+             patch("app.routes.oauth.supabase_client") as mock_client:
+            mock_session = MagicMock()
+            mock_session.access_token = "token-123"
+            mock_user = MagicMock()
+            mock_user.id = "user-123"
+            mock_user.email = "test@example.com"
+            mock_client.auth.exchange_code_for_session.return_value = MagicMock(
+                session=mock_session, user=mock_user
+            )
+
+            result = asyncio.run(_exchange_code("auth-code", "challenge-123"))
+            assert result.access_token == "token-123"
+            assert result.user_id == "user-123"
+
+    def test_post_callback_sanitizes_error(self):
+        from app.routes.oauth import _exchange_code
+        from fastapi import HTTPException
+
+        with patch("app.routes.oauth._retrieve_and_delete_pkce_verifier", return_value="verifier"), \
+             patch("app.routes.oauth.supabase_client") as mock_client:
+            mock_client.auth.exchange_code_for_session.side_effect = Exception("Internal Supabase error")
+
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(_exchange_code("bad-code", "challenge-123"))
+            assert exc_info.value.status_code == 400
+            assert "Internal Supabase error" not in exc_info.value.detail
+            assert exc_info.value.detail == "OAuth callback failed"

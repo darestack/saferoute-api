@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS public.idempotency_cache (
 
 CREATE INDEX IF NOT EXISTS idx_idempotency_cache_lookup
     ON public.idempotency_cache(route_id, idempotency_key);
-t
+
+ALTER TABLE public.pkce_verifiers ADD CONSTRAINT IF NOT EXISTS pkce_verifiers_code_challenge_key UNIQUE (code_challenge);
+
 -- ========================================
 -- 4. RLS for idempotency_cache
 -- ========================================

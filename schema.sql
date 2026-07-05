@@ -218,6 +218,55 @@ begin
 end;
 $$ language plpgsql;
 
+-- Atomically increment rate limit window or create a new one
+create or replace function public.increment_rate_limit(
+    p_route_id uuid,
+    p_ip inet,
+    p_window_start timestamp with time zone,
+    p_max_requests integer
+)
+returns table (
+    success boolean,
+    new_count integer
+) as $$
+begin
+    update public.rate_limits
+    set request_count = request_count + 1
+    where route_id = p_route_id
+      and ip_address = p_ip
+      and window_start >= p_window_start
+      and request_count < p_max_requests
+    returning request_count into new_count;
+
+    if found then
+        success := true;
+        return next;
+        return;
+    end if;
+
+    select request_count into new_count
+    from public.rate_limits
+    where route_id = p_route_id
+      and ip_address = p_ip
+      and window_start >= p_window_start
+    limit 1;
+
+    if found then
+        success := false;
+        return next;
+        return;
+    end if;
+
+    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
+    values (p_route_id, p_ip, 1, p_window_start)
+    returning request_count into new_count;
+
+    success := true;
+    return next;
+    return;
+end;
+$$ language plpgsql;
+
 -- Clean up old rate limit entries
 create or replace function public.cleanup_rate_limits()
 returns void as $$

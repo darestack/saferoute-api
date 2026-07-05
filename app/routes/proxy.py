@@ -97,7 +97,10 @@ def parse_payload(body: bytes, content_type: str) -> dict:
     try:
         if "application/json" in content_type:
             return json.loads(body)
-        return {k: v[0] for k, v in parse_qs(body.decode()).items()}
+        try:
+            return json.loads(body)
+        except Exception:
+            return {k: v[0] for k, v in parse_qs(body.decode()).items()}
     except Exception:
         return {}
 
@@ -200,7 +203,7 @@ def verify_webhook_signature(
 def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> None:
     """Check and increment the per-IP rate limit for a route.
 
-    Uses an atomic SQL update to prevent race conditions.
+    Uses the atomic ``increment_rate_limit`` RPC to avoid race conditions.
 
     Args:
         route_id: The UUID of the route being hit.
@@ -215,41 +218,32 @@ def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> None
         - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)
     ).isoformat()
 
-    # Try to atomically increment an existing window that is still under the limit.
-    updated = (
-        admin.table("rate_limits")
-        .update({"request_count": "request_count + 1"})
-        .eq("route_id", route_id)
-        .eq("ip_address", client_ip)
-        .gte("window_start", window_start_cutoff)
-        .lt("request_count", max_requests)
-        .execute()
-    )
+    try:
+        result = (
+            admin.rpc(
+                "increment_rate_limit",
+                {
+                    "p_route_id": route_id,
+                    "p_ip": client_ip,
+                    "p_window_start": window_start_cutoff,
+                    "p_max_requests": max_requests,
+                },
+            )
+            .execute()
+        )
 
-    if updated.data:
-        return
+        if result.data:
+            row = result.data[0]
+            if not row.get("success"):
+                raise HTTPException(status_code=429, detail="Too many requests")
+            return
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Rate limit check failed for route %s", route_id)
 
-    # Either no window exists yet, or the existing window is already at the limit.
-    existing = (
-        admin.table("rate_limits")
-        .select("*")
-        .eq("route_id", route_id)
-        .eq("ip_address", client_ip)
-        .gte("window_start", window_start_cutoff)
-        .execute()
-    )
-
-    if existing.data:
-        raise HTTPException(status_code=429, detail="Too many requests")
-
-    # Create a new window entry.
-    admin.table("rate_limits").insert(
-        {
-            "route_id": route_id,
-            "ip_address": client_ip,
-            "request_count": 1,
-        }
-    ).execute()
+    # Fallback: deny if the RPC path failed to avoid bypassing the limit.
+    raise HTTPException(status_code=429, detail="Too many requests")
 
 
 def check_idempotency(route_id: str, idempotency_key: str) -> Optional[dict]:
@@ -435,7 +429,7 @@ def _should_retry(status_code: int) -> bool:
     Returns:
         ``True`` if the delivery should be retried.
     """
-    return status_code in (502, 503, 504)
+    return status_code in (429, 502, 503, 504)
 
 
 def _calculate_next_retry(retry_count: int) -> str:
@@ -685,7 +679,7 @@ async def process_retries(
                 {
                     "log_id": log_id,
                     "retry_count": retry_count,
-                    "status_code": None,
+                    "status_code": 0,
                     "outcome": new_status,
                 }
             )

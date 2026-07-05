@@ -7,6 +7,7 @@ webhook log retrieval, and route analytics.
 import asyncio
 import inspect
 import logging
+import re
 import secrets
 import time
 from typing import Optional
@@ -149,7 +150,7 @@ async def get_current_user_from_jwt(
     except InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc}",
+            detail=_safe_error_detail(exc),
         )
     except Exception:
         logger.exception("Token validation failed")
@@ -211,7 +212,8 @@ async def get_current_user_from_api_key(
 
 def _generate_slug(name: str, user_id: str) -> str:
     """Generate a collision-safe slug from a route name."""
-    slug_base = name.lower().replace(" ", "-")
+    slug_base = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))
+    slug_base = slug_base.strip("-")[:40] or "route"
     random_suffix = secrets.token_hex(3)
     return f"{slug_base}-{random_suffix}"
 

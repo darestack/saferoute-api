@@ -175,16 +175,46 @@ async def oauth_redirect(provider: str):
     return OAuthRedirectResponse(auth_url=auth_url)
 
 
-@router.get("/callback", response_model=CallbackResponse)
-async def oauth_callback(
+@router.post("/callback", response_model=CallbackResponse)
+async def oauth_callback_post(
     code: str = Query(...),
     code_challenge: Optional[str] = Query(None),
 ):
-    """Handle the OAuth callback from Supabase.
+    """Handle the OAuth callback from Supabase (POST preferred).
 
-    Supabase redirects here after the user authenticates with the provider.
-    We exchange the authorization code for a session using the stored
-    PKCE ``code_verifier``.
+    The frontend should POST the authorization code here after Supabase
+    redirects back to the frontend. This avoids putting the code in browser
+    history or server logs via query parameters.
+
+    Args:
+        code: The authorization code from the OAuth provider.
+        code_challenge: The PKCE challenge from the authorize request.
+
+    Returns:
+        Access token and user info on success.
+
+    Raises:
+        HTTPException: 400 if the code exchange fails or state is missing.
+    """
+    return await _exchange_code(code, code_challenge)
+
+
+@router.get("/callback", response_model=CallbackResponse)
+async def oauth_callback_get(
+    code: str = Query(...),
+    code_challenge: Optional[str] = Query(None),
+):
+    """Handle the OAuth callback from Supabase (GET fallback).
+
+    .. deprecated::
+        Use POST /auth/callback instead to avoid logging the authorization
+        code in query strings.
+    """
+    return await _exchange_code(code, code_challenge)
+
+
+async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackResponse:
+    """Common code exchange logic for OAuth callback.
 
     Args:
         code: The authorization code from the OAuth provider.
@@ -231,12 +261,9 @@ async def oauth_callback(
         )
     except HTTPException:
         raise
-    except Exception as exc:
-        detail = str(exc)
-        if hasattr(exc, "message") and exc.message:
-            detail = exc.message
+    except Exception:
         logger.exception("OAuth callback failed")
         raise HTTPException(
             status_code=400,
-            detail=f"OAuth callback failed: {detail}",
+            detail="OAuth callback failed",
         )

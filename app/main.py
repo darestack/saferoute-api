@@ -57,9 +57,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        request_id = request.headers.get(
-            "X-Request-ID", str(uuid.uuid4())
-        )
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         request.state.request_id = request_id
         request_id_var.set(request_id)
 
