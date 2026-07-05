@@ -37,14 +37,7 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     if not url or not key:
         raise RuntimeError("Database configuration error")
 
-    return create_client(
-        url,
-        key,
-        options={
-            "timeout": 5,
-            "retry_limit": 1,
-        },
-    )
+    return create_client(url, key)
 
 
 # Shared module-level clients. Import these elsewhere rather than calling

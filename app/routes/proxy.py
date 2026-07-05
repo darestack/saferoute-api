@@ -128,7 +128,7 @@ def enforce_rate_limit(route_id: str, client_ip: str) -> None:
         ).execute()
 
 
-def forward_payload(
+async def forward_payload(
     method: str,
     url: str,
     body: bytes,
