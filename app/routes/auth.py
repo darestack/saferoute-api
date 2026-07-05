@@ -124,7 +124,7 @@ async def get_current_user_from_api_key(
     user_id = route_result.data[0]["user_id"]
 
     # Fetch the user profile.
-    user_result = admin.auth.admin.get_user_by_id(user_id)
+    user_result = await admin.auth.admin.get_user_by_id(user_id)
     if not user_result.user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -157,7 +157,7 @@ async def get_current_user(
     if authorization and authorization.startswith("Bearer "):
         try:
             token = authorization.split(" ", 1)[1]
-            result = admin.auth.get_user(token)
+            result = await supabase_client.auth.get_user(token)
             if result.user:
                 user = User(
                     id=result.user.id,
@@ -166,6 +166,8 @@ async def get_current_user(
                     created_at=result.user.created_at,
                 )
                 return user, None
+        except HTTPException:
+            raise
         except Exception:
             pass
 
