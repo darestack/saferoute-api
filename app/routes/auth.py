@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field, ConfigDict
 import httpx
 import jwt
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
+from typing import Optional
 
 from app.config import settings
 from app.database import admin, verify_api_key, generate_api_key
@@ -55,6 +56,82 @@ async def get_current_user_from_jwt(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid authorization header",
+        )
+
+    token = authorization.split(" ", 1)[1]
+
+    try:
+        import httpx
+        from jwt.algorithms import RSAAlgorithm
+        from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
+
+        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
+        async with httpx.AsyncClient() as client:
+            jwks_response = await client.get(jwks_url)
+            jwks_response.raise_for_status()
+            jwks = jwks_response.json()
+
+        unverified_header = jwt.get_unverified_header(token)
+        key_id = unverified_header.get("kid")
+        public_key = None
+        for key in jwks.get("keys", []):
+            if key.get("kid") == key_id:
+                public_key = RSAAlgorithm.from_jwk(key)
+                break
+
+        if not public_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: signing key not found",
+            )
+
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["ES256", "RS256"],
+            audience="authenticated",
+            issuer=f"{settings.SUPABASE_URL}/auth/v1",
+        )
+
+        user_id = payload.get("sub")
+        email = payload.get("email")
+
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: missing user ID",
+            )
+
+        user_result = await admin.auth.admin.get_user_by_id(user_id)
+        if not user_result.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+            )
+
+        return User(
+            id=user_result.user.id,
+            email=user_result.user.email or email or "",
+            full_name=getattr(user_result.user, "full_name", None),
+            created_at=user_result.user.created_at,
+        )
+
+    except HTTPException:
+        raise
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+        )
+    except InvalidTokenError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}",
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token validation failed",
         )
 
     token = authorization.split(" ", 1)[1]
