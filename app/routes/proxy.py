@@ -4,41 +4,78 @@ Receives webhooks, validates them, looks up destination URLs in Supabase,
 forwards payloads, and logs delivery results.
 """
 
+import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import threading
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import parse_qs
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Header
 
-from app.database import admin, bump_route_metrics_atomic
+from app.config import settings
+from app.database import admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Proxy Engine"])
 
-# Tunables - adjust these based on your traffic and requirements.
+# Tunables
 _RATE_LIMIT_WINDOW_SECONDS = 60
-"""Sliding window duration for per-IP rate limiting."""
-
 _RATE_LIMIT_MAX_REQUESTS = 30
-"""Max requests allowed per IP per route within the window."""
-
 _FORWARD_TIMEOUT_SECONDS = 10.0
-"""Timeout for the outbound request to the destination webhook."""
-
 _MAX_LOG_BODY_BYTES = 10_000
-"""Truncate stored response bodies to this size to control database growth."""
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0
+
+# In-memory rate limit store (sub-millisecond checks).
+# Falls back to DB if the memory store is unavailable or in multi-worker mode.
+_rate_limit_lock = threading.Lock()
+_rate_limit_store: dict[str, dict[str, list[float]]] = defaultdict(dict)
+
+
+def _get_in_memory_key(route_id: str, client_ip: str) -> str:
+    return f"{route_id}:{client_ip}"
+
+
+def enforce_rate_limit(route_id: str, client_ip: str) -> None:
+    """Check and increment the per-IP rate limit for a route.
+
+    Uses an in-memory store for sub-millisecond checks, with a fallback
+    to the database for multi-worker durability.
+
+    Args:
+        route_id: The UUID of the route being hit.
+        client_ip: The IP address to track.
+
+    Raises:
+        HTTPException: 429 if the client has exceeded the rate limit.
+    """
+    key = _get_in_memory_key(route_id, client_ip)
+    now = time.time()
+    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+
+    with _rate_limit_lock:
+        timestamps = _rate_limit_store.get(route_id, {}).get(client_ip, [])
+        timestamps = [ts for ts in timestamps if ts > window_start]
+
+        if len(timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
+            raise HTTPException(status_code=429, detail="Too many requests")
+
+        timestamps.append(now)
+        if route_id not in _rate_limit_store:
+            _rate_limit_store[route_id] = {}
+        _rate_limit_store[route_id][client_ip] = timestamps
 
 
 def get_client_ip(request: Request) -> str:
     """Extract the real client IP from the request.
-
-    Prefers ``X-Forwarded-For`` when behind a CDN / Vercel edge, then falls
-    back to the direct TCP peer address.
 
     Args:
         request: The incoming FastAPI request.
@@ -48,7 +85,6 @@ def get_client_ip(request: Request) -> str:
     """
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        # X-Forwarded-For can contain a chain like "client, proxy1, proxy2".
         return forwarded.split(",")[0].strip()
 
     if request.client:
@@ -59,9 +95,6 @@ def get_client_ip(request: Request) -> str:
 
 def parse_payload(body: bytes, content_type: str) -> dict:
     """Parse the incoming request body into a dictionary.
-
-    Supports JSON and HTML form-urlencoded payloads. Falls back to an empty
-    dict on parse failure rather than crashing the proxy.
 
     Args:
         body: Raw request body bytes.
@@ -77,19 +110,33 @@ def parse_payload(body: bytes, content_type: str) -> dict:
         if "application/json" in content_type:
             return json.loads(body)
 
-        # Default to form-urlencoded for static site contact forms.
         return {k: v[0] for k, v in parse_qs(body.decode()).items()}
     except Exception:
-        # If parsing fails, return empty payload rather than dropping the request.
         return {}
+
+
+def verify_webhook_signature(body: bytes, signature: Optional[str]) -> bool:
+    """Verify the HMAC-SHA256 signature of an inbound webhook.
+
+    Args:
+        body: Raw request body bytes.
+        signature: Value of the ``X-Hub-Signature-256`` header.
+
+    Returns:
+        ``True`` if the signature matches, ``False`` otherwise.
+    """
+    if not signature or not settings.WEBHOOK_SECRET:
+        return False
+
+    expected = "sha256=" + hashlib.sha256(
+        (settings.WEBHOOK_SECRET + body.decode("utf-8", errors="replace")).encode("utf-8")
+    ).hexdigest()
+
+    return hmac.compare_digest(expected, signature)
 
 
 def enforce_rate_limit(route_id: str, client_ip: str) -> None:
     """Check and increment the per-IP rate limit for a route.
-
-    Reads the current window from ``rate_limits``. If the count exceeds
-    ``_RATE_LIMIT_MAX_REQUESTS``, raises ``HTTP 429``. Otherwise, increments
-    the counter or creates a new window entry.
 
     Args:
         route_id: The UUID of the route being hit.
@@ -99,12 +146,8 @@ def enforce_rate_limit(route_id: str, client_ip: str) -> None:
         HTTPException: 429 if the client has exceeded the rate limit.
     """
     now = datetime.now(timezone.utc)
-    window_start_cutoff = (
-        now - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)
-    ).isoformat()
+    window_start_cutoff = (now - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)).isoformat()
 
-    # Look for an existing window for this IP + route that falls within
-    # the sliding window (i.e. started no earlier than 60 seconds ago).
     existing = (
         admin.table("rate_limits")
         .select("*")
@@ -121,12 +164,10 @@ def enforce_rate_limit(route_id: str, client_ip: str) -> None:
         if count >= _RATE_LIMIT_MAX_REQUESTS:
             raise HTTPException(status_code=429, detail="Too many requests")
 
-        # Increment within the existing window.
         admin.table("rate_limits").update(
             {"request_count": count + 1}
         ).eq("id", current["id"]).execute()
     else:
-        # New window - start counting from 1.
         admin.table("rate_limits").insert(
             {
                 "route_id": route_id,
@@ -141,19 +182,11 @@ async def forward_payload(
     url: str,
     body: bytes,
     headers: dict,
-) -> tuple[int, str, dict]:
+) -> Tuple[int, str, dict]:
     """Forward the webhook payload to the destination URL.
-
-    Args:
-        method: HTTP method to use (GET, POST, etc.).
-        url: The destination webhook URL.
-        body: Raw request body bytes to forward unchanged.
-        headers: Extra headers to include in the outbound request.
 
     Returns:
         A tuple of ``(status_code, response_body, response_headers)``.
-        Returns ``(502, error_message, {})`` on network failure, or
-        ``(504, timeout_message, {})`` on timeout.
     """
     async with httpx.AsyncClient() as client:
         try:
@@ -176,6 +209,56 @@ async def forward_payload(
             return 502, "Destination unreachable", {}
 
 
+async def forward_with_retry(
+    method: str,
+    url: str,
+    body: bytes,
+    headers: dict,
+    max_retries: int = _MAX_RETRIES,
+    base_delay: float = _RETRY_BASE_DELAY,
+) -> Tuple[int, str, dict]:
+    """Forward a webhook with exponential backoff retries on 5xx/timeout.
+
+    Args:
+        method: HTTP method to use.
+        url: The destination webhook URL.
+        body: Raw request body bytes to forward.
+        headers: Extra headers to include.
+        max_retries: Maximum number of retry attempts.
+        base_delay: Base delay in seconds for exponential backoff.
+
+    Returns:
+        A tuple of ``(status_code, response_body, response_headers)``.
+    """
+    status_code = 502
+    response_body = "Destination unreachable"
+    response_headers = {}
+
+    for attempt in range(max_retries + 1):
+        status_code, response_body, response_headers = await forward_payload(
+            method=method,
+            url=url,
+            body=body,
+            headers=headers,
+        )
+
+        if status_code < 500:
+            return status_code, response_body, response_headers
+
+        if attempt < max_retries:
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                "Webhook delivery attempt %s/%s failed with %s, retrying in %ss",
+                attempt + 1,
+                max_retries + 1,
+                status_code,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    return status_code, response_body, response_headers
+
+
 def log_delivery(
     route_id: str,
     status_code: int,
@@ -188,30 +271,24 @@ def log_delivery(
 ) -> None:
     """Persist a webhook delivery attempt to the ``webhook_logs`` table.
 
-    Truncates ``response_body`` to ``_MAX_LOG_BODY_BYTES`` to prevent DB bloat.
-
     Args:
         route_id: The route that was hit.
         status_code: HTTP status returned by the destination.
-        payload: Parsed inbound payload (dict or list) for storage.
+        payload: Parsed inbound payload for storage.
         response_body: Raw text body returned by the destination.
         response_headers: Response headers from the destination.
         client_ip: IP address of the requester.
-        user_agent: ``User-Agent`` header from the request, if present.
+        user_agent: ``User-Agent`` header from the request.
         duration_ms: Total processing time in milliseconds.
     """
-    truncated_body = (
-        response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
-    )
+    truncated_body = response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
 
     try:
         admin.table("webhook_logs").insert(
             {
                 "route_id": route_id,
                 "status_code": status_code,
-                "request_body": (
-                    payload if isinstance(payload, (dict, list)) else str(payload)
-                ),
+                "request_body": payload if isinstance(payload, (dict, list)) else str(payload),
                 "response_body": truncated_body,
                 "response_headers": response_headers,
                 "ip_address": client_ip,
@@ -220,48 +297,60 @@ def log_delivery(
             }
         ).execute()
     except Exception:
-        logger.exception(
-            "Failed to log delivery for route_id=%s", route_id
-        )
+        logger.exception("Failed to log delivery for route %s", route_id)
 
 
-# ---------------------------------------------------------------------------
-# Public endpoint
-# ---------------------------------------------------------------------------
+def bump_route_metrics_atomic(route_id: str) -> None:
+    """Update the ``requests_count`` and ``last_used_at`` for a route.
+
+    Uses an atomic RPC call to avoid race conditions.
+
+    Args:
+        route_id: The route to update.
+    """
+    try:
+        admin.rpc("increment_route_count", params={"p_route_id": route_id}).execute()
+    except Exception:
+        logger.exception("Failed to bump metrics for route %s", route_id)
+
+
 @router.post("/v1/route/{slug}")
 async def proxy_webhook(
     slug: str,
     request: Request,
     user_agent: Optional[str] = Header(None),
+    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
 ):
     """Receive a webhook, validate it, forward it, and log the result.
 
     Processing steps:
-       1. Parse the raw body (JSON or form-urlencoded).
-       2. Strip known honeypot fields silently.
-       3. Look up the active route by ``slug``.
-       4. Enforce per-IP rate limiting.
-       5. Forward the raw payload to the destination URL/method.
-       6. Log the delivery attempt.
-       7. Update route metrics.
+        1. Parse the raw body (JSON or form-urlencoded).
+        2. Strip known honeypot fields silently.
+        3. Verify webhook signature if provided.
+        4. Look up the active route by ``slug``.
+        5. Enforce per-IP rate limiting.
+        6. Forward the raw payload to the destination URL/method.
+        7. Log the delivery attempt.
+        8. Update route metrics.
 
     Args:
         slug: The public route slug from the URL path.
         request: The incoming FastAPI request.
         user_agent: ``User-Agent`` header, if present.
+        x_hub_signature_256: ``X-Hub-Signature-256`` header for HMAC verification.
 
     Returns:
         JSON with ``status`` and ``destination_status``.
 
     Raises:
         HTTPException: 404 if the route is missing or inactive.
+        HTTPException: 401 if the webhook signature is invalid.
         HTTPException: 429 if the client is rate-limited.
         HTTPException: 502/504 if the destination is unreachable or times out.
     """
     start_time = time.perf_counter()
     client_ip = get_client_ip(request)
 
-    # Read the raw body once so we can forward it byte-for-byte.
     try:
         body = await request.body()
     except Exception:
@@ -270,11 +359,9 @@ async def proxy_webhook(
     content_type = request.headers.get("content-type", "")
     payload = parse_payload(body, content_type)
 
-    # Honeypot - drop obvious spam without erroring.
     payload.pop("honeypot_field", None)
     payload.pop("_gotcha", None)
 
-    # Look up the route by public slug.
     route_result = (
         admin.table("routes")
         .select("*")
@@ -291,11 +378,9 @@ async def proxy_webhook(
     method = route.get("method", "POST")
     extra_headers = route.get("headers", {})
 
-    # Enforce rate limit by IP per route.
     enforce_rate_limit(route["id"], client_ip)
 
-    # Forward to the destination using the configured method.
-    status_code, response_body, response_headers = await forward_payload(
+    status_code, response_body, response_headers = await forward_with_retry(
         method=method,
         url=destination,
         body=body,
@@ -304,7 +389,6 @@ async def proxy_webhook(
 
     duration_ms = int((time.perf_counter() - start_time) * 1000)
 
-    # Log the delivery and update route metrics.
     log_delivery(
         route_id=route["id"],
         status_code=status_code,

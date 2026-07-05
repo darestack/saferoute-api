@@ -5,7 +5,9 @@ trusted host restrictions. Mounts the proxy router so the app is runnable
 both locally and on Vercel via the Mangum ASGI handler.
 """
 
+import json
 import logging
+import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +19,29 @@ from app.config import settings
 from app.routes import auth, oauth, proxy
 
 logger = logging.getLogger(__name__)
+
+
+def setup_logging() -> None:
+    """Configure structured JSON logging for production observability."""
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        json.dumps({
+            "level": "%(levelname)s",
+            "message": "%(message)s",
+            "logger": "%(name)s",
+            "time": "%(asctime)s",
+        }),
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    level = logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO
+    root.setLevel(level)
+
+
+setup_logging()
 
 app = FastAPI(
     title="SafeRoute API",
@@ -54,6 +79,22 @@ app.add_middleware(
 # ``*`` is intentional here because Vercel / CDN edge nodes act as proxies
 # and the canonical host is enforced at the edge / DNS level.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
+# ---------------------------------------------------------------------------
+# Request ID / correlation ID
+# ---------------------------------------------------------------------------
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Generate or propagate a request ID and attach it to logs and responses."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
+
+
+app.add_middleware(RequestIdMiddleware)
 
 # ---------------------------------------------------------------------------
 # Security headers
