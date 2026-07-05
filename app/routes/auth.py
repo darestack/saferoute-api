@@ -74,6 +74,61 @@ async def _get_cached_jwks() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# User cache
+# ---------------------------------------------------------------------------
+_USER_CACHE_TTL_SECONDS = 300
+_user_cache: dict[str, User] = {}
+_user_cache_expiry: dict[str, float] = {}
+_user_cache_lock = asyncio.Lock()
+
+
+async def _get_cached_user(user_id: str) -> Optional[User]:
+    """Return a cached User if available and fresh."""
+    now = time.monotonic()
+    expiry = _user_cache_expiry.get(user_id, 0.0)
+    if user_id in _user_cache and now < expiry:
+        return _user_cache[user_id]
+    return None
+
+
+def _cache_user(user: User) -> None:
+    """Store a User in the cache with TTL."""
+    _user_cache[user.id] = user
+    _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
+
+
+async def _fetch_and_cache_user(user_id: str) -> User:
+    """Fetch a user from Supabase Auth and cache the result."""
+    cached = await _get_cached_user(user_id)
+    if cached:
+        return cached
+
+    async with _user_cache_lock:
+        cached = await _get_cached_user(user_id)
+        if cached:
+            return cached
+
+        result = admin.auth.admin.get_user_by_id(user_id)
+        if inspect.isawaitable(result):
+            result = await result
+
+        if not result.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+            )
+
+        user = User(
+            id=result.user.id,
+            email=result.user.email or "",
+            full_name=getattr(result.user, "full_name", None),
+            created_at=result.user.created_at,
+        )
+        _cache_user(user)
+        return user
+
+
+# ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 async def get_current_user_from_jwt(
@@ -122,22 +177,19 @@ async def get_current_user_from_jwt(
                 detail="Invalid token: missing user ID",
             )
 
-        result = admin.auth.admin.get_user_by_id(user_id)
-        if inspect.isawaitable(result):
-            result = await result
-
-        user_result = result
-        if not user_result.user:
+        user = await _fetch_and_cache_user(user_id)
+        if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found",
             )
 
+        # Prefer JWT claims when cached user data is stale.
         return User(
-            id=user_result.user.id,
-            email=user_result.user.email or email or "",
-            full_name=getattr(user_result.user, "full_name", None),
-            created_at=user_result.user.created_at,
+            id=user.id,
+            email=user.email or email or "",
+            full_name=user.full_name,
+            created_at=user.created_at,
         )
 
     except HTTPException:
@@ -189,23 +241,12 @@ async def get_current_user_from_api_key(
 
     user_id = route_result.data[0]["user_id"]
 
-    result = admin.auth.admin.get_user_by_id(user_id)
-    if inspect.isawaitable(result):
-        result = await result
-
-    user_result = result
-    if not user_result.user:
+    user = await _fetch_and_cache_user(user_id)
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found for API key",
         )
-
-    user = User(
-        id=user_result.user.id,
-        email=user_result.user.email,
-        full_name=getattr(user_result.user, "full_name", None),
-        created_at=user_result.user.created_at,
-    )
 
     return user, route_id
 
