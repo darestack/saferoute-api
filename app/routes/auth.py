@@ -1,5 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends, Header, status
 from pydantic import BaseModel, Field, ConfigDict
+import httpx
+import jwt
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 
 from app.config import settings
 from app.database import admin, verify_api_key, generate_api_key
