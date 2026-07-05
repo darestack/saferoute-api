@@ -9,12 +9,15 @@ This module creates and exports two Supabase clients:
 
 import hashlib
 import hmac
+import logging
 import secrets
 from typing import Optional
 
 from supabase import Client, create_client
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_supabase_client(use_service_role: bool = False) -> Client:
@@ -40,6 +43,7 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     )
 
     if not url or not key:
+        logger.error("Database configuration error: SUPABASE_URL or key is empty")
         raise RuntimeError("Database configuration error")
 
     return create_client(url, key)
@@ -51,7 +55,7 @@ def generate_api_key() -> tuple[str, str, str]:
     Returns:
         A tuple of ``(full_key, prefix, hash)`` where:
         - ``full_key`` is the complete key shown to the user once.
-        - ``prefix`` is the first 8 characters for display in the UI.
+        - ``prefix`` is the first 12 characters for display in the UI.
         - ``hash`` is the SHA-256 HMAC hash stored in the database.
 
     The key format is ``sk_live_<32 random hex chars>``.
@@ -84,12 +88,37 @@ def verify_api_key(full_key: str) -> Optional[str]:
         hashlib.sha256,
     ).hexdigest()
 
-    result = admin.table("routes").select("id").eq("api_key_hash", key_hash).execute()
+    try:
+        result = (
+            admin.table("routes")
+            .select("id")
+            .eq("api_key_hash", key_hash)
+            .execute()
+        )
 
-    if result.data:
-        return result.data[0]["id"]
+        if result.data:
+            return result.data[0]["id"]
+    except Exception:
+        logger.exception("Failed to verify API key")
 
     return None
+
+
+def bump_route_metrics_atomic(route_id: str) -> None:
+    """Atomically increment the request count for a route.
+
+    Uses the ``increment_route_count`` SQL function defined in
+    ``schema.sql`` to avoid read-then-write race conditions.
+
+    Args:
+        route_id: The UUID of the route to update.
+    """
+    try:
+        admin.rpc("increment_route_count", {"p_route_id": route_id}).execute()
+    except Exception:
+        logger.exception(
+            "Failed to increment route metrics for route_id=%s", route_id
+        )
 
 
 # Shared module-level clients. Import these elsewhere rather than calling

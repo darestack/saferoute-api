@@ -7,23 +7,27 @@ or popup. After the user authenticates, the OAuth provider redirects to
 for a Supabase JWT session.
 """
 
-import secrets
 import hashlib
+import logging
+import secrets
 import base64
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel
 
 from app.config import settings
-from app.database import supabase_client, admin
+from app.database import admin, supabase_client
 from app.models import Token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
 
 
 # ---------------------------------------------------------------------------
-# PKCE storage
+# PKCE helpers (Supabase-backed for serverless safety)
 # ---------------------------------------------------------------------------
 _PKCE_CODE_VERIFIER_LENGTH = 64
 
@@ -36,47 +40,65 @@ def _generate_pkce_pair() -> tuple[str, str]:
     """
     code_verifier = secrets.token_urlsafe(_PKCE_CODE_VERIFIER_LENGTH)
     hashed = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-    code_challenge = base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
+    code_challenge = (
+        base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
+    )
     return code_verifier, code_challenge
 
 
 def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
-    """Store PKCE code verifier in Supabase for cross-worker accessibility.
+    """Persist a PKCE verifier to the ``pkce_verifiers`` table.
+
+    This replaces the in-memory dict so the verifier survives across
+    serverless invocations and multi-worker deployments.
 
     Args:
-        code_challenge: The PKCE challenge to use as the key.
-        code_verifier: The PKCE verifier to store.
+        code_challenge: The S256 challenge sent to the OAuth provider.
+        code_verifier: The corresponding verifier to store.
     """
-    admin.table("oauth_pkce").upsert(
-        {
-            "code_challenge": code_challenge,
-            "code_verifier": code_verifier,
-        }
-    ).execute()
+    try:
+        admin.table("pkce_verifiers").insert(
+            {
+                "code_challenge": code_challenge,
+                "code_verifier": code_verifier,
+            }
+        ).execute()
+    except Exception:
+        logger.exception("Failed to store PKCE verifier")
+        raise
 
 
-def _get_and_remove_pkce_verifier(code_challenge: str) -> Optional[str]:
-    """Retrieve and delete PKCE code verifier from Supabase.
+def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
+    """Retrieve and delete a PKCE verifier from the database.
 
     Args:
-        code_challenge: The PKCE challenge to look up.
+        code_challenge: The S256 challenge to look up.
 
     Returns:
-        The code verifier string if found, else None.
+        The code verifier string, or ``None`` if not found.
     """
-    result = (
-        admin.table("oauth_pkce")
-        .select("code_verifier")
-        .eq("code_challenge", code_challenge)
-        .execute()
-    )
+    try:
+        result = (
+            admin.table("pkce_verifiers")
+            .select("code_verifier")
+            .eq("code_challenge", code_challenge)
+            .execute()
+        )
 
-    if not result.data:
+        if not result.data:
+            return None
+
+        code_verifier = result.data[0]["code_verifier"]
+
+        # Delete after retrieval (one-time use).
+        admin.table("pkce_verifiers").delete().eq(
+            "code_challenge", code_challenge
+        ).execute()
+
+        return code_verifier
+    except Exception:
+        logger.exception("Failed to retrieve PKCE verifier")
         return None
-
-    verifier = result.data[0]["code_verifier"]
-    admin.table("oauth_pkce").delete().eq("code_challenge", code_challenge).execute()
-    return verifier
 
 
 # ---------------------------------------------------------------------------
@@ -106,9 +128,9 @@ async def oauth_redirect(provider: str):
 
     Supported providers: ``google``, ``github``.
 
-    Generates a PKCE pair, stores the verifier, and builds the authorize
-    URL with explicit ``redirect_to`` so the user lands back on the
-    correct frontend after auth.
+    Generates a PKCE pair, stores the verifier in the database, and builds
+    the authorize URL with explicit ``redirect_to`` so the user lands back
+    on the correct frontend after auth.
 
     Args:
         provider: The OAuth provider name.
@@ -122,35 +144,36 @@ async def oauth_redirect(provider: str):
     if provider not in ("google", "github"):
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported provider: {provider}. Use 'google' or 'github'.",
+            detail=(
+                f"Unsupported provider: {provider}. "
+                "Use 'google' or 'github'."
+            ),
         )
 
     code_verifier, code_challenge = _generate_pkce_pair()
-    _store_pkce_verifier(code_challenge, code_verifier)
-
-    redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
 
     try:
-        from urllib.parse import urlencode
-
-        params = {
-            "provider": provider,
-            "redirect_to": redirect_uri,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-        }
-        auth_url = (
-            f"{settings.SUPABASE_URL}/auth/v1/authorize?"
-            + urlencode(params)
-        )
-
-        return OAuthRedirectResponse(auth_url=auth_url)
+        _store_pkce_verifier(code_challenge, code_verifier)
     except Exception:
-        _get_and_remove_pkce_verifier(code_challenge)
         raise HTTPException(
             status_code=500,
             detail="Failed to initiate OAuth flow",
         )
+
+    redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
+
+    params = {
+        "provider": provider,
+        "redirect_to": redirect_uri,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    auth_url = (
+        f"{settings.SUPABASE_URL}/auth/v1/authorize?"
+        + urlencode(params)
+    )
+
+    return OAuthRedirectResponse(auth_url=auth_url)
 
 
 @router.get("/callback", response_model=CallbackResponse)
@@ -177,14 +200,14 @@ async def oauth_callback(
     if not code_challenge:
         raise HTTPException(
             status_code=400,
-            detail="Missing code_challenge parameter",
+            detail="Missing code_challenge parameter.",
         )
 
-    code_verifier = _get_and_remove_pkce_verifier(code_challenge)
+    code_verifier = _retrieve_and_delete_pkce_verifier(code_challenge)
     if not code_verifier:
         raise HTTPException(
             status_code=400,
-            detail="Invalid or expired code_challenge",
+            detail="Invalid or expired code_challenge.",
         )
 
     try:
@@ -198,7 +221,7 @@ async def oauth_callback(
         if result.session is None:
             raise HTTPException(
                 status_code=400,
-                detail="Failed to exchange authorization code for session",
+                detail="Failed to exchange authorization code for session.",
             )
 
         return CallbackResponse(
@@ -209,8 +232,12 @@ async def oauth_callback(
         )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        detail = str(exc)
+        if hasattr(exc, "message") and exc.message:
+            detail = exc.message
+        logger.exception("OAuth callback failed")
         raise HTTPException(
             status_code=400,
-            detail="OAuth callback failed",
+            detail=f"OAuth callback failed: {detail}",
         )

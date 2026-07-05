@@ -5,19 +5,20 @@ forwards payloads, and logs delivery results.
 """
 
 import json
+import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, HTTPException, Request, Header
-from app.database import admin
 import httpx
-import logging
+from fastapi import APIRouter, HTTPException, Request, Header
 
-router = APIRouter(tags=["Proxy Engine"])
+from app.database import admin, bump_route_metrics_atomic
 
 logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["Proxy Engine"])
 
 # Tunables - adjust these based on your traffic and requirements.
 _RATE_LIMIT_WINDOW_SECONDS = 60
@@ -97,18 +98,19 @@ def enforce_rate_limit(route_id: str, client_ip: str) -> None:
     Raises:
         HTTPException: 429 if the client has exceeded the rate limit.
     """
-    from datetime import timedelta
-
     now = datetime.now(timezone.utc)
-    window_threshold = (now - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)).isoformat()
+    window_start_cutoff = (
+        now - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)
+    ).isoformat()
 
-    # Look for an existing window within the last 60 seconds for this IP + route.
+    # Look for an existing window for this IP + route that falls within
+    # the sliding window (i.e. started no earlier than 60 seconds ago).
     existing = (
         admin.table("rate_limits")
         .select("*")
         .eq("route_id", route_id)
         .eq("ip_address", client_ip)
-        .gte("window_start", window_threshold)
+        .gte("window_start", window_start_cutoff)
         .execute()
     )
 
@@ -169,7 +171,8 @@ async def forward_payload(
             )
         except httpx.TimeoutException:
             return 504, "Destination timeout", {}
-        except httpx.RequestError:
+        except httpx.RequestError as exc:
+            logger.warning("Destination unreachable: %s", exc)
             return 502, "Destination unreachable", {}
 
 
@@ -201,29 +204,25 @@ def log_delivery(
         response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
     )
 
-    admin.table("webhook_logs").insert(
-        {
-            "route_id": route_id,
-            "status_code": status_code,
-            "request_body": payload if isinstance(payload, (dict, list)) else str(payload),
-            "response_body": truncated_body,
-            "response_headers": response_headers,
-            "ip_address": client_ip,
-            "user_agent": user_agent,
-            "duration_ms": duration_ms,
-        }
-    ).execute()
-
-
-def bump_route_metrics(route_id: str) -> None:
-    """Update the ``requests_count`` and ``last_used_at`` for a route.
-
-    Uses an atomic RPC call to avoid race conditions under concurrent traffic.
-
-    Args:
-        route_id: The route to update.
-    """
-    admin.rpc("increment_route_count", params={"p_route_id": route_id}).execute()
+    try:
+        admin.table("webhook_logs").insert(
+            {
+                "route_id": route_id,
+                "status_code": status_code,
+                "request_body": (
+                    payload if isinstance(payload, (dict, list)) else str(payload)
+                ),
+                "response_body": truncated_body,
+                "response_headers": response_headers,
+                "ip_address": client_ip,
+                "user_agent": user_agent,
+                "duration_ms": duration_ms,
+            }
+        ).execute()
+    except Exception:
+        logger.exception(
+            "Failed to log delivery for route_id=%s", route_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +316,7 @@ async def proxy_webhook(
         duration_ms=duration_ms,
     )
 
-    bump_route_metrics(route["id"])
+    bump_route_metrics_atomic(route["id"])
 
     return {
         "status": "forwarded",

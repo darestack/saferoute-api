@@ -1,10 +1,22 @@
-from fastapi import APIRouter, HTTPException, Depends, Header, status
-from pydantic import BaseModel, Field, ConfigDict
+"""Authentication and route management endpoints.
+
+Provides JWT-based authentication, route CRUD, API key rotation, and
+webhook log retrieval.
+"""
+
+import asyncio
+import inspect
+import logging
+import secrets
+import time
+from typing import Optional
+
 import httpx
 import jwt
+from jwt.algorithms import RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
-from typing import Optional
-import logging
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.config import settings
 from app.database import admin, verify_api_key, generate_api_key
@@ -12,54 +24,66 @@ from app.models import (
     RouteCreate,
     RouteResponse,
     RouteUpdate,
-    ApiKeyRotateRequest,
     RouteCreateResponse,
     User,
+    UserCreate,
     Token,
+    WebhookLogResponse,
 )
-
-router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
 
 logger = logging.getLogger(__name__)
 
-_JWKS_CACHE: Optional[dict] = None
-_JWKS_CACHE_TIME: float = 0
-_JWKS_CACHE_TTL_SECONDS = 3600
+router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
+
+# ---------------------------------------------------------------------------
+# JWKS cache
+# ---------------------------------------------------------------------------
+_JWKS_CACHE_TTL_SECONDS = 300  # 5 minutes
+_jwks_cache: Optional[dict] = None
+_jwks_cache_expiry: float = 0.0
+_jwks_lock = asyncio.Lock()
 
 
 async def _get_cached_jwks() -> dict:
-    """Fetch and cache JWKS from Supabase for 1 hour."""
-    global _JWKS_CACHE, _JWKS_CACHE_TIME
-    import time
+    """Fetch Supabase JWKS, using a TTL-based cache to avoid fetching on
+    every authenticated request.
 
-    now = time.time()
-    if _JWKS_CACHE and (now - _JWKS_CACHE_TIME) < _JWKS_CACHE_TTL_SECONDS:
-        return _JWKS_CACHE
+    Returns:
+        The parsed JWKS response dict.
 
-    jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
-    async with httpx.AsyncClient() as client:
-        jwks_response = await client.get(jwks_url)
-        jwks_response.raise_for_status()
-        _JWKS_CACHE = jwks_response.json()
-        _JWKS_CACHE_TIME = now
+    Raises:
+        HTTPException: 401 if the JWKS endpoint is unreachable.
+    """
+    global _jwks_cache, _jwks_cache_expiry
 
-    return _JWKS_CACHE
+    now = time.monotonic()
+    if _jwks_cache is not None and now < _jwks_cache_expiry:
+        return _jwks_cache
+
+    async with _jwks_lock:
+        # Re-check after acquiring lock (another coroutine may have refreshed).
+        now = time.monotonic()
+        if _jwks_cache is not None and now < _jwks_cache_expiry:
+            return _jwks_cache
+
+        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(jwks_url, timeout=5.0)
+                response.raise_for_status()
+                _jwks_cache = response.json()
+                _jwks_cache_expiry = now + _JWKS_CACHE_TTL_SECONDS
+                return _jwks_cache
+        except Exception:
+            logger.exception("Failed to fetch JWKS from %s", jwks_url)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unable to validate token at this time",
+            )
 
 
 # ---------------------------------------------------------------------------
-# Request / response schemas
-# ---------------------------------------------------------------------------
-class AuthCredentials(BaseModel):
-    """Login / registration credentials (deprecated)."""
-
-    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
-
-    email: str = Field(..., pattern="^[^@]+@[^@]+\\.[^@]+$")
-    password: str = Field(..., min_length=8, max_length=128)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
+# Auth helpers
 # ---------------------------------------------------------------------------
 async def get_current_user_from_jwt(
     authorization: Optional[str] = Header(None),
@@ -84,14 +108,12 @@ async def get_current_user_from_jwt(
             detail="Missing or invalid authorization header",
         )
 
-    token = authorization.split(" ", 1)[1]
+    token_str = authorization.split(" ", 1)[1]
 
     try:
-        from jwt.algorithms import RSAAlgorithm
-
         jwks = await _get_cached_jwks()
 
-        unverified_header = jwt.get_unverified_header(token)
+        unverified_header = jwt.get_unverified_header(token_str)
         key_id = unverified_header.get("kid")
         public_key = None
         for key in jwks.get("keys", []):
@@ -106,7 +128,7 @@ async def get_current_user_from_jwt(
             )
 
         payload = jwt.decode(
-            token,
+            token_str,
             public_key,
             algorithms=["ES256", "RS256"],
             audience="authenticated",
@@ -122,7 +144,12 @@ async def get_current_user_from_jwt(
                 detail="Invalid token: missing user ID",
             )
 
-        user_result = await admin.auth.admin.get_user_by_id(user_id)
+        # Handle both sync and async Supabase clients gracefully.
+        result = admin.auth.admin.get_user_by_id(user_id)
+        if inspect.isawaitable(result):
+            result = await result
+
+        user_result = result
         if not user_result.user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -143,13 +170,13 @@ async def get_current_user_from_jwt(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
         )
-    except InvalidTokenError:
+    except InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
+            detail=f"Invalid token: {exc}",
         )
-    except Exception as e:
-        logger.exception("JWT validation failed")
+    except Exception:
+        logger.exception("Token validation failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token validation failed",
@@ -195,7 +222,12 @@ async def get_current_user_from_api_key(
 
     user_id = route_result.data[0]["user_id"]
 
-    user_result = await admin.auth.admin.get_user_by_id(user_id)
+    # Fetch the user profile (handle sync/async).
+    result = admin.auth.admin.get_user_by_id(user_id)
+    if inspect.isawaitable(result):
+        result = await result
+
+    user_result = result
     if not user_result.user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -212,11 +244,47 @@ async def get_current_user_from_api_key(
     return user, route_id
 
 
+def _generate_slug(name: str, user_id: str) -> str:
+    """Generate a collision-safe slug from a route name.
+
+    Appends a random 6-character hex suffix to prevent collisions when
+    a user recreates a route with the same name or when two users share
+    the same user-ID prefix.
+
+    Args:
+        name: The human-readable route name.
+        user_id: The owner's user ID.
+
+    Returns:
+        A slug string like ``my-route-a3f9b1``.
+    """
+    slug_base = name.lower().replace(" ", "-")
+    random_suffix = secrets.token_hex(3)
+    return f"{slug_base}-{random_suffix}"
+
+
+def _safe_error_detail(exc: Exception) -> str:
+    """Return a safe error detail string.
+
+    In development, includes the full exception message.
+    In production, returns a generic message to avoid leaking internals.
+
+    Args:
+        exc: The caught exception.
+
+    Returns:
+        A user-safe error detail string.
+    """
+    if settings.ENVIRONMENT == "development":
+        return str(exc)
+    return "An internal error occurred"
+
+
 # ---------------------------------------------------------------------------
 # Deprecated email/password auth
 # ---------------------------------------------------------------------------
 @router.post("/register", status_code=status.HTTP_410_GONE)
-async def register_user(credentials: AuthCredentials):
+async def register_user(credentials: UserCreate):
     """Register a new user with email and password.
 
     .. deprecated::
@@ -233,7 +301,7 @@ async def register_user(credentials: AuthCredentials):
 
 
 @router.post("/login", status_code=status.HTTP_410_GONE)
-async def login_user(credentials: AuthCredentials):
+async def login_user(credentials: UserCreate):
     """Login with email and password.
 
     .. deprecated::
@@ -265,7 +333,11 @@ async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
 # ---------------------------------------------------------------------------
 # Route CRUD
 # ---------------------------------------------------------------------------
-@router.post("/routes", response_model=RouteCreateResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/routes",
+    response_model=RouteCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_route(
     route_data: RouteCreate,
     current_user: User = Depends(get_current_user_from_jwt),
@@ -287,9 +359,7 @@ async def create_route(
         HTTPException: 409 if a route with the same name already exists.
         HTTPException: 500 if database insertion fails.
     """
-    slug_base = route_data.name.lower().replace(" ", "-")
-    slug = f"{slug_base}-{current_user.id[:8]}"
-
+    slug = _generate_slug(route_data.name, current_user.id)
     full_key, key_prefix, key_hash = generate_api_key()
 
     try:
@@ -331,19 +401,33 @@ async def create_route(
         )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A route with this name already exists",
+            )
+        logger.exception("Failed to create route")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create route",
+            detail=_safe_error_detail(exc),
         )
 
 
 @router.get("/routes", response_model=list[RouteResponse])
-async def list_routes(current_user: User = Depends(get_current_user_from_jwt)):
+async def list_routes(
+    current_user: User = Depends(get_current_user_from_jwt),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
     """List all routes owned by the authenticated user.
+
+    Supports pagination via ``limit`` and ``offset`` query parameters.
 
     Args:
         current_user: Injected authenticated user.
+        limit: Maximum number of routes to return (1–100, default 20).
+        offset: Number of routes to skip (default 0).
 
     Returns:
         A list of :class:`RouteResponse` ordered by creation date.
@@ -353,6 +437,7 @@ async def list_routes(current_user: User = Depends(get_current_user_from_jwt)):
         .select("*")
         .eq("user_id", current_user.id)
         .order("created_at", desc=False)
+        .range(offset, offset + limit - 1)
         .execute()
     )
 
@@ -402,7 +487,8 @@ async def update_route(
     """Update an existing route's configuration.
 
     Only the fields provided in the request body are updated. Unspecified
-    fields remain unchanged.
+    fields remain unchanged. When the ``name`` is updated, the ``slug``
+    is regenerated to stay in sync.
 
     Args:
         route_id: The UUID of the route to update.
@@ -420,6 +506,10 @@ async def update_route(
 
     if "destination_url" in updates:
         updates["destination_url"] = str(updates["destination_url"])
+
+    # When name changes, regenerate slug to stay in sync.
+    if "name" in updates:
+        updates["slug"] = _generate_slug(updates["name"], current_user.id)
 
     if "slug" in updates:
         existing = (
@@ -453,10 +543,16 @@ async def update_route(
         return RouteResponse(**result.data[0])
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slug already in use",
+            )
+        logger.exception("Failed to update route %s", route_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update route",
+            detail=_safe_error_detail(exc),
         )
 
 
@@ -552,8 +648,65 @@ async def rotate_api_key(
         )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        logger.exception("Failed to rotate API key for route %s", route_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to rotate API key",
+            detail=_safe_error_detail(exc),
         )
+
+
+# ---------------------------------------------------------------------------
+# Webhook logs
+# ---------------------------------------------------------------------------
+@router.get(
+    "/routes/{route_id}/logs",
+    response_model=list[WebhookLogResponse],
+)
+async def list_route_logs(
+    route_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """List webhook delivery logs for a route owned by the authenticated user.
+
+    Returns logs in reverse chronological order (newest first).
+
+    Args:
+        route_id: The UUID of the route.
+        current_user: Injected authenticated user.
+        limit: Maximum number of log entries to return (1–100, default 20).
+        offset: Number of entries to skip (default 0).
+
+    Returns:
+        A list of :class:`WebhookLogResponse`.
+
+    Raises:
+        HTTPException: 404 if the route does not exist or belongs to another user.
+    """
+    # Verify the route belongs to the current user.
+    route_check = (
+        admin.table("routes")
+        .select("id")
+        .eq("id", route_id)
+        .eq("user_id", current_user.id)
+        .execute()
+    )
+
+    if not route_check.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
+
+    result = (
+        admin.table("webhook_logs")
+        .select("*")
+        .eq("route_id", route_id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+
+    return [WebhookLogResponse(**row) for row in result.data]

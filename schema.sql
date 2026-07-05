@@ -58,36 +58,6 @@ create index idx_webhook_logs_route_id on public.webhook_logs(route_id);
 create index idx_webhook_logs_created_at on public.webhook_logs(created_at desc);
 
 -- ========================================
--- OAuth PKCE Storage Table
--- ========================================
-create table public.oauth_pkce (
-    code_challenge text primary key,
-    code_verifier text not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Index for cleanup of expired PKCE entries
-create index idx_oauth_pkce_created_at on public.oauth_pkce(created_at);
-
--- Enable RLS for oauth_pkce
-alter table public.oauth_pkce enable row level security;
-
--- Service role full access for PKCE storage
-create policy "Service role full access oauth_pkce"
-    on public.oauth_pkce for all
-    to service_role
-    using (true);
-
--- Cleanup old PKCE entries (older than 10 minutes)
-create or replace function public.cleanup_oauth_pkce()
-returns void as $$
-begin
-    delete from public.oauth_pkce
-    where created_at < timezone('utc'::text, now()) - interval '10 minutes';
-end;
-$$ language plpgsql;
-
--- ========================================
 -- Rate Limits Table
 -- ========================================
 create table public.rate_limits (
@@ -103,12 +73,27 @@ create table public.rate_limits (
 create index idx_rate_limits_route_ip on public.rate_limits(route_id, ip_address);
 
 -- ========================================
+-- PKCE Verifiers Table (for OAuth flows)
+-- ========================================
+-- Stores PKCE code_verifier values keyed by code_challenge so that the
+-- OAuth callback (which may hit a different serverless worker) can
+-- retrieve the verifier. Entries should be short-lived (< 10 minutes).
+create table public.pkce_verifiers (
+    id uuid default uuid_generate_v4() primary key,
+    code_challenge text not null unique,
+    code_verifier text not null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_pkce_verifiers_challenge on public.pkce_verifiers(code_challenge);
+
+-- ========================================
 -- Row Level Security (RLS)
 -- ========================================
 alter table public.routes enable row level security;
 alter table public.webhook_logs enable row level security;
 alter table public.rate_limits enable row level security;
-alter table public.oauth_pkce enable row level security;
+alter table public.pkce_verifiers enable row level security;
 
 -- Routes: Users can only access their own routes
 create policy "Users can view own routes"
@@ -156,9 +141,21 @@ create policy "Service role insert logs"
     to service_role
     with check (true);
 
+-- Service role full access to webhook_logs (for reading in API)
+create policy "Service role full access webhook_logs"
+    on public.webhook_logs for all
+    to service_role
+    using (true);
+
 -- Rate limits: Service role full access
 create policy "Service role full access rate_limits"
     on public.rate_limits for all
+    to service_role
+    using (true);
+
+-- PKCE verifiers: Service role full access only
+create policy "Service role full access pkce_verifiers"
+    on public.pkce_verifiers for all
     to service_role
     using (true);
 
@@ -203,6 +200,15 @@ begin
 end;
 $$ language plpgsql;
 
+-- Clean up expired PKCE verifiers (older than 10 minutes)
+create or replace function public.cleanup_pkce_verifiers()
+returns void as $$
+begin
+    delete from public.pkce_verifiers
+    where created_at < timezone('utc'::text, now()) - interval '10 minutes';
+end;
+$$ language plpgsql;
+
 -- ========================================
 -- Cleanup job (optional, run via cron)
 -- ========================================
@@ -213,4 +219,8 @@ $$ language plpgsql;
 
 -- select cron.schedule('cleanup-rate-limits', '*/15 * * * *', $$
 --     select public.cleanup_rate_limits();
+-- $$);
+
+-- select cron.schedule('cleanup-pkce-verifiers', '*/5 * * * *', $$
+--     select public.cleanup_pkce_verifiers();
 -- $$);
