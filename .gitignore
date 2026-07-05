@@ -33,3 +33,5 @@ htmlcov/
 
 # Vercel
 .vercel/
+.vercel
+.env*
