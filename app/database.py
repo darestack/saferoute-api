@@ -7,6 +7,11 @@ This module creates and exports two Supabase clients:
   server side for operations like proxy lookups and log insertion.
 """
 
+import hashlib
+import hmac
+import secrets
+from typing import Optional
+
 from supabase import Client, create_client
 
 from app.config import settings
@@ -38,6 +43,53 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
         raise RuntimeError("Database configuration error")
 
     return create_client(url, key)
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Generate a new API key for route authentication.
+
+    Returns:
+        A tuple of ``(full_key, prefix, hash)`` where:
+        - ``full_key`` is the complete key shown to the user once.
+        - ``prefix`` is the first 8 characters for display in the UI.
+        - ``hash`` is the SHA-256 HMAC hash stored in the database.
+
+    The key format is ``sk_live_<32 random hex chars>``.
+    """
+    random_hex = secrets.token_hex(16)
+    full_key = f"sk_live_{random_hex}"
+    prefix = full_key[:12]
+
+    key_hash = hmac.new(
+        settings.API_KEY_SALT.encode(),
+        full_key.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return full_key, prefix, key_hash
+
+
+def verify_api_key(full_key: str) -> Optional[str]:
+    """Verify an API key and return the route ID if valid.
+
+    Args:
+        full_key: The complete API key from the request header.
+
+    Returns:
+        The route ID (UUID string) if the key is valid, or ``None`` if not.
+    """
+    key_hash = hmac.new(
+        settings.API_KEY_SALT.encode(),
+        full_key.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    result = admin.table("routes").select("id").eq("api_key_hash", key_hash).execute()
+
+    if result.data:
+        return result.data[0]["id"]
+
+    return None
 
 
 # Shared module-level clients. Import these elsewhere rather than calling

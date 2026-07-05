@@ -1,31 +1,35 @@
 """User authentication and route management endpoints.
 
-Provides registration, login, route CRUD, and ``GET /auth/me`` using
-Supabase Auth for identity and Supabase tables for route storage.
+Provides OAuth-based authentication (Google/GitHub via Supabase Auth) and
+route CRUD operations. Email/password endpoints are deprecated since 2026-07-05
+and return ``410 Gone`` to encourage OAuth adoption.
 """
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, status
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.config import settings
-from app.database import supabase_client, admin
-from app.models import RouteCreate, RouteResponse, RouteUpdate, User, Token
+from app.database import admin, verify_api_key, generate_api_key
+from app.models import (
+    RouteCreate,
+    RouteResponse,
+    RouteUpdate,
+    ApiKeyRotateRequest,
+    RouteCreateResponse,
+    User,
+    Token,
+)
 
-router = APIRouter(prefix="/auth", tags=["User Authentication"])
+router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
 
 
 # ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
 class AuthCredentials(BaseModel):
-    """Login / registration credentials.
-
-    Attributes:
-        email: User email address.
-        password: Account password. Minimum 8 characters.
-    """
+    """Login / registration credentials (deprecated)."""
 
     model_config = ConfigDict(strict=True, str_strip_whitespace=True)
 
@@ -36,10 +40,10 @@ class AuthCredentials(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-async def get_current_user(
+async def get_current_user_from_jwt(
     authorization: Optional[str] = Header(None),
 ) -> User:
-    """Return the current authenticated user from the request headers.
+    """Return the current authenticated user from a JWT Bearer token.
 
     Args:
         authorization: ``Authorization: Bearer <token>`` header.
@@ -51,132 +55,142 @@ async def get_current_user(
         HTTPException: 401 if the token is missing or invalid.
     """
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid authorization header",
+        )
 
     token = authorization.split(" ", 1)[1]
 
     try:
-        result = supabase_client.auth.get_user(token)
+        result = admin.auth.get_user(token)
         if not result.user:
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token",
+            )
         return User(
             id=result.user.id,
             email=result.user.email,
             full_name=getattr(result.user, "full_name", None),
             created_at=result.user.created_at,
         )
+    except HTTPException:
+        raise
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
+
+async def get_current_user_from_api_key(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> tuple[User, str]:
+    """Return the route owner and route ID from a valid API key.
+
+    Args:
+        x_api_key: ``X-API-Key: sk_live_xxx`` header.
+
+    Returns:
+        A tuple of ``(route_owner_user, route_id)``.
+
+    Raises:
+        HTTPException: 401 if the API key is missing or invalid.
+    """
+    if not x_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-API-Key header",
+        )
+
+    route_id = verify_api_key(x_api_key)
+    if not route_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+
+    route_result = (
+        admin.table("routes").select("user_id").eq("id", route_id).execute()
+    )
+
+    if not route_result.data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Route not found for API key",
+        )
+
+    user_id = route_result.data[0]["user_id"]
+
+    # Fetch the user profile.
+    user_result = admin.auth.admin.get_user_by_id(user_id)
+    if not user_result.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found for API key",
+        )
+
+    user = User(
+        id=user_result.user.id,
+        email=user_result.user.email,
+        full_name=getattr(user_result.user, "full_name", None),
+        created_at=user_result.user.created_at,
+    )
+
+    return user, route_id
 
 
 # ---------------------------------------------------------------------------
-# Auth endpoints
+# Deprecated email/password auth
 # ---------------------------------------------------------------------------
-@router.post("/register", response_model=Token)
+@router.post("/register", status_code=status.HTTP_410_GONE)
 async def register_user(credentials: AuthCredentials):
-    """Register a new user via Supabase Auth.
+    """Register a new user with email and password.
 
-    Args:
-        credentials: Email and password for the new account.
+    .. deprecated::
+        Email/password registration is deprecated. Use OAuth instead.
 
     Returns:
-        Access token if registration succeeds.
-
-    Raises:
-        HTTPException: 400 with detail from Supabase if registration fails.
+        410 Gone with instructions to use OAuth.
     """
-    try:
-        result = supabase_client.auth.sign_up(
-            {
-                "email": credentials.email,
-                "password": credentials.password,
-            }
-        )
-
-        if result.session is None:
-            error_message = getattr(result, "error", None)
-            detail = (
-                error_message.message
-                if error_message and error_message.message
-                else "Registration failed. Check that signups are enabled in Supabase Auth."
-            )
-            raise HTTPException(status_code=400, detail=detail)
-
-        return Token(
-            access_token=result.session.access_token,
-            token_type="bearer",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        detail = "Registration failed. Please try again."
-        status_code = 400
-
-        # Preserve rate-limit errors so clients see 429 instead of 400.
-        if hasattr(e, "status_code") and e.status_code == 429:
-            status_code = 429
-            detail = "Too many requests. Please wait a minute and try again."
-        elif hasattr(e, "message") and e.message:
-            detail = e.message
-        elif hasattr(e, "args") and e.args:
-            detail = str(e.args[0])
-
-        raise HTTPException(status_code=status_code, detail=detail)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Email/password registration is deprecated. "
+              "Use /auth/oauth/google or /auth/oauth/github instead.",
+    )
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", status_code=status.HTTP_410_GONE)
 async def login_user(credentials: AuthCredentials):
-    """Authenticate an existing user and return an access token.
+    """Login with email and password.
 
-    Args:
-        credentials: Email and password.
+    .. deprecated::
+        Email/password login is deprecated. Use OAuth instead.
 
     Returns:
-        Access token for subsequent authenticated requests.
-
-    Raises:
-        HTTPException: 401 if credentials are invalid, 429 on rate limit.
+        410 Gone with instructions to use OAuth.
     """
-    try:
-        result = supabase_client.auth.sign_in_with_password(
-            {
-                "email": credentials.email,
-                "password": credentials.password,
-            }
-        )
-
-        if result.session is None:
-            error_message = getattr(result, "error", None)
-            detail = (
-                error_message.message
-                if error_message and error_message.message
-                else "Invalid email or password."
-            )
-            raise HTTPException(status_code=401, detail=detail)
-
-        return Token(
-            access_token=result.session.access_token,
-            token_type="bearer",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        detail = "Invalid email or password."
-        status_code = 401
-
-        if hasattr(e, "status_code") and e.status_code == 429:
-            status_code = 429
-            detail = "Too many requests. Please wait a minute and try again."
-        elif hasattr(e, "message") and e.message:
-            detail = e.message
-        elif hasattr(e, "args") and e.args:
-            detail = str(e.args[0])
-
-        raise HTTPException(status_code=status_code, detail=detail)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Email/password login is deprecated. "
+              "Use /auth/oauth/google or /auth/oauth/github instead.",
+    )
 
 
+# ---------------------------------------------------------------------------
+# OAuth endpoints (defined in oauth.py, imported for Swagger grouping)
+# ---------------------------------------------------------------------------
+# The actual OAuth endpoints are registered in oauth.py and mounted
+# in main.py alongside this router. They appear here in the docs for
+# discoverability.
+
+
+# ---------------------------------------------------------------------------
+# Session / profile
+# ---------------------------------------------------------------------------
 @router.get("/me", response_model=User)
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
     """Return the currently authenticated user's profile.
 
     Returns:
@@ -188,27 +202,32 @@ async def get_me(current_user: User = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # Route CRUD
 # ---------------------------------------------------------------------------
-@router.post("/routes", response_model=RouteResponse)
+@router.post("/routes", response_model=RouteCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_route(
     route_data: RouteCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Create a new proxy route for the authenticated user.
+
+    Generates a public ``slug`` from the route name and a unique API key
+    for programmatic route management. The full API key is returned only
+    once — store it securely.
 
     Args:
         route_data: Route configuration (name, destination URL, method).
         current_user: Injected authenticated user.
 
     Returns:
-        The created :class:`RouteResponse`.
+        The created :class:`RouteCreateResponse` including the API key.
 
     Raises:
         HTTPException: 409 if a route with the same name already exists.
         HTTPException: 500 if database insertion fails.
     """
-    # Generate a unique slug from the name.
     slug_base = route_data.name.lower().replace(" ", "-")
     slug = f"{slug_base}-{current_user.id[:8]}"
+
+    full_key, key_prefix, key_hash = generate_api_key()
 
     try:
         result = admin.table("routes").insert(
@@ -219,22 +238,50 @@ async def create_route(
                 "destination_url": str(route_data.destination_url),
                 "method": route_data.method,
                 "headers": route_data.headers,
-                "is_active": True,
+                "api_key_prefix": key_prefix,
+                "api_key_hash": key_hash,
             }
         ).execute()
 
         if not result.data:
-            raise HTTPException(status_code=500, detail="Failed to create route")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create route",
+            )
 
-        return RouteResponse(**result.data[0])
+        route = result.data[0]
+        return RouteCreateResponse(
+            id=route["id"],
+            user_id=route["user_id"],
+            name=route["name"],
+            slug=route["slug"],
+            destination_url=route["destination_url"],
+            method=route["method"],
+            headers=route["headers"],
+            is_active=route["is_active"],
+            requests_count=route["requests_count"],
+            last_used_at=route.get("last_used_at"),
+            api_key_prefix=route.get("api_key_prefix"),
+            created_at=route["created_at"],
+            updated_at=route["updated_at"],
+            api_key=full_key,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
-            raise HTTPException(status_code=409, detail="A route with this name already exists")
-        raise HTTPException(status_code=500, detail="Failed to create route")
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A route with this name already exists",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create route: {str(e)}",
+        )
 
 
 @router.get("/routes", response_model=list[RouteResponse])
-async def list_routes(current_user: User = Depends(get_current_user)):
+async def list_routes(current_user: User = Depends(get_current_user_from_jwt)):
     """List all routes owned by the authenticated user.
 
     Args:
@@ -257,7 +304,7 @@ async def list_routes(current_user: User = Depends(get_current_user)):
 @router.get("/routes/{route_id}", response_model=RouteResponse)
 async def get_route(
     route_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID.
 
@@ -280,7 +327,10 @@ async def get_route(
     )
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="Route not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
 
     return RouteResponse(**result.data[0])
 
@@ -289,7 +339,7 @@ async def get_route(
 async def update_route(
     route_id: str,
     route_data: RouteUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Update an existing route's configuration.
 
@@ -314,15 +364,18 @@ async def update_route(
         updates["destination_url"] = str(updates["destination_url"])
 
     if "slug" in updates:
-        result = (
+        existing = (
             admin.table("routes")
             .select("id")
             .eq("slug", updates["slug"])
             .neq("id", route_id)
             .execute()
         )
-        if result.data:
-            raise HTTPException(status_code=409, detail="Slug already in use")
+        if existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slug already in use",
+            )
 
     try:
         result = (
@@ -334,28 +387,36 @@ async def update_route(
         )
 
         if not result.data:
-            raise HTTPException(status_code=404, detail="Route not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Route not found",
+            )
 
         return RouteResponse(**result.data[0])
+    except HTTPException:
+        raise
     except Exception as e:
-        if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
-            raise HTTPException(status_code=409, detail="Slug already in use")
-        raise HTTPException(status_code=500, detail="Failed to update route")
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slug already in use",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update route: {str(e)}",
+        )
 
 
-@router.delete("/routes/{route_id}")
+@router.delete("/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_route(
     route_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Delete a route owned by the authenticated user.
 
     Args:
         route_id: The UUID of the route to delete.
         current_user: Injected authenticated user.
-
-    Returns:
-        Empty 204 response on success.
 
     Raises:
         HTTPException: 404 if the route does not exist or belongs to another user.
@@ -369,6 +430,61 @@ async def delete_route(
     )
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="Route not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
 
     return None
+
+
+@router.post("/routes/{route_id}/rotate-key", response_model=RouteResponse)
+async def rotate_api_key(
+    route_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Rotate the API key for a route.
+
+    Generates a new API key and invalidates the old one. The new key is
+    returned only once — store it securely.
+
+    Args:
+        route_id: The UUID of the route to rotate the key for.
+        current_user: Injected authenticated user.
+
+    Returns:
+        The updated :class:`RouteResponse` with the new API key prefix.
+
+    Raises:
+        HTTPException: 404 if the route does not exist or belongs to another user.
+    """
+    full_key, key_prefix, key_hash = generate_api_key()
+
+    try:
+        result = (
+            admin.table("routes")
+            .update(
+                {
+                    "api_key_prefix": key_prefix,
+                    "api_key_hash": key_hash,
+                }
+            )
+            .eq("id", route_id)
+            .eq("user_id", current_user.id)
+            .execute()
+        )
+
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Route not found",
+            )
+
+        return RouteResponse(**result.data[0])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rotate API key: {str(e)}",
+        )

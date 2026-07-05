@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str
     SUPABASE_SERVICE_ROLE_KEY: str
     WEBHOOK_SECRET: str
+    API_KEY_SALT: str
     ENVIRONMENT: str = "development"
 
     @property

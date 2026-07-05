@@ -48,18 +48,6 @@ class RouteCreate(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
-class RouteUpdate(BaseModel):
-    """Schema for updating an existing route. All fields are optional."""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    destination_url: Optional[HttpsUrl] = None
-    method: Optional[str] = Field(None, pattern="^(GET|POST|PUT|PATCH|DELETE)$")
-    headers: Optional[dict[str, str]] = None
-    is_active: Optional[bool] = None
-
-
 class RouteResponse(BaseModel):
     """Schema returned when reading a route from the API.
 
@@ -74,6 +62,7 @@ class RouteResponse(BaseModel):
         is_active: Whether the route accepts traffic.
         requests_count: Total forwarded requests.
         last_used_at: ISO 8601 timestamp of the most recent request.
+        api_key_prefix: First 8 characters of the API key for identification.
         created_at: ISO 8601 timestamp of creation.
         updated_at: ISO 8601 timestamp of last modification.
     """
@@ -90,8 +79,79 @@ class RouteResponse(BaseModel):
     is_active: bool
     requests_count: int
     last_used_at: Optional[str] = None
+    api_key_prefix: Optional[str] = None
     created_at: str
     updated_at: str
+
+
+class RouteCreateResponse(RouteResponse):
+    """Schema returned after creating a route, includes the full API key.
+
+    Attributes:
+        api_key: The full API key. Shown only once at creation time.
+            Store it securely; it cannot be retrieved again.
+    """
+
+    api_key: str
+
+
+class RouteUpdate(BaseModel):
+    """Schema for updating an existing route. All fields are optional."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    destination_url: Optional[HttpsUrl] = None
+    method: Optional[str] = Field(None, pattern="^(GET|POST|PUT|PATCH|DELETE)$")
+    headers: Optional[dict[str, str]] = None
+    is_active: Optional[bool] = None
+
+
+class WebhookLogResponse(BaseModel):
+    """Schema for a single webhook delivery log entry."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    route_id: str
+    status_code: Optional[int] = None
+    duration_ms: Optional[int] = None
+    error_message: Optional[str] = None
+    created_at: str
+
+
+class User(BaseModel):
+    """Public user profile returned by the API."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    email: str
+    full_name: Optional[str] = None
+    created_at: str
+
+
+class UserCreate(BaseModel):
+    """Schema for registering a new user."""
+
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
+
+    email: str = Field(..., pattern="^[^@]+@[^@]+\\.[^@]+$")
+    password: str = Field(..., min_length=8, max_length=128)
+    full_name: Optional[str] = Field(None, max_length=100)
+
+
+class Token(BaseModel):
+    """OAuth2-compatible token response."""
+
+    access_token: str
+    token_type: str = "bearer"
+
+
+class ApiKeyRotateRequest(BaseModel):
+    """Schema for rotating a route's API key."""
+
+    route_id: str
 
 
 # ---------------------------------------------------------------------------

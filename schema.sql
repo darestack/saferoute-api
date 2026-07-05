@@ -18,6 +18,8 @@ create table public.routes (
     is_active boolean default true,
     requests_count integer default 0,
     last_used_at timestamp with time zone,
+    api_key_prefix text,
+    api_key_hash text,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -27,6 +29,9 @@ create index idx_routes_slug on public.routes(slug);
 
 -- Index for user's routes
 create index idx_routes_user_id on public.routes(user_id);
+
+-- Index for API key lookups
+create index idx_routes_api_key_hash on public.routes(api_key_hash);
 
 -- ========================================
 -- Webhook Logs Table
