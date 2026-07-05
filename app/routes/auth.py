@@ -19,6 +19,7 @@ from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.config import settings
+from app.crypto import decrypt_webhook_secret, encrypt_webhook_secret
 from app.database import admin, verify_api_key, generate_api_key
 from app.models import (
     RouteCreate,
@@ -292,7 +293,7 @@ def _route_to_response(route: dict, api_key: Optional[str] = None) -> dict:
         "last_used_at": route.get("last_used_at"),
         "api_key_prefix": route.get("api_key_prefix"),
         "rate_limit": route.get("rate_limit", 30),
-        "has_webhook_secret": bool(route.get("webhook_secret")),
+        "has_webhook_secret": bool(decrypt_webhook_secret(route.get("webhook_secret"))),
         "has_transform": bool(
             route.get("transform_body_template")
             or route.get("transform_headers")
@@ -373,7 +374,7 @@ async def create_route(
     }
 
     if route_data.webhook_secret:
-        insert_data["webhook_secret"] = route_data.webhook_secret
+        insert_data["webhook_secret"] = encrypt_webhook_secret(route_data.webhook_secret)
     if route_data.transform_body_template:
         insert_data["transform_body_template"] = route_data.transform_body_template
 
@@ -476,6 +477,9 @@ async def update_route(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Slug already in use",
             )
+
+    if "webhook_secret" in updates and updates["webhook_secret"]:
+        updates["webhook_secret"] = encrypt_webhook_secret(updates["webhook_secret"])
 
     try:
         result = (

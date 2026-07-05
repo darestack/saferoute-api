@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = ""
     API_KEY_SALT: str
     RETRY_ENDPOINT_SECRET: str = ""
+    ENCRYPTION_KEY: str = ""
     FRONTEND_URL: str = "http://localhost:8000"
     ENVIRONMENT: str = "development"
 

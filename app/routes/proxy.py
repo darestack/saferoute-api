@@ -24,6 +24,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config import settings
+from app.crypto import decrypt_webhook_secret
 from app.database import admin, bump_route_metrics_atomic
 
 logger = logging.getLogger(__name__)
@@ -523,7 +524,8 @@ async def proxy_webhook(
     route = route_result.data[0]
 
     # --- Signature verification ---
-    webhook_secret = route.get("webhook_secret")
+    raw_webhook_secret = route.get("webhook_secret")
+    webhook_secret = decrypt_webhook_secret(raw_webhook_secret)
     if webhook_secret:
         signature = x_hub_signature_256 or x_webhook_signature
         if not signature:

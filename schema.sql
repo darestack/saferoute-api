@@ -1,8 +1,9 @@
 -- SafeRoute API Database Schema
 -- Run this in your Supabase SQL Editor
 
--- Enable UUID generation
+-- Enable extensions
 create extension if not exists "uuid-ossp";
+create extension if not exists "pgcrypto";
 
 -- ========================================
 -- Routes Table
