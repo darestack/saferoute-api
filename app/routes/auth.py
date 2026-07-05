@@ -25,6 +25,7 @@ from app.models import (
     RouteResponse,
     RouteUpdate,
     RouteCreateResponse,
+    RouteStats,
     User,
     UserCreate,
     Token,
@@ -710,3 +711,69 @@ async def list_route_logs(
     )
 
     return [WebhookLogResponse(**row) for row in result.data]
+
+
+@router.get(
+    "/routes/{route_id}/stats",
+    response_model=RouteStats,
+)
+async def get_route_stats(
+    route_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Get aggregated delivery statistics for a route.
+
+    Computes success rate, average latency, and request volume from
+    ``webhook_logs``.
+
+    Args:
+        route_id: The UUID of the route.
+        current_user: Injected authenticated user.
+
+    Returns:
+        A :class:`RouteStats` object with aggregated metrics.
+
+    Raises:
+        HTTPException: 404 if the route does not exist or belongs to another user.
+    """
+    route_check = (
+        admin.table("routes")
+        .select("id, requests_count, last_used_at")
+        .eq("id", route_id)
+        .eq("user_id", current_user.id)
+        .execute()
+    )
+
+    if not route_check.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
+
+    route = route_check.data[0]
+
+    logs_result = (
+        admin.table("webhook_logs")
+        .select("status_code, duration_ms, created_at")
+        .eq("route_id", route_id)
+        .execute()
+    )
+
+    logs = logs_result.data or []
+    total_requests = len(logs)
+    success_count = sum(1 for log in logs if log.get("status_code") and 200 <= log["status_code"] < 300)
+    error_count = total_requests - success_count
+    avg_duration_ms = (
+        sum(log["duration_ms"] for log in logs if log.get("duration_ms") is not None) / total_requests
+        if total_requests > 0
+        else None
+    )
+
+    return RouteStats(
+        route_id=route_id,
+        total_requests=total_requests,
+        success_count=success_count,
+        error_count=error_count,
+        avg_duration_ms=avg_duration_ms,
+        last_used_at=route.get("last_used_at"),
+    )

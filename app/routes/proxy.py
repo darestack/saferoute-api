@@ -314,12 +314,113 @@ def bump_route_metrics_atomic(route_id: str) -> None:
         logger.exception("Failed to bump metrics for route %s", route_id)
 
 
+def get_idempotency_response(route_id: str, idempotency_key: str) -> Optional[dict]:
+    """Look up a cached response for an idempotency key.
+
+    Args:
+        route_id: The route UUID.
+        idempotency_key: The idempotency key from the request header.
+
+    Returns:
+        Cached response dict if found and not expired, otherwise None.
+    """
+    result = (
+        admin.table("idempotency_keys")
+        .select("*")
+        .eq("route_id", route_id)
+        .eq("idempotency_key", idempotency_key)
+        .gt("expires_at", datetime.now(timezone.utc).isoformat())
+        .execute()
+    )
+
+    if result.data:
+        row = result.data[0]
+        return {
+            "status_code": row["response_status"],
+            "response_body": row["response_body"],
+            "response_headers": row["response_headers"],
+        }
+
+    return None
+
+
+def store_idempotency_response(
+    route_id: str,
+    idempotency_key: str,
+    status_code: int,
+    response_body: str,
+    response_headers: dict,
+) -> None:
+    """Store a response for an idempotency key.
+
+    Args:
+        route_id: The route UUID.
+        idempotency_key: The idempotency key from the request header.
+        status_code: HTTP status code of the response.
+        response_body: Response body text.
+        response_headers: Response headers dict.
+    """
+    try:
+        admin.table("idempotency_keys").upsert(
+            {
+                "route_id": route_id,
+                "idempotency_key": idempotency_key,
+                "response_status": status_code,
+                "response_body": response_body,
+                "response_headers": response_headers,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
+            },
+            on_conflict="route_id, idempotency_key",
+        ).execute()
+    except Exception:
+        logger.exception("Failed to store idempotency response for route %s", route_id)
+
+
+def apply_transforms(body: bytes, transform_rules: dict, content_type: str) -> bytes:
+    """Apply payload transformation rules to the request body.
+
+    Currently supports:
+    - ``add_headers``: Extra headers to inject into the forwarded request.
+    - ``replace_fields``: Simple string replacement in JSON/form bodies.
+
+    Args:
+        body: Raw request body bytes.
+        transform_rules: Transformation configuration dict.
+        content_type: The ``Content-Type`` header value.
+
+    Returns:
+        Transformed body bytes, or original body if no transforms apply.
+    """
+    if not transform_rules or not body:
+        return body
+
+    try:
+        add_headers = transform_rules.get("add_headers", {})
+        replace_fields = transform_rules.get("replace_fields", {})
+
+        if not replace_fields:
+            return body
+
+        if "application/json" in content_type:
+            payload = json.loads(body)
+            for key, value in replace_fields.items():
+                if key in payload:
+                    payload[key] = value
+            return json.dumps(payload).encode("utf-8")
+
+        return body
+    except Exception:
+        logger.exception("Failed to apply transforms")
+        return body
+
+
 @router.post("/v1/route/{slug}")
 async def proxy_webhook(
     slug: str,
     request: Request,
     user_agent: Optional[str] = Header(None),
     x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """Receive a webhook, validate it, forward it, and log the result.
 
@@ -327,17 +428,21 @@ async def proxy_webhook(
         1. Parse the raw body (JSON or form-urlencoded).
         2. Strip known honeypot fields silently.
         3. Verify webhook signature if provided.
-        4. Look up the active route by ``slug``.
-        5. Enforce per-IP rate limiting.
-        6. Forward the raw payload to the destination URL/method.
-        7. Log the delivery attempt.
-        8. Update route metrics.
+        4. Check idempotency key cache.
+        5. Look up the active route by ``slug``.
+        6. Enforce per-IP rate limiting.
+        7. Apply payload transformations.
+        8. Forward the raw payload to the destination URL/method.
+        9. Store response in idempotency cache (if key provided).
+        10. Log the delivery attempt.
+        11. Update route metrics.
 
     Args:
         slug: The public route slug from the URL path.
         request: The incoming FastAPI request.
         user_agent: ``User-Agent`` header, if present.
         x_hub_signature_256: ``X-Hub-Signature-256`` header for HMAC verification.
+        idempotency_key: ``Idempotency-Key`` header for deduplication.
 
     Returns:
         JSON with ``status`` and ``destination_status``.
@@ -376,18 +481,43 @@ async def proxy_webhook(
     route = route_result.data[0]
     destination = route["destination_url"]
     method = route.get("method", "POST")
-    extra_headers = route.get("headers", {})
+    extra_headers = dict(route.get("headers", {}))
+    transform_rules = route.get("transform_rules", {})
+
+    # Check idempotency cache first.
+    if idempotency_key:
+        cached = get_idempotency_response(route["id"], idempotency_key)
+        if cached:
+            return {
+                "status": "idempotent",
+                "destination_status": cached["status_code"],
+            }
 
     enforce_rate_limit(route["id"], client_ip)
+
+    # Apply transformations.
+    transformed_body = apply_transforms(body, transform_rules, content_type)
+    if transform_rules.get("add_headers"):
+        extra_headers.update(transform_rules["add_headers"])
 
     status_code, response_body, response_headers = await forward_with_retry(
         method=method,
         url=destination,
-        body=body,
+        body=transformed_body,
         headers=extra_headers,
     )
 
     duration_ms = int((time.perf_counter() - start_time) * 1000)
+
+    # Store idempotency response.
+    if idempotency_key:
+        store_idempotency_response(
+            route_id=route["id"],
+            idempotency_key=idempotency_key,
+            status_code=status_code,
+            response_body=response_body,
+            response_headers=response_headers,
+        )
 
     log_delivery(
         route_id=route["id"],

@@ -38,6 +38,8 @@ class RouteCreate(BaseModel):
         destination_url: The HTTPS endpoint to forward webhooks to.
         method: HTTP method used when forwarding.
         headers: Optional extra headers to attach to the forwarded request.
+        rate_limit_per_minute: Optional per-route rate limit override.
+        transform_rules: Optional payload transformation rules.
     """
 
     model_config = ConfigDict(strict=True, str_strip_whitespace=True)
@@ -46,6 +48,8 @@ class RouteCreate(BaseModel):
     destination_url: HttpsUrl
     method: str = Field(default="POST", pattern="^(GET|POST|PUT|PATCH|DELETE)$")
     headers: dict[str, str] = Field(default_factory=dict)
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1, le=1000)
+    transform_rules: dict = Field(default_factory=dict)
 
 
 class RouteResponse(BaseModel):
@@ -63,6 +67,8 @@ class RouteResponse(BaseModel):
         requests_count: Total forwarded requests.
         last_used_at: ISO 8601 timestamp of the most recent request.
         api_key_prefix: First 8 characters of the API key for identification.
+        rate_limit_per_minute: Per-route rate limit override.
+        transform_rules: Payload transformation rules.
         created_at: ISO 8601 timestamp of creation.
         updated_at: ISO 8601 timestamp of last modification.
     """
@@ -80,6 +86,8 @@ class RouteResponse(BaseModel):
     requests_count: int
     last_used_at: Optional[str] = None
     api_key_prefix: Optional[str] = None
+    rate_limit_per_minute: Optional[int] = None
+    transform_rules: dict = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
@@ -105,6 +113,8 @@ class RouteUpdate(BaseModel):
     method: Optional[str] = Field(None, pattern="^(GET|POST|PUT|PATCH|DELETE)$")
     headers: Optional[dict[str, str]] = None
     is_active: Optional[bool] = None
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1, le=1000)
+    transform_rules: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +189,23 @@ class Token(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+class RouteStats(BaseModel):
+    """Aggregated webhook delivery statistics for a route.
+
+    Attributes:
+        route_id: The route UUID.
+        total_requests: Total delivery attempts.
+        success_count: Requests returning 2xx from destination.
+        error_count: Requests returning 4xx/5xx or failing.
+        avg_duration_ms: Average processing time in milliseconds.
+        last_used_at: ISO 8601 timestamp of the most recent request.
+    """
+
+    route_id: str
+    total_requests: int
+    success_count: int
+    error_count: int
+    avg_duration_ms: Optional[float] = None
+    last_used_at: Optional[str] = None

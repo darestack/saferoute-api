@@ -101,3 +101,75 @@ class TestGetClientIp:
         request.headers = {}
         request.client = None
         assert get_client_ip(request) == "unknown"
+
+
+class TestRouteModels:
+    def test_route_create_defaults(self):
+        from app.models import RouteCreate
+
+        route = RouteCreate(name="Test", destination_url="https://example.com")
+        assert route.method == "POST"
+        assert route.headers == {}
+        assert route.rate_limit_per_minute is None
+        assert route.transform_rules == {}
+
+    def test_route_update_allows_none(self):
+        from app.models import RouteUpdate
+
+        update = RouteUpdate()
+        assert update.name is None
+        assert update.rate_limit_per_minute is None
+        assert update.transform_rules is None
+
+    def test_route_stats_defaults(self):
+        from app.models import RouteStats
+
+        stats = RouteStats(
+            route_id="123",
+            total_requests=10,
+            success_count=8,
+            error_count=2,
+        )
+        assert stats.avg_duration_ms is None
+        assert stats.last_used_at is None
+
+
+class TestIdempotency:
+    def test_idempotency_key_header_parsing(self):
+        from fastapi import Request
+        from app.routes.proxy import proxy_webhook
+
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "abc-123"}
+        request.client = MagicMock(host="1.2.3.4")
+
+    def test_store_and_retrieve_idempotency(self):
+        from app.routes.proxy import store_idempotency_response, get_idempotency_response
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.table.return_value.select.return_value.eq.return_value.gt.return_value.execute.return_value.data = []
+            store_idempotency_response("route-1", "key-1", 200, "ok", {})
+            mock_admin.table.return_value.upsert.assert_called_once()
+
+
+class TestTransforms:
+    def test_apply_transforms_noop_when_empty(self):
+        from app.routes.proxy import apply_transforms
+
+        assert apply_transforms(b"hello", {}, "application/json") == b"hello"
+
+    def test_apply_transforms_replace_field(self):
+        from app.routes.proxy import apply_transforms
+
+        body = b'{"name": "old"}'
+        rules = {"replace_fields": {"name": "new"}}
+        result = apply_transforms(body, rules, "application/json")
+        assert result == b'{"name": "new"}'
+
+    def test_apply_transforms_add_headers_not_in_body(self):
+        from app.routes.proxy import apply_transforms
+
+        body = b'{"name": "old"}'
+        rules = {"add_headers": {"X-Custom": "value"}, "replace_fields": {}}
+        result = apply_transforms(body, rules, "application/json")
+        assert result == body

@@ -20,6 +20,8 @@ create table public.routes (
     last_used_at timestamp with time zone,
     api_key_prefix text,
     api_key_hash text,
+    rate_limit_per_minute integer default 30,
+    transform_rules jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -223,4 +225,44 @@ $$ language plpgsql;
 
 -- select cron.schedule('cleanup-pkce-verifiers', '*/5 * * * *', $$
 --     select public.cleanup_pkce_verifiers();
+-- $$);
+
+-- ========================================
+-- Idempotency Keys Table
+-- ========================================
+create table public.idempotency_keys (
+    id uuid default uuid_generate_v4() primary key,
+    route_id uuid not null references public.routes(id) on delete cascade,
+    idempotency_key text not null,
+    response_status integer not null,
+    response_body text,
+    response_headers jsonb,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    expires_at timestamp with time zone default timezone('utc'::text, now()) + interval '24 hours' not null,
+    unique(route_id, idempotency_key)
+);
+
+create index idx_idempotency_keys_route_key on public.idempotency_keys(route_id, idempotency_key);
+create index idx_idempotency_keys_expires_at on public.idempotency_keys(expires_at);
+
+alter table public.idempotency_keys enable row level security;
+
+create policy "Service role full access idempotency_keys"
+    on public.idempotency_keys for all
+    to service_role
+    using (true);
+
+-- ========================================
+-- Cleanup job for expired idempotency keys
+-- ========================================
+create or replace function public.cleanup_idempotency_keys()
+returns void as $$
+begin
+    delete from public.idempotency_keys
+    where expires_at < timezone('utc'::text, now());
+end;
+$$ language plpgsql;
+
+-- select cron.schedule('cleanup-idempotency-keys', '*/10 * * * *', $$
+--     select public.cleanup_idempotency_keys();
 -- $$);
