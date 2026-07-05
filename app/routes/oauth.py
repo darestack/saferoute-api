@@ -2,9 +2,9 @@
 
 Provides Google and GitHub OAuth flows via Supabase Auth. The frontend
 should open the URL returned by ``/auth/oauth/{provider}`` in a browser
-or popup. After the user authenticates, the OAuth provider redirects to
-``/auth/callback`` with an authorization code, which this module exchanges
-for a Supabase JWT session.
+or popup. Supabase handles state and PKCE internally. After the user
+authenticates, the OAuth provider redirects to ``/auth/callback`` with
+an authorization code, which this module exchanges for a JWT session.
 """
 
 from typing import Optional
@@ -40,9 +40,8 @@ async def oauth_redirect(provider: str):
 
     Supported providers: ``google``, ``github``.
 
-    The post-auth redirect is controlled by the ``FRONTEND_URL`` environment
-    variable. After the user authenticates, Supabase redirects them back to
-    ``<FRONTEND_URL>/auth/callback``.
+    Supabase handles state and PKCE internally. After the user authenticates,
+    they are redirected to ``FRONTEND_URL/auth/callback``.
 
     Args:
         provider: The OAuth provider name.
@@ -78,15 +77,14 @@ async def oauth_redirect(provider: str):
 
 
 @router.get("/callback", response_model=CallbackResponse)
-async def oauth_callback(code: str = Query(...), state: Optional[str] = Query(None)):
+async def oauth_callback(code: str = Query(...)):
     """Handle the OAuth callback from Supabase.
 
     Supabase redirects here after the user authenticates with the provider.
-    We exchange the authorization code for a session.
+    Exchange the authorization code for a session.
 
     Args:
         code: The authorization code from the OAuth provider.
-        state: Optional state parameter for CSRF protection.
 
     Returns:
         Access token and user info on success.
@@ -95,9 +93,7 @@ async def oauth_callback(code: str = Query(...), state: Optional[str] = Query(No
         HTTPException: 400 if the code exchange fails.
     """
     try:
-        result = supabase_client.auth.exchange_code_for_session(
-            {"auth_code": code}
-        )
+        result = supabase_client.auth.exchange_code_for_session({"auth_code": code})
 
         if result.session is None:
             raise HTTPException(
