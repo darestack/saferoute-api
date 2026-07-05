@@ -1,12 +1,3 @@
-"""User authentication and route management endpoints.
-
-Provides OAuth-based authentication (Google/GitHub via Supabase Auth) and
-route CRUD operations. Email/password endpoints are deprecated since 2026-07-05
-and return ``410 Gone`` to encourage OAuth adoption.
-"""
-
-from typing import Optional
-
 from fastapi import APIRouter, HTTPException, Depends, Header, status
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -45,6 +36,9 @@ async def get_current_user_from_jwt(
 ) -> User:
     """Return the current authenticated user from a JWT Bearer token.
 
+    Validates the token locally using PyJWT and Supabase JWKS, then fetches
+    the user profile from Supabase Auth using the service-role client.
+
     Args:
         authorization: ``Authorization: Bearer <token>`` header.
 
@@ -52,7 +46,7 @@ async def get_current_user_from_jwt(
         The authenticated :class:`User`.
 
     Raises:
-        HTTPException: 401 if the token is missing or invalid.
+        HTTPException: 401 if the token is missing, invalid, or expired.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -63,24 +57,80 @@ async def get_current_user_from_jwt(
     token = authorization.split(" ", 1)[1]
 
     try:
-        result = await supabase_client.auth.get_user(token)
-        if not result.user:
+        # Validate JWT locally using Supabase JWKS.
+        import jwt
+        from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
+        import httpx
+
+        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
+        async with httpx.AsyncClient() as client:
+            jwks_response = await client.get(jwks_url)
+            jwks_data = jwks_response.json()
+
+        # Find the key matching the token's kid.
+        unverified_header = jwt.get_unverified_header(token)
+        key_id = unverified_header.get("kid")
+        public_key = None
+        for key in jwks_data.get("keys", []):
+            if key.get("kid") == key_id:
+                public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+                break
+
+        if not public_key:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
+                detail="Invalid token: signing key not found",
             )
-        return User(
-            id=result.user.id,
-            email=result.user.email,
-            full_name=getattr(result.user, "full_name", None),
-            created_at=result.user.created_at,
+
+        # Verify and decode the JWT.
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["ES256", "RS256"],
+            audience="authenticated",
+            issuer=f"{settings.SUPABASE_URL}/auth/v1",
         )
+
+        user_id = payload.get("sub")
+        email = payload.get("email")
+
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: missing user ID",
+            )
+
+        # Fetch full user profile from Supabase Auth.
+        user_result = await admin.auth.admin.get_user_by_id(user_id)
+        if not user_result.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+            )
+
+        return User(
+            id=user_result.user.id,
+            email=user_result.user.email or email or "",
+            full_name=getattr(user_result.user, "full_name", None),
+            created_at=user_result.user.created_at,
+        )
+
     except HTTPException:
         raise
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+        )
+    except InvalidTokenError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}",
+        )
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            detail="Token validation failed",
         )
 
 
@@ -141,49 +191,6 @@ async def get_current_user_from_api_key(
     return user, route_id
 
 
-async def get_current_user(
-    authorization: Optional[str] = Header(None),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-) -> tuple[User, Optional[str]]:
-    """Return the current user from either JWT or API key.
-
-    Tries JWT Bearer token first. Falls back to X-API-Key header.
-
-    Returns:
-        A tuple of ``(User, route_id_or_None)``. ``route_id`` is set when
-        the user authenticated via API key.
-    """
-    # Try JWT first.
-    if authorization and authorization.startswith("Bearer "):
-        try:
-            token = authorization.split(" ", 1)[1]
-            result = await supabase_client.auth.get_user(token)
-            if result.user:
-                user = User(
-                    id=result.user.id,
-                    email=result.user.email,
-                    full_name=getattr(result.user, "full_name", None),
-                    created_at=result.user.created_at,
-                )
-                return user, None
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-
-    # Fall back to API key.
-    if x_api_key:
-        try:
-            return await get_current_user_from_api_key(x_api_key)
-        except HTTPException:
-            pass
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing Authorization header or X-API-Key",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Deprecated email/password auth
 # ---------------------------------------------------------------------------
@@ -222,20 +229,10 @@ async def login_user(credentials: AuthCredentials):
 
 
 # ---------------------------------------------------------------------------
-# OAuth endpoints (defined in oauth.py, imported for Swagger grouping)
-# ---------------------------------------------------------------------------
-# The actual OAuth endpoints are registered in oauth.py and mounted
-# in main.py alongside this router. They appear here in the docs for
-# discoverability.
-
-
-# ---------------------------------------------------------------------------
 # Session / profile
 # ---------------------------------------------------------------------------
 @router.get("/me", response_model=User)
-async def get_me(
-    current_user: User = Depends(get_current_user_from_jwt),
-):
+async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
     """Return the currently authenticated user's profile.
 
     Returns:
@@ -329,8 +326,6 @@ async def create_route(
 async def list_routes(current_user: User = Depends(get_current_user_from_jwt)):
     """List all routes owned by the authenticated user.
 
-    Requires JWT authentication. API keys cannot list all routes.
-
     Args:
         current_user: Injected authenticated user.
 
@@ -354,8 +349,6 @@ async def get_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID.
-
-    Requires JWT authentication.
 
     Args:
         route_id: The UUID of the route.
@@ -392,7 +385,8 @@ async def update_route(
 ):
     """Update an existing route's configuration.
 
-    Requires JWT authentication.
+    Only the fields provided in the request body are updated. Unspecified
+    fields remain unchanged.
 
     Args:
         route_id: The UUID of the route to update.
@@ -461,8 +455,6 @@ async def delete_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Delete a route owned by the authenticated user.
-
-    Requires JWT authentication.
 
     Args:
         route_id: The UUID of the route to delete.
@@ -550,10 +542,6 @@ async def rotate_api_key(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to rotate API key: {str(e)}",
-        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to rotate API key: {str(e)}",
