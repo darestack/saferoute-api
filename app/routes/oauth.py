@@ -2,11 +2,17 @@
 
 Provides Google and GitHub OAuth flows via Supabase Auth. The frontend
 should open the URL returned by ``/auth/oauth/{provider}`` in a browser
-or popup. Supabase handles state and PKCE internally. After the user
-authenticates, the OAuth provider redirects to ``/auth/callback`` with
-an authorization code, which this module exchanges for a JWT session.
+or popup. After the user authenticates, the OAuth provider redirects to
+``/auth/callback`` with an authorization code, which this module exchanges
+for a Supabase JWT session.
+
+PKCE is handled explicitly: a ``code_verifier`` is stored server-side per
+request and passed to ``exchange_code_for_session``.
 """
 
+import secrets
+import hashlib
+import base64
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -19,6 +25,29 @@ from app.models import Token
 router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
 
 
+# ---------------------------------------------------------------------------
+# PKCE storage
+# ---------------------------------------------------------------------------
+# In production, replace this with a short-lived Redis / DB cache.
+_pkce_store: dict[str, str] = {}
+_PKCE_CODE_VERIFIER_LENGTH = 64
+
+
+def _generate_pkce_pair() -> tuple[str, str]:
+    """Generate a PKCE code verifier and code challenge.
+
+    Returns:
+        A tuple of ``(code_verifier, code_challenge)``.
+    """
+    code_verifier = secrets.token_urlsafe(_PKCE_CODE_VERIFIER_LENGTH)
+    hashed = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    code_challenge = base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
+    return code_verifier, code_challenge
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 class OAuthRedirectResponse(BaseModel):
     """Response containing the URL to redirect the user to for OAuth."""
 
@@ -34,14 +63,18 @@ class CallbackResponse(BaseModel):
     email: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# OAuth endpoints
+# ---------------------------------------------------------------------------
 @router.get("/oauth/{provider}", response_model=OAuthRedirectResponse)
 async def oauth_redirect(provider: str):
     """Initiate an OAuth flow with the given provider.
 
     Supported providers: ``google``, ``github``.
 
-    Supabase handles state and PKCE internally. After the user authenticates,
-    they are redirected to ``FRONTEND_URL/auth/callback``.
+    Generates a PKCE pair, stores the verifier, and builds the authorize
+    URL with explicit ``redirect_to`` so the user lands back on the
+    correct frontend after auth.
 
     Args:
         provider: The OAuth provider name.
@@ -58,18 +91,30 @@ async def oauth_redirect(provider: str):
             detail=f"Unsupported provider: {provider}. Use 'google' or 'github'.",
         )
 
+    state = secrets.token_urlsafe(16)
+    code_verifier, code_challenge = _generate_pkce_pair()
+    _pkce_store[state] = code_verifier
+
     redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
 
     try:
-        auth_url = supabase_client.auth.sign_in_with_oauth(
-            {
-                "provider": provider,
-                "redirect_to": redirect_uri,
-            }
-        ).url
+        from urllib.parse import urlencode
+
+        params = {
+            "provider": provider,
+            "redirect_to": redirect_uri,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        }
+        auth_url = (
+            f"{settings.SUPABASE_URL}/auth/v1/authorize?"
+            + urlencode(params)
+        )
 
         return OAuthRedirectResponse(auth_url=auth_url)
     except Exception as e:
+        _pkce_store.pop(state, None)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to initiate OAuth flow: {str(e)}",
@@ -77,23 +122,41 @@ async def oauth_redirect(provider: str):
 
 
 @router.get("/callback", response_model=CallbackResponse)
-async def oauth_callback(code: str = Query(...)):
+async def oauth_callback(
+    code: str = Query(...),
+    state: Optional[str] = Query(None),
+):
     """Handle the OAuth callback from Supabase.
 
     Supabase redirects here after the user authenticates with the provider.
-    Exchange the authorization code for a session.
+    We exchange the authorization code for a session using the stored
+    PKCE ``code_verifier``.
 
     Args:
         code: The authorization code from the OAuth provider.
+        state: The ``state`` token returned by ``/auth/oauth/{provider}``.
 
     Returns:
         Access token and user info on success.
 
     Raises:
-        HTTPException: 400 if the code exchange fails.
+        HTTPException: 400 if the code exchange fails or state is missing.
     """
+    if not state or state not in _pkce_store:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing or invalid state parameter.",
+        )
+
+    code_verifier = _pkce_store.pop(state)
+
     try:
-        result = supabase_client.auth.exchange_code_for_session({"auth_code": code})
+        result = supabase_client.auth.exchange_code_for_session(
+            {
+                "auth_code": code,
+                "code_verifier": code_verifier,
+            }
+        )
 
         if result.session is None:
             raise HTTPException(
