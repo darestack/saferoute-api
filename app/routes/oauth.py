@@ -7,10 +7,8 @@ or popup. After the user authenticates, the OAuth provider redirects to
 for a Supabase JWT session.
 """
 
-import hashlib
+import inspect
 import logging
-import secrets
-import base64
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -19,6 +17,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import admin, supabase_client
+from app.utils.pkce import generate_pkce_pair, store_pkce_verifier, retrieve_and_delete_pkce_verifier
 
 logger = logging.getLogger(__name__)
 
@@ -28,43 +27,18 @@ router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
 # ---------------------------------------------------------------------------
 # PKCE helpers (Supabase-backed for serverless safety)
 # ---------------------------------------------------------------------------
-_PKCE_CODE_VERIFIER_LENGTH = 64
-
-
 def _generate_pkce_pair() -> tuple[str, str]:
     """Generate a PKCE code verifier and code challenge.
 
     Returns:
         A tuple of ``(code_verifier, code_challenge)``.
     """
-    code_verifier = secrets.token_urlsafe(_PKCE_CODE_VERIFIER_LENGTH)
-    hashed = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-    code_challenge = (
-        base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
-    )
-    return code_verifier, code_challenge
+    return generate_pkce_pair()
 
 
 def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
-    """Persist a PKCE verifier to the ``pkce_verifiers`` table.
-
-    This replaces the in-memory dict so the verifier survives across
-    serverless invocations and multi-worker deployments.
-
-    Args:
-        code_challenge: The S256 challenge sent to the OAuth provider.
-        code_verifier: The corresponding verifier to store.
-    """
-    try:
-        admin.table("pkce_verifiers").insert(
-            {
-                "code_challenge": code_challenge,
-                "code_verifier": code_verifier,
-            }
-        ).execute()
-    except Exception:
-        logger.exception("Failed to store PKCE verifier")
-        raise
+    """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
+    store_pkce_verifier(admin, code_challenge, code_verifier)
 
 
 def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
@@ -72,24 +46,10 @@ def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
 
     Uses the ``consume_pkce_verifier`` SQL function to prevent reuse races.
 
-    Args:
-        code_challenge: The S256 challenge to look up.
-
     Returns:
         The code verifier string, or ``None`` if not found.
     """
-    try:
-        result = (
-            admin.rpc("consume_pkce_verifier", {"p_code_challenge": code_challenge})
-            .execute()
-        )
-
-        if result.data:
-            return result.data[0]["code_verifier"]
-    except Exception:
-        logger.exception("Failed to retrieve PKCE verifier")
-
-    return None
+    return retrieve_and_delete_pkce_verifier(admin, code_challenge)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +198,8 @@ async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackRe
                 "code_verifier": code_verifier,
             }
         )
+        if inspect.isawaitable(result):
+            result = await result
 
         if result.session is None or result.user is None:
             raise HTTPException(

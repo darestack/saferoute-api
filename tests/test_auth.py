@@ -6,12 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.models import User
+from app.utils.security import generate_slug
 from app.routes.auth import (
     _cache_user,
     _fetch_and_cache_user,
     _get_cached_user,
     _USER_CACHE_MAX_SIZE,
-    _generate_slug,
 )
 
 
@@ -25,7 +25,7 @@ class TestUserCache:
             full_name="Test User",
             created_at="2026-01-01T00:00:00Z",
         )
-        _cache_user(user)
+        asyncio.run(_cache_user(user))
         cached = asyncio.run(_get_cached_user("user-1"))
         assert cached is not None
         assert cached.id == "user-1"
@@ -72,7 +72,7 @@ class TestUserCache:
                 full_name=f"User {i}",
                 created_at="2026-01-01T00:00:00Z",
             )
-            _cache_user(user)
+            asyncio.run(_cache_user(user))
 
         assert len(_user_cache_order) == _USER_CACHE_MAX_SIZE
 
@@ -83,7 +83,7 @@ class TestUserCache:
             full_name="New User",
             created_at="2026-01-01T00:00:00Z",
         )
-        _cache_user(new_user)
+        asyncio.run(_cache_user(new_user))
 
         assert len(_user_cache_order) == _USER_CACHE_MAX_SIZE
         assert "user-0000" not in _user_cache
@@ -94,15 +94,15 @@ class TestGenerateSlug:
     """Tests for slug generation and sanitization."""
 
     def test_strips_invalid_characters(self):
-        slug = _generate_slug("My!! Route!#", "user-1")
+        slug = generate_slug("My!! Route!#", "user-1")
         assert slug.startswith("my-route-")
 
     def test_collapses_double_hyphens(self):
-        slug = _generate_slug("My  Route", "user-1")
+        slug = generate_slug("My  Route", "user-1")
         assert "--" not in slug.split("-")[1:-1]  # Check middle part has no double hyphens
 
     def test_strips_leading_trailing_hyphens(self):
-        slug = _generate_slug("---Test---", "user-1")
+        slug = generate_slug("---Test---", "user-1")
         assert not slug.startswith("-")
         assert not slug.endswith("-")
 
@@ -112,10 +112,7 @@ class TestHealthEndpoint:
 
     def test_health_returns_200(self):
         with patch("app.routes.auth.admin") as mock_admin:
-            mock_admin.rpc.return_value.execute.return_value.data = None
-            # health_check is not under auth.router prefix in the current code;
-            # it's mounted at root in main.py via app.include_router(auth.router)
-            # but the actual endpoint is at /auth/health
+            mock_admin.table.return_value.select.return_value.limit.return_value.execute.return_value.data = []
             from fastapi.testclient import TestClient
             from app.main import app
 

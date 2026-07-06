@@ -7,8 +7,6 @@ webhook log retrieval, and route analytics.
 import asyncio
 import inspect
 import logging
-import re
-import secrets
 import time
 from typing import Optional
 
@@ -33,6 +31,7 @@ from app.models import (
     WebhookFailureResponse,
     WebhookFailuresResponse,
 )
+from app.utils.security import safe_error_detail, generate_slug
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +44,7 @@ _JWKS_CACHE_TTL_SECONDS = 300
 _jwks_cache: Optional[dict] = None
 _jwks_cache_expiry: float = 0.0
 _jwks_lock = asyncio.Lock()
+_jwks_client = httpx.AsyncClient(timeout=5.0)
 
 
 async def _get_cached_jwks() -> dict:
@@ -62,12 +62,11 @@ async def _get_cached_jwks() -> dict:
 
         jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(jwks_url, timeout=5.0)
-                response.raise_for_status()
-                _jwks_cache = response.json()
-                _jwks_cache_expiry = now + _JWKS_CACHE_TTL_SECONDS
-                return _jwks_cache
+            response = await _jwks_client.get(jwks_url)
+            response.raise_for_status()
+            _jwks_cache = response.json()
+            _jwks_cache_expiry = now + _JWKS_CACHE_TTL_SECONDS
+            return _jwks_cache
         except Exception:
             logger.exception("Failed to fetch JWKS from %s", jwks_url)
             raise HTTPException(
@@ -83,8 +82,8 @@ _USER_CACHE_TTL_SECONDS = 300
 _USER_CACHE_MAX_SIZE = 1000
 _user_cache: dict[str, User] = {}
 _user_cache_expiry: dict[str, float] = {}
-_user_cache_lock = asyncio.Lock()
 _user_cache_order: list[str] = []
+_user_cache_lock = asyncio.Lock()
 
 
 async def _get_cached_user(user_id: str) -> Optional[User]:
@@ -96,18 +95,19 @@ async def _get_cached_user(user_id: str) -> Optional[User]:
     return None
 
 
-def _cache_user(user: User) -> None:
+async def _cache_user(user: User) -> None:
     """Store a User in the cache with TTL and FIFO eviction."""
-    _user_cache[user.id] = user
-    _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
-    if user.id not in _user_cache_order:
-        _user_cache_order.append(user.id)
+    async with _user_cache_lock:
+        _user_cache[user.id] = user
+        _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
+        if user.id not in _user_cache_order:
+            _user_cache_order.append(user.id)
 
-    # FIFO eviction if over max size.
-    while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
-        oldest = _user_cache_order.pop(0)
-        _user_cache.pop(oldest, None)
-        _user_cache_expiry.pop(oldest, None)
+        # FIFO eviction if over max size.
+        while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
+            oldest = _user_cache_order.pop(0)
+            _user_cache.pop(oldest, None)
+            _user_cache_expiry.pop(oldest, None)
 
 
 async def _fetch_and_cache_user(user_id: str) -> User:
@@ -117,11 +117,13 @@ async def _fetch_and_cache_user(user_id: str) -> User:
         return cached
 
     async with _user_cache_lock:
-        cached = await _get_cached_user(user_id)
-        if cached:
-            return cached
+        # Double-check after acquiring lock.
+        now = time.monotonic()
+        expiry = _user_cache_expiry.get(user_id, 0.0)
+        if user_id in _user_cache and now < expiry:
+            return _user_cache[user_id]
 
-        result = admin.auth.admin.get_user_by_id(user_id)
+        result = await asyncio.to_thread(admin.auth.admin.get_user_by_id, user_id)
         if inspect.isawaitable(result):
             result = await result
 
@@ -137,7 +139,17 @@ async def _fetch_and_cache_user(user_id: str) -> User:
             full_name=getattr(result.user, "full_name", None),
             created_at=result.user.created_at,
         )
-        _cache_user(user)
+
+        # Inline cache write (already holding the lock).
+        _user_cache[user.id] = user
+        _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
+        if user.id not in _user_cache_order:
+            _user_cache_order.append(user.id)
+        while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
+            oldest = _user_cache_order.pop(0)
+            _user_cache.pop(oldest, None)
+            _user_cache_expiry.pop(oldest, None)
+
         return user
 
 
@@ -212,10 +224,10 @@ async def get_current_user_from_jwt(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
         )
-    except InvalidTokenError as exc:
+    except InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=_safe_error_detail(exc),
+            detail="Invalid token",
         )
     except Exception:
         logger.exception("Token validation failed")
@@ -264,20 +276,12 @@ async def get_current_user_from_api_key(
     return user, route_id
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers (not exported for reuse)
+# ---------------------------------------------------------------------------
 def _generate_slug(name: str, user_id: str) -> str:
     """Generate a collision-safe slug from a route name."""
-    slug_base = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))
-    slug_base = re.sub(r"-{2,}", "-", slug_base)
-    slug_base = slug_base.strip("-")[:40] or "route"
-    random_suffix = secrets.token_hex(3)
-    return f"{slug_base}-{random_suffix}"
-
-
-def _safe_error_detail(exc: Exception) -> str:
-    """Return a safe error detail — verbose in dev, generic in prod."""
-    if settings.ENVIRONMENT == "development":
-        return str(exc)
-    return "An internal error occurred"
+    return generate_slug(name, user_id)
 
 
 def _route_to_response(route: dict, api_key: Optional[str] = None) -> dict:
@@ -413,7 +417,7 @@ async def create_route(
         logger.exception("Failed to create route")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_safe_error_detail(exc),
+            detail=safe_error_detail(exc),
         )
 
 
@@ -521,7 +525,7 @@ async def update_route(
         logger.exception("Failed to update route %s", route_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_safe_error_detail(exc),
+            detail=safe_error_detail(exc),
         )
 
 
@@ -584,7 +588,7 @@ async def rotate_api_key(
         logger.exception("Failed to rotate API key for route %s", route_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_safe_error_detail(exc),
+            detail=safe_error_detail(exc),
         )
 
 
@@ -695,7 +699,8 @@ async def health_check():
     """
     db_ok = False
     try:
-        admin.rpc("increment_route_count", {"p_route_id": "00000000-0000-0000-0000-000000000000"}).execute()
+        # Read-only connectivity probe — no side effects.
+        admin.table("routes").select("id").limit(1).execute()
         db_ok = True
     except Exception:
         db_ok = False
@@ -719,11 +724,13 @@ async def list_route_failures(
 ):
     """List exhausted webhook delivery failures for a route.
 
-    Uses cursor-based pagination for stable paging.
+    Uses cursor-based pagination with ``created_at`` timestamps for stable
+    descending-chronological paging.
 
     Args:
         route_id: The route UUID.
-        cursor: Optional pagination cursor (failure ID).
+        cursor: Optional pagination cursor (ISO 8601 ``created_at`` timestamp
+            of the last item from the previous page).
         limit: Maximum number of failures to return.
         current_user: Injected authenticated user.
 
@@ -756,7 +763,7 @@ async def list_route_failures(
     )
 
     if cursor:
-        query = query.gte("id", cursor)
+        query = query.lte("created_at", cursor)
 
     result = query.execute()
 
@@ -765,7 +772,7 @@ async def list_route_failures(
     if has_next:
         failures = failures[:limit]
 
-    next_cursor = failures[-1]["id"] if has_next else None
+    next_cursor = failures[-1]["created_at"] if has_next and failures else None
 
     return WebhookFailuresResponse(
         route_id=route_id,

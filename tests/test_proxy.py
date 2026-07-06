@@ -8,16 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
-from app.routes.proxy import (
-    get_client_ip,
-    parse_payload,
-    resolve_dot_path,
-    render_template,
-    verify_webhook_signature,
-    _should_retry,
-    _calculate_next_retry,
-)
+from app.utils.security import verify_webhook_signature, get_client_ip
+from app.utils.transform import parse_payload, render_template, resolve_dot_path
+from app.utils.retry import should_retry, calculate_next_retry
 
 
 class TestGetClientIp:
@@ -59,7 +52,7 @@ class TestGetClientIp:
             headers = {"X-Forwarded-For": "1.2.3.4"}
             client = type("c", (), {"host": "10.0.0.1"})()
 
-        with patch("app.routes.proxy.settings") as mock_settings:
+        with patch("app.utils.security.settings") as mock_settings:
             mock_settings.TRUSTED_PROXIES = "10.0.0.1, 10.0.0.2"
             assert get_client_ip(FakeRequest()) == "1.2.3.4"
 
@@ -68,7 +61,7 @@ class TestGetClientIp:
             headers = {"X-Forwarded-For": "1.2.3.4"}
             client = type("c", (), {"host": "192.168.1.1"})()
 
-        with patch("app.routes.proxy.settings") as mock_settings:
+        with patch("app.utils.security.settings") as mock_settings:
             mock_settings.TRUSTED_PROXIES = "10.0.0.1, 10.0.0.2"
             assert get_client_ip(FakeRequest()) == "192.168.1.1"
 
@@ -225,45 +218,51 @@ class TestVerifyWebhookSignature:
     def test_signature_provided_but_no_secret_rejects(self):
         assert verify_webhook_signature(b"body", "anything", "") is False
 
+    def test_forged_empty_key_hmac_rejected(self):
+        """An attacker who computes HMAC('', body) must still be rejected."""
+        body = b'{"event": "test"}'
+        forged_sig = hmac.new(b"", body, hashlib.sha256).hexdigest()
+        assert verify_webhook_signature(body, forged_sig, "") is False
+
 
 class TestShouldRetry:
     """Tests for retry logic."""
 
     def test_reversible_5xx_should_retry(self):
-        assert _should_retry(502) is True
-        assert _should_retry(503) is True
-        assert _should_retry(504) is True
+        assert should_retry(502) is True
+        assert should_retry(503) is True
+        assert should_retry(504) is True
 
     def test_429_should_retry(self):
-        assert _should_retry(429) is True
+        assert should_retry(429) is True
 
     def test_non_retryable_5xx_should_not_retry(self):
-        assert _should_retry(500) is False
-        assert _should_retry(501) is False
-        assert _should_retry(505) is False
-        assert _should_retry(507) is False
+        assert should_retry(500) is False
+        assert should_retry(501) is False
+        assert should_retry(505) is False
+        assert should_retry(507) is False
 
     def test_2xx_should_not_retry(self):
-        assert _should_retry(200) is False
-        assert _should_retry(201) is False
+        assert should_retry(200) is False
+        assert should_retry(201) is False
 
     def test_4xx_should_not_retry(self):
-        assert _should_retry(400) is False
-        assert _should_retry(404) is False
+        assert should_retry(400) is False
+        assert should_retry(404) is False
 
 
 class TestCalculateNextRetry:
     """Tests for exponential backoff calculation."""
 
     def test_first_retry(self):
-        result = _calculate_next_retry(0)
+        result = calculate_next_retry(0)
         assert isinstance(result, str)
         assert "T" in result  # ISO format
 
     def test_increasing_delay(self):
-        r0 = _calculate_next_retry(0)
-        r1 = _calculate_next_retry(1)
-        r2 = _calculate_next_retry(2)
+        r0 = calculate_next_retry(0)
+        r1 = calculate_next_retry(1)
+        r2 = calculate_next_retry(2)
         # Later retries should be at later timestamps.
         assert r0 < r1 < r2
 
@@ -330,9 +329,8 @@ class TestProcessRetriesEmptyDestination:
 
         with patch("app.routes.proxy.admin") as mock_admin, \
              patch("app.routes.proxy.settings") as mock_settings, \
-             patch("app.routes.proxy._get_retry_window_cutoff", return_value="2026-01-01T00:00:00Z"):
+             patch("app.utils.retry.get_retry_window_cutoff", return_value="2026-01-01T00:00:00Z"):
             mock_settings.RETRY_ENDPOINT_SECRET = "secret"
-            mock_settings.API_KEY_SALT = "fallback"
             mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.gte.return_value.limit.return_value.execute.return_value.data = [
                 {
                     "id": 1,
@@ -488,9 +486,8 @@ class TestRetryBodyReconstruction:
 
         with patch("app.routes.proxy.admin") as mock_admin, \
              patch("app.routes.proxy.settings") as mock_settings, \
-             patch("app.routes.proxy._get_retry_window_cutoff", return_value="2026-01-01T00:00:00Z"):
+             patch("app.utils.retry.get_retry_window_cutoff", return_value="2026-01-01T00:00:00Z"):
             mock_settings.RETRY_ENDPOINT_SECRET = "secret"
-            mock_settings.API_KEY_SALT = "fallback"
             mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.gte.return_value.limit.return_value.execute.return_value.data = [
                 {
                     "id": 1,
