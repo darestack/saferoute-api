@@ -7,6 +7,7 @@ both locally and on Vercel via the Mangum ASGI handler.
 
 import logging
 import uuid
+from contextlib import asynccontextmanager
 
 from typing import Callable, Awaitable, Any
 from fastapi import FastAPI, Request, Response
@@ -25,6 +26,13 @@ from app.routes import auth, oauth, proxy  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> Any:
+    """Application lifespan manager for startup and shutdown."""
+    yield
+    await shutdown_event()
+
+
 app = FastAPI(
     title="SafeRoute API",
     description=(
@@ -40,6 +48,7 @@ app = FastAPI(
         "name": "MIT",
         "url": "https://opensource.org/licenses/MIT",
     },
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,13 +83,17 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 _ALLOWED_HEADERS_PRODUCTION = ["Authorization", "Content-Type", "X-API-Key"]
 
+def _get_cors_origins() -> list[str]:
+    """Build the list of allowed CORS origins from settings."""
+    if settings.ENVIRONMENT == "development":
+        return ["*"]
+    raw = settings.FRONTEND_URL
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=(
-        ["*"]
-        if settings.ENVIRONMENT == "development"
-        else ["https://saferouteapi.app"]
-    ),
+    allow_origins=_get_cors_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=(
@@ -94,7 +107,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Trusted host
 # ---------------------------------------------------------------------------
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.get_allowed_hosts())
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +167,16 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         """Reject oversized requests before they reach route handlers."""
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > self.max_size:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": "Request body too large"},
-            )
+        if content_length:
+            try:
+                length = int(content_length)
+            except (ValueError, TypeError):
+                length = 0
+            if length > self.max_size:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large"},
+                )
 
         if request.method in ("POST", "PUT", "PATCH"):
             body = await request.body()
@@ -183,6 +201,14 @@ app.include_router(oauth.router)
 app.include_router(proxy.router)
 
 logger.info("SafeRoute API initialized (environment=%s)", settings.ENVIRONMENT)
+
+
+async def shutdown_event() -> None:
+    """Close shared resources on application shutdown."""
+    from app.database import get_http_client
+    client = get_http_client()
+    if not client.is_closed:
+        await client.aclose()
 
 
 @app.get("/")

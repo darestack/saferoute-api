@@ -6,6 +6,7 @@ time so the application fails fast if secrets are missing.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 
 
 class Settings(BaseSettings):
@@ -40,6 +41,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:8000"
     ENVIRONMENT: str = "development"
     TRUSTED_PROXIES: str = ""
+    ALLOWED_HOSTS: str = ""
 
     @property
     def is_production(self) -> bool:
@@ -49,6 +51,23 @@ class Settings(BaseSettings):
             ``True`` when ``ENVIRONMENT`` equals ``"production"``.
         """
         return self.ENVIRONMENT == "production"
+
+    def get_allowed_hosts(self) -> list[str]:
+        """Return the list of allowed hosts for TrustedHostMiddleware.
+
+        In production, respects the ``ALLOWED_HOSTS`` setting.
+        In development, allows all hosts.
+        """
+        if self.is_production and self.ALLOWED_HOSTS:
+            return [host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()]
+        return ["*"]
+
+    @model_validator(mode="after")
+    def validate_production_encryption(self) -> "Settings":
+        """Ensure encryption is configured in production."""
+        if self.is_production and not self.ENCRYPTION_KEY:
+            raise ValueError("ENCRYPTION_KEY must be set in production")
+        return self
 
 
 settings = Settings()  # type: ignore[call-arg]

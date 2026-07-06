@@ -10,23 +10,22 @@ forwards payloads, and logs delivery results. Supports:
 * DB-based retry queue for failed deliveries
 """
 
-import hashlib
-import hmac
 import json
 import logging
-import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-from urllib.parse import parse_qs
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config import settings
 from app.crypto import decrypt_webhook_secret
-from app.database import admin, bump_route_metrics_atomic
+from app.database import admin, bump_route_metrics_atomic, get_http_client
+from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
+from app.utils.security import verify_webhook_signature, get_client_ip
+from app.utils.transform import parse_payload, render_template
 
 logger = logging.getLogger(__name__)
 
@@ -48,179 +47,40 @@ _MAX_LOG_BODY_BYTES = 10_000
 _MAX_RETRIES = 3
 """Maximum number of retry attempts for failed deliveries."""
 
-_RETRY_BACKOFF_BASE_SECONDS = 5
-"""Base delay for exponential backoff: delay = base * (2 ^ retry_count)."""
-
-# In-memory caches for performance.
+# In-memory route cache for performance.
 _ROUTE_CACHE_TTL_SECONDS = 30
-_API_KEY_CACHE_TTL_SECONDS = 300
-_API_KEY_CACHE_MAX_SIZE = 500
+_ROUTE_CACHE_MAX_SIZE = 500
 
 _route_cache: dict[str, dict] = {}
 _route_cache_expiry: dict[str, float] = {}
+_route_cache_order: list[str] = []
 _route_cache_lock = threading.Lock()
 
-_api_key_cache: dict[str, str] = {}
-_api_key_cache_expiry: dict[str, float] = {}
-_api_key_cache_order: list[str] = []
-_api_key_cache_lock = threading.Lock()
-
-# Regex for template placeholders: {{field.path}}
-_TEMPLATE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
-
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Internal helpers (route cache management)
 # ---------------------------------------------------------------------------
-def get_client_ip(request: Request) -> str:
-    """Extract the real client IP from the request.
-
-    Prefers ``X-Forwarded-For`` when behind a CDN / Vercel edge, then falls
-    back to the direct TCP peer address.
-
-    Args:
-        request: The incoming FastAPI request.
-
-    Returns:
-        The client IP as a string, or ``"unknown"`` if unavailable.
-    """
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        client_host = request.client.host if request.client else ""
-        trusted_proxies = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()]
-        if trusted_proxies and client_host in trusted_proxies:
-            return forwarded.split(",")[0].strip()
-        if not trusted_proxies:
-            return forwarded.split(",")[0].strip()
-
-    if request.client:
-        return request.client.host
-
-    return "unknown"
+def _get_cached_route(slug: str) -> Optional[dict]:
+    """Return a cached active route dict if available and fresh."""
+    with _route_cache_lock:
+        now = time.monotonic()
+        expiry = _route_cache_expiry.get(slug, 0.0)
+        if slug in _route_cache and now < expiry:
+            return _route_cache[slug]
+        return None
 
 
-def parse_payload(body: bytes, content_type: str) -> dict:
-    """Parse the incoming request body into a dictionary.
-
-    Supports JSON and form-urlencoded payloads. Falls back to an empty
-    dict on parse failure.
-
-    Args:
-        body: Raw request body bytes.
-        content_type: The ``Content-Type`` header value.
-
-    Returns:
-        Parsed payload as a dictionary.
-    """
-    if not body:
-        return {}
-
-    try:
-        if "application/json" in content_type:
-            return json.loads(body)
-
-        # If content-type is missing, try JSON first, then fall back to form data.
-        try:
-            return json.loads(body)
-        except Exception:
-            return {k: v[0] for k, v in parse_qs(body.decode()).items()}
-    except Exception:
-        return {}
-
-
-def resolve_dot_path(data: Any, path: str) -> Any:
-    """Resolve a dot-separated path against a nested data structure.
-
-    Supports dict keys and integer list indices. Returns ``None`` if any
-    segment is missing rather than raising.
-
-    Examples::
-
-        resolve_dot_path({"a": {"b": 1}}, "a.b")  # → 1
-        resolve_dot_path({"items": [10, 20]}, "items.0")  # → 10
-        resolve_dot_path({}, "missing.key")  # → None
-
-    Args:
-        data: The root dict or list.
-        path: Dot-separated field path.
-
-    Returns:
-        The resolved value or ``None``.
-    """
-    current = data
-    for segment in path.split("."):
-        if isinstance(current, dict):
-            current = current.get(segment)
-        elif isinstance(current, (list, tuple)):
-            try:
-                current = current[int(segment)]
-            except (ValueError, IndexError):
-                return None
-        else:
-            return None
-        if current is None:
-            return None
-    return current
-
-
-def render_template(template: str, payload: dict) -> str:
-    """Render a template string by replacing ``{{field.path}}`` placeholders.
-
-    Uses :func:`resolve_dot_path` for nested access. Missing fields are
-    replaced with an empty string.
-
-    Args:
-        template: The template string with ``{{...}}`` placeholders.
-        payload: The parsed webhook payload.
-
-    Returns:
-        The rendered string.
-    """
-    def replacer(match: re.Match) -> str:
-        path = match.group(1)
-        value = resolve_dot_path(payload, path)
-        if value is None:
-            return ""
-        return str(value)
-
-    return _TEMPLATE_PATTERN.sub(replacer, template)
-
-
-def verify_webhook_signature(
-    raw_body: bytes,
-    signature_header: Optional[str],
-    secret: str,
-) -> bool:
-    """Verify an HMAC-SHA256 webhook signature.
-
-    Supports the ``sha256=<hex>`` format used by GitHub, Stripe, and others.
-
-    Args:
-        raw_body: The raw request body bytes.
-        signature_header: The signature header value (e.g., ``sha256=abc...``).
-        secret: The shared secret for HMAC computation.
-
-    Returns:
-        ``True`` if the signature is valid or no verification is required.
-    """
-    if not signature_header and not secret:
-        return True
-
-    if not signature_header:
-        return False
-
-    expected = hmac.new(
-        secret.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-
-    # Support both "sha256=<hex>" and raw hex formats.
-    provided = signature_header
-    if provided.startswith("sha256="):
-        provided = provided[7:]
-
-    return hmac.compare_digest(expected, provided)
+def _cache_route(slug: str, route: dict) -> None:
+    """Store a route in the cache with TTL and FIFO eviction."""
+    with _route_cache_lock:
+        _route_cache[slug] = route
+        _route_cache_expiry[slug] = time.monotonic() + _ROUTE_CACHE_TTL_SECONDS
+        if slug not in _route_cache_order:
+            _route_cache_order.append(slug)
+        while len(_route_cache_order) > _ROUTE_CACHE_MAX_SIZE:
+            oldest = _route_cache_order.pop(0)
+            _route_cache.pop(oldest, None)
+            _route_cache_expiry.pop(oldest, None)
 
 
 def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> None:
@@ -335,7 +195,12 @@ def store_idempotency(
             on_conflict="route_id,idempotency_key",
         ).execute()
     except Exception:
-        logger.exception("Failed to store idempotency cache entry")
+        logger.exception(
+            "Failed to store idempotency cache entry for route_id=%s, idempotency_key=%s, status_code=%s",
+            route_id,
+            idempotency_key,
+            status_code,
+        )
 
 
 async def forward_payload(
@@ -355,25 +220,25 @@ async def forward_payload(
     Returns:
         A tuple of ``(status_code, response_body, response_headers)``.
     """
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.request(
-                method=method,
-                url=url,
-                content=body,
-                headers=headers,
-                timeout=_FORWARD_TIMEOUT_SECONDS,
-            )
-            return (
-                response.status_code,
-                response.text,
-                dict(response.headers),
-            )
-        except httpx.TimeoutException:
-            return 504, "Destination timeout", {}
-        except httpx.RequestError as exc:
-            logger.warning("Destination unreachable: %s", exc)
-            return 502, "Destination unreachable", {}
+    client = get_http_client()
+    try:
+        response = await client.request(
+            method=method,
+            url=url,
+            content=body,
+            headers=headers,
+            timeout=_FORWARD_TIMEOUT_SECONDS,
+        )
+        return (
+            response.status_code,
+            response.text,
+            dict(response.headers),
+        )
+    except httpx.TimeoutException:
+        return 504, "Destination timeout", {}
+    except httpx.RequestError as exc:
+        logger.warning("Destination unreachable: %s", exc)
+        return 502, "Destination unreachable", {}
 
 
 def log_delivery(
@@ -413,6 +278,13 @@ def log_delivery(
         response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
     )
 
+    # Populate error_message for non-2xx responses to aid diagnostics.
+    error_message = None
+    if status_code is not None and not (200 <= status_code < 300):
+        error_message = (
+            response_body[:500] if response_body else f"HTTP {status_code}"
+        )
+
     try:
         result = admin.table("webhook_logs").insert(
             {
@@ -423,6 +295,7 @@ def log_delivery(
                 ),
                 "response_body": truncated_body,
                 "response_headers": response_headers,
+                "error_message": error_message,
                 "ip_address": client_ip,
                 "user_agent": user_agent,
                 "duration_ms": duration_ms,
@@ -439,84 +312,6 @@ def log_delivery(
         logger.exception("Failed to log delivery for route_id=%s", route_id)
 
     return None
-
-
-def _should_retry(status_code: int) -> bool:
-    """Determine if a delivery should be retried based on status code.
-
-    Retries only on reversible server errors: 502, 503, 504.
-
-    Args:
-        status_code: The HTTP status from the destination.
-
-    Returns:
-        ``True`` if the delivery should be retried.
-    """
-    return status_code in (429, 502, 503, 504)
-
-
-def _calculate_next_retry(retry_count: int) -> str:
-    """Calculate the next retry timestamp with exponential backoff.
-
-    Args:
-        retry_count: The current retry attempt (0-based).
-
-    Returns:
-        ISO 8601 timestamp of the next retry.
-    """
-    delay = _RETRY_BACKOFF_BASE_SECONDS * (2 ** retry_count)
-    # Cap at 5 minutes.
-    delay = min(delay, 300)
-    return (
-        datetime.now(timezone.utc) + timedelta(seconds=delay)
-    ).isoformat()
-
-
-def _get_retry_window_cutoff() -> str:
-    """Return the ISO timestamp for the oldest retryable log entry.
-
-    Retries older than 7 days are no longer processed to prevent unbounded
-    queue growth.
-    """
-    return (
-        datetime.now(timezone.utc) - timedelta(days=7)
-    ).isoformat()
-
-
-def _get_cached_route(slug: str) -> Optional[dict]:
-    """Return a cached active route dict if available and fresh."""
-    now = time.monotonic()
-    expiry = _route_cache_expiry.get(slug, 0.0)
-    if slug in _route_cache and now < expiry:
-        return _route_cache[slug]
-    return None
-
-
-def _cache_route(slug: str, route: dict) -> None:
-    """Store a route in the cache with TTL."""
-    _route_cache[slug] = route
-    _route_cache_expiry[slug] = time.monotonic() + _ROUTE_CACHE_TTL_SECONDS
-
-
-def _get_cached_api_key(key_hash: str) -> Optional[str]:
-    """Return a cached route_id for an API key hash if available and fresh."""
-    now = time.monotonic()
-    expiry = _api_key_cache_expiry.get(key_hash, 0.0)
-    if key_hash in _api_key_cache and now < expiry:
-        return _api_key_cache[key_hash]
-    return None
-
-
-def _cache_api_key(key_hash: str, route_id: str) -> None:
-    """Store an API key hash → route_id mapping with TTL and max size."""
-    _api_key_cache[key_hash] = route_id
-    _api_key_cache_expiry[key_hash] = time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
-    with _api_key_cache_lock:
-        _api_key_cache_order.append(key_hash)
-        while len(_api_key_cache_order) > _API_KEY_CACHE_MAX_SIZE:
-            oldest = _api_key_cache_order.pop(0)
-            _api_key_cache.pop(oldest, None)
-            _api_key_cache_expiry.pop(oldest, None)
 
 
 # ---------------------------------------------------------------------------
@@ -656,9 +451,9 @@ async def proxy_webhook(
     # --- Determine retry status ---
     retry_status = "none"
     next_retry_at = None
-    if _should_retry(status_code):
+    if should_retry(status_code):
         retry_status = "pending"
-        next_retry_at = _calculate_next_retry(0)
+        next_retry_at = calculate_next_retry(0)
 
     # --- Log delivery ---
     log_delivery(
@@ -698,9 +493,6 @@ async def proxy_webhook(
 # ---------------------------------------------------------------------------
 # Retry processing endpoint (called by external cron)
 # ---------------------------------------------------------------------------
-_RETRY_SECRET_HEADER = "X-Retry-Secret"
-
-
 @router.post("/internal/process-retries")
 async def process_retries(
     request: Request,
@@ -720,8 +512,8 @@ async def process_retries(
     Returns:
         JSON with ``processed`` count and ``results`` list.
     """
-    valid_secrets = [settings.RETRY_ENDPOINT_SECRET, settings.API_KEY_SALT]
-    if x_retry_secret not in valid_secrets or not x_retry_secret:
+    valid_secrets = [settings.RETRY_ENDPOINT_SECRET]
+    if not settings.RETRY_ENDPOINT_SECRET or x_retry_secret not in valid_secrets:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -733,7 +525,7 @@ async def process_retries(
         .eq("retry_status", "pending")
         .lte("next_retry_at", now)
         .lt("retry_count", _MAX_RETRIES)
-        .gte("created_at", _get_retry_window_cutoff())
+        .gte("created_at", get_retry_window_cutoff())
         .limit(10)
         .execute()
     )
@@ -749,13 +541,20 @@ async def process_retries(
         if not destination_url:
             new_status = "exhausted"
             next_retry = None
-            admin.table("webhook_logs").update(
-                {
-                    "retry_count": retry_count,
-                    "retry_status": new_status,
-                    "next_retry_at": next_retry,
-                }
-            ).eq("id", log_id).execute()
+            result = (
+                admin.table("webhook_logs")
+                .update(
+                    {
+                        "retry_count": retry_count,
+                        "retry_status": new_status,
+                        "next_retry_at": next_retry,
+                    }
+                )
+                .eq("id", log_id)
+                .execute()
+            )
+            if not result.data:
+                logger.warning("Retry mark-exhausted update failed for log_id=%s", log_id)
             results.append(
                 {
                     "log_id": log_id,
@@ -766,10 +565,16 @@ async def process_retries(
             )
             continue
 
-        # Mark as retrying.
-        admin.table("webhook_logs").update(
-            {"retry_status": "retrying"}
-        ).eq("id", log_id).execute()
+        # Claim this entry to reduce concurrent retry collisions.
+        claim_result = (
+            admin.table("webhook_logs")
+            .update({"retry_status": "processing"})
+            .eq("id", log_id)
+            .execute()
+        )
+        if not claim_result.data:
+            logger.warning("Retry claim failed for log_id=%s, skipping", log_id)
+            continue
 
         # Rebuild the body from stored request_body using original content_type.
         stored_body = log_entry.get("request_body", {})
@@ -788,13 +593,20 @@ async def process_retries(
             # Cannot reliably reconstruct these from jsonb; skip retry.
             new_status = "exhausted"
             next_retry = None
-            admin.table("webhook_logs").update(
-                {
-                    "retry_count": retry_count,
-                    "retry_status": new_status,
-                    "next_retry_at": next_retry,
-                }
-            ).eq("id", log_id).execute()
+            result = (
+                admin.table("webhook_logs")
+                .update(
+                    {
+                        "retry_count": retry_count,
+                        "retry_status": new_status,
+                        "next_retry_at": next_retry,
+                    }
+                )
+                .eq("id", log_id)
+                .execute()
+            )
+            if not result.data:
+                logger.warning("Retry exhaust update failed for log_id=%s", log_id)
             results.append(
                 {
                     "log_id": log_id,
@@ -828,41 +640,58 @@ async def process_retries(
         )
 
         # Determine outcome.
-        if status_code < 500:
+        if 200 <= status_code < 300:
             new_status = "succeeded"
+            next_retry = None
+        elif status_code < 500:
+            # 4xx are permanent client errors — no point retrying.
+            new_status = "exhausted"
             next_retry = None
         elif retry_count >= _MAX_RETRIES:
             new_status = "exhausted"
             next_retry = None
         else:
             new_status = "pending"
-            next_retry = _calculate_next_retry(retry_count)
+            next_retry = calculate_next_retry(retry_count)
 
-        admin.table("webhook_logs").update(
-            {
-                "retry_count": retry_count,
-                "retry_status": new_status,
-                "status_code": status_code,
-                "next_retry_at": next_retry,
-            }
-        ).eq("id", log_id).execute()
+        result = (
+            admin.table("webhook_logs")
+            .update(
+                {
+                    "retry_count": retry_count,
+                    "retry_status": new_status,
+                    "status_code": status_code,
+                    "next_retry_at": next_retry,
+                }
+            )
+            .eq("id", log_id)
+            .execute()
+        )
+        if not result.data:
+            logger.warning("Retry status update failed for log_id=%s", log_id)
 
         # Insert into dead-letter queue if exhausted.
         if new_status == "exhausted":
-            admin.table("webhook_failures").insert(
-                {
-                    "route_id": log_entry["route_id"],
-                    "webhook_log_id": log_id,
-                    "status_code": status_code,
-                    "response_body": response_body[:_MAX_LOG_BODY_BYTES]
-                    if response_body
-                    else None,
-                    "ip_address": log_entry.get("ip_address"),
-                    "user_agent": log_entry.get("user_agent"),
-                    "retry_count": retry_count,
-                    "max_retries": _MAX_RETRIES,
-                }
-            ).execute()
+            failure_result = (
+                admin.table("webhook_failures")
+                .insert(
+                    {
+                        "route_id": log_entry["route_id"],
+                        "webhook_log_id": log_id,
+                        "status_code": status_code,
+                        "response_body": response_body[:_MAX_LOG_BODY_BYTES]
+                        if response_body
+                        else None,
+                        "ip_address": log_entry.get("ip_address"),
+                        "user_agent": log_entry.get("user_agent"),
+                        "retry_count": retry_count,
+                        "max_retries": _MAX_RETRIES,
+                    }
+                )
+                .execute()
+            )
+            if not failure_result.data:
+                logger.warning("Dead-letter insert failed for log_id=%s", log_id)
 
         # Update idempotency cache if key exists and response is successful.
         idempotency_key = log_entry.get("idempotency_key")
