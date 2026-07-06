@@ -286,6 +286,16 @@ begin
 end;
 $$ language plpgsql;
 
+-- Atomically retrieve and delete a PKCE verifier (prevents reuse race)
+create or replace function public.consume_pkce_verifier(p_code_challenge text)
+returns table (code_verifier text) as $$
+begin
+    delete from public.pkce_verifiers
+    where code_challenge = p_code_challenge
+    returning code_verifier into code_verifier;
+end;
+$$ language plpgsql;
+
 -- Clean up old idempotency cache entries (older than 24 hours)
 create or replace function public.cleanup_idempotency_cache()
 returns void as $$

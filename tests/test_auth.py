@@ -10,6 +10,7 @@ from app.routes.auth import (
     _cache_user,
     _fetch_and_cache_user,
     _get_cached_user,
+    _USER_CACHE_MAX_SIZE,
 )
 
 
@@ -58,3 +59,31 @@ class TestUserCache:
 
             with pytest.raises(Exception):  # HTTPException
                 asyncio.run(_fetch_and_cache_user("missing-user"))
+
+    def test_cache_fifo_eviction_when_full(self):
+        from app.routes.auth import _user_cache, _user_cache_order
+
+        # Fill cache to max size.
+        for i in range(_USER_CACHE_MAX_SIZE):
+            user = User(
+                id=f"user-{i:04d}",
+                email=f"user-{i}@example.com",
+                full_name=f"User {i}",
+                created_at="2026-01-01T00:00:00Z",
+            )
+            _cache_user(user)
+
+        assert len(_user_cache_order) == _USER_CACHE_MAX_SIZE
+
+        # Add one more user - oldest should be evicted.
+        new_user = User(
+            id="user-new",
+            email="new@example.com",
+            full_name="New User",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        _cache_user(new_user)
+
+        assert len(_user_cache_order) == _USER_CACHE_MAX_SIZE
+        assert "user-0000" not in _user_cache
+        assert "user-new" in _user_cache

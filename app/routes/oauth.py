@@ -68,7 +68,9 @@ def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
 
 
 def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
-    """Retrieve and delete a PKCE verifier from the database.
+    """Atomically retrieve and delete a PKCE verifier from the database.
+
+    Uses the ``consume_pkce_verifier`` SQL function to prevent reuse races.
 
     Args:
         code_challenge: The S256 challenge to look up.
@@ -78,26 +80,16 @@ def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
     """
     try:
         result = (
-            admin.table("pkce_verifiers")
-            .select("code_verifier")
-            .eq("code_challenge", code_challenge)
+            admin.rpc("consume_pkce_verifier", {"p_code_challenge": code_challenge})
             .execute()
         )
 
-        if not result.data:
-            return None
-
-        code_verifier = result.data[0]["code_verifier"]  # type: ignore
-
-        # Delete after retrieval (one-time use).
-        admin.table("pkce_verifiers").delete().eq(
-            "code_challenge", code_challenge
-        ).execute()
-
-        return code_verifier  # type: ignore
+        if result.data:
+            return result.data[0]["code_verifier"]
     except Exception:
         logger.exception("Failed to retrieve PKCE verifier")
-        return None
+
+    return None
 
 
 # ---------------------------------------------------------------------------

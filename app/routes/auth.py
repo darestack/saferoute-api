@@ -78,9 +78,11 @@ async def _get_cached_jwks() -> dict:
 # User cache
 # ---------------------------------------------------------------------------
 _USER_CACHE_TTL_SECONDS = 300
+_USER_CACHE_MAX_SIZE = 1000
 _user_cache: dict[str, User] = {}
 _user_cache_expiry: dict[str, float] = {}
 _user_cache_lock = asyncio.Lock()
+_user_cache_order: list[str] = []
 
 
 async def _get_cached_user(user_id: str) -> Optional[User]:
@@ -93,9 +95,17 @@ async def _get_cached_user(user_id: str) -> Optional[User]:
 
 
 def _cache_user(user: User) -> None:
-    """Store a User in the cache with TTL."""
+    """Store a User in the cache with TTL and FIFO eviction."""
     _user_cache[user.id] = user
     _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
+    if user.id not in _user_cache_order:
+        _user_cache_order.append(user.id)
+
+    # FIFO eviction if over max size.
+    while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
+        oldest = _user_cache_order.pop(0)
+        _user_cache.pop(oldest, None)
+        _user_cache_expiry.pop(oldest, None)
 
 
 async def _fetch_and_cache_user(user_id: str) -> User:

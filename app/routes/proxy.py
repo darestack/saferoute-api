@@ -98,6 +98,8 @@ def parse_payload(body: bytes, content_type: str) -> dict:
     try:
         if "application/json" in content_type:
             return json.loads(body)
+
+        # If content-type is missing, try JSON first, then fall back to form data.
         try:
             return json.loads(body)
         except Exception:
@@ -599,7 +601,7 @@ async def proxy_webhook(
     )
 
     # --- Store idempotency result ---
-    if idempotency_key:
+    if idempotency_key and status_code < 400:
         store_idempotency(
             route["id"],
             idempotency_key,
@@ -696,14 +698,38 @@ async def process_retries(
         stored_body = log_entry.get("request_body", {})
         content_type = log_entry.get("content_type", "")
         body = b""
-        if stored_body:
-            if "application/json" in content_type or isinstance(stored_body, dict):
-                body = json.dumps(stored_body).encode("utf-8")
-            elif "application/x-www-form-urlencoded" in content_type:
-                from urllib.parse import urlencode
-                body = urlencode(stored_body).encode("utf-8")
-            else:
-                body = str(stored_body).encode("utf-8")
+
+        if not stored_body:
+            # Empty body is fine.
+            pass
+        elif "application/json" in content_type or isinstance(stored_body, (dict, list)):
+            body = json.dumps(stored_body).encode("utf-8")
+        elif "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import urlencode
+            body = urlencode(stored_body).encode("utf-8")
+        elif content_type in ("application/xml", "text/xml", "application/protobuf", "application/octet-stream"):
+            # Cannot reliably reconstruct these from jsonb; skip retry.
+            new_status = "exhausted"
+            next_retry = None
+            admin.table("webhook_logs").update(
+                {
+                    "retry_count": retry_count,
+                    "retry_status": new_status,
+                    "next_retry_at": next_retry,
+                }
+            ).eq("id", log_id).execute()
+            results.append(
+                {
+                    "log_id": log_id,
+                    "retry_count": retry_count,
+                    "status_code": 0,
+                    "outcome": new_status,
+                }
+            )
+            continue
+        else:
+            # Generic text fallback.
+            body = str(stored_body).encode("utf-8")
 
         # Apply transformation if configured.
         forward_body = body
@@ -744,9 +770,9 @@ async def process_retries(
             }
         ).eq("id", log_id).execute()
 
-        # Update idempotency cache if key exists.
+        # Update idempotency cache if key exists and response is successful.
         idempotency_key = log_entry.get("idempotency_key")
-        if idempotency_key:
+        if idempotency_key and status_code < 400:
             store_idempotency(
                 log_entry["route_id"],
                 idempotency_key,

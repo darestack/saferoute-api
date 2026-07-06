@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -401,3 +401,97 @@ class TestOAuthCallbackPost:
             assert exc_info.value.status_code == 400
             assert "Internal Supabase error" not in exc_info.value.detail
             assert exc_info.value.detail == "OAuth callback failed"
+
+
+class TestIdempotencyStoresOnlySuccess:
+    """Tests that idempotency cache only stores successful responses."""
+
+    def test_does_not_store_500_response(self):
+        from app.routes.proxy import proxy_webhook
+        from unittest.mock import MagicMock
+
+        with patch("app.routes.proxy.admin") as mock_admin, \
+             patch("app.routes.proxy.forward_payload") as mock_forward, \
+             patch("app.routes.proxy.bump_route_metrics_atomic") as mock_bump:
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                {
+                    "id": "route-1",
+                    "destination_url": "https://example.com",
+                    "method": "POST",
+                    "headers": {},
+                    "rate_limit": 30,
+                    "webhook_secret": None,
+                    "transform_body_template": None,
+                    "transform_headers": {},
+                    "slug": "test-route",
+                    "name": "Test",
+                    "user_id": "user-1",
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [{"success": True, "new_count": 1}]
+            mock_forward.return_value = (500, "error", {})
+
+            # Ensure idempotency cache check returns empty (no cached response).
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.gte.return_value.execute.return_value.data = []
+
+            request = MagicMock()
+            request.headers = {}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b"{}")
+
+            response = asyncio.run(proxy_webhook(
+                slug="test-route",
+                request=request,
+                idempotency_key="key-123",
+            ))
+            assert response["status"] == "forwarded"
+            assert response["destination_status"] == 500
+            mock_bump.assert_called_once_with("route-1")
+
+            # Verify idempotency cache was NOT written for 500 response.
+            upsert_calls = mock_admin.table.return_value.upsert.call_args_list
+            for call in upsert_calls:
+                # The record is either first positional arg or in kwargs as 'record'
+                record = call[0][0] if call[0] else call[1].get("record", {})
+                if record.get("response_status") == 500:
+                    pytest.fail("Idempotency cache should not store 500 responses")
+
+
+class TestRetryBodyReconstruction:
+    """Tests for retry body reconstruction edge cases."""
+
+    def test_skips_unsupported_content_types(self):
+        from app.routes.proxy import process_retries
+
+        with patch("app.routes.proxy.admin") as mock_admin, \
+             patch("app.routes.proxy.settings") as mock_settings:
+            mock_settings.RETRY_ENDPOINT_SECRET = "secret"
+            mock_settings.API_KEY_SALT = "fallback"
+            mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.limit.return_value.execute.return_value.data = [
+                {
+                    "id": 1,
+                    "retry_count": 0,
+                    "request_body": "<xml>data</xml>",
+                    "content_type": "application/xml",
+                    "route_id": "route-1",
+                    "idempotency_key": None,
+                    "routes": {
+                        "destination_url": "https://example.com",
+                        "method": "POST",
+                        "headers": {},
+                        "transform_headers": {},
+                        "transform_body_template": None,
+                    },
+                }
+            ]
+
+            response = asyncio.run(process_retries(
+                request=MagicMock(),
+                x_retry_secret="secret",
+            ))
+            assert response["processed"] == 1
+            assert response["results"][0]["outcome"] == "exhausted"
