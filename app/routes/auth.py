@@ -30,6 +30,8 @@ from app.models import (
     User,
     UserCreate,
     WebhookLogResponse,
+    WebhookFailureResponse,
+    WebhookFailuresResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -265,6 +267,7 @@ async def get_current_user_from_api_key(
 def _generate_slug(name: str, user_id: str) -> str:
     """Generate a collision-safe slug from a route name."""
     slug_base = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))
+    slug_base = re.sub(r"-{2,}", "-", slug_base)
     slug_base = slug_base.strip("-")[:40] or "route"
     random_suffix = secrets.token_hex(3)
     return f"{slug_base}-{random_suffix}"
@@ -680,4 +683,103 @@ async def get_route_stats(
         deliveries_7d=row.get("deliveries_7d", 0) or 0,
         deliveries_30d=row.get("deliveries_30d", 0) or 0,
         success_rate_percent=success_rate,
+    )
+
+
+@router.get("/health")
+async def health_check():
+    """Check API and database connectivity.
+
+    Returns:
+        Health status with database connectivity check.
+    """
+    db_ok = False
+    try:
+        admin.rpc("increment_route_count", {"p_route_id": "00000000-0000-0000-0000-000000000000"}).execute()
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    return {
+        "status": "healthy" if db_ok else "degraded",
+        "database": "connected" if db_ok else "disconnected",
+        "service": "SafeRoute API",
+    }
+
+
+@router.get(
+    "/routes/{route_id}/failures",
+    response_model=WebhookFailuresResponse,
+)
+async def list_route_failures(
+    route_id: str,
+    cursor: Optional[str] = None,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """List exhausted webhook delivery failures for a route.
+
+    Uses cursor-based pagination for stable paging.
+
+    Args:
+        route_id: The route UUID.
+        cursor: Optional pagination cursor (failure ID).
+        limit: Maximum number of failures to return.
+        current_user: Injected authenticated user.
+
+    Returns:
+        A :class:`WebhookFailuresResponse` with failures and next cursor.
+
+    Raises:
+        HTTPException: 404 if the route does not exist or belongs to another user.
+    """
+    route_check = (
+        admin.table("routes")
+        .select("id")
+        .eq("id", route_id)
+        .eq("user_id", current_user.id)
+        .execute()
+    )
+
+    if not route_check.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
+
+    query = (
+        admin.table("webhook_failures")
+        .select("*")
+        .eq("route_id", route_id)
+        .order("created_at", desc=True)
+        .limit(limit + 1)
+    )
+
+    if cursor:
+        query = query.gte("id", cursor)
+
+    result = query.execute()
+
+    failures = result.data or []
+    has_next = len(failures) > limit
+    if has_next:
+        failures = failures[:limit]
+
+    next_cursor = failures[-1]["id"] if has_next else None
+
+    return WebhookFailuresResponse(
+        route_id=route_id,
+        failures=[
+            WebhookFailureResponse(
+                id=f["id"],
+                route_id=f["route_id"],
+                status_code=f.get("status_code"),
+                error_message=f.get("error_message"),
+                retry_count=f.get("retry_count", 0),
+                max_retries=f.get("max_retries", 3),
+                created_at=f["created_at"],
+            )
+            for f in failures
+        ],
+        next_cursor=next_cursor,
     )

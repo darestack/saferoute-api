@@ -11,6 +11,8 @@ import hashlib
 import hmac
 import logging
 import secrets
+import threading
+import time
 from typing import Optional
 
 from supabase import Client, create_client
@@ -91,16 +93,23 @@ def verify_api_key(full_key: Optional[str]) -> Optional[str]:
 
     key_hash = _hash_api_key(full_key)
 
+    cached = _get_cached_api_key(key_hash)
+    if cached:
+        return cached
+
     try:
         result = (
             admin.table("routes")
             .select("id")
             .eq("api_key_hash", key_hash)
+            .limit(1)
             .execute()
         )
 
         if result.data:
-            return result.data[0]["id"]  # type: ignore
+            route_id = result.data[0]["id"]
+            _cache_api_key(key_hash, route_id)
+            return route_id
     except Exception:
         logger.exception("Failed to verify API key")
 
@@ -128,3 +137,37 @@ def bump_route_metrics_atomic(route_id: str) -> None:
 # ``get_supabase_client()`` repeatedly.
 supabase_client: Client = get_supabase_client()
 admin: Client = get_supabase_client(use_service_role=True)
+
+
+# ---------------------------------------------------------------------------
+# API key verification cache
+# ---------------------------------------------------------------------------
+_API_KEY_CACHE_TTL_SECONDS = 300
+_API_KEY_CACHE_MAX_SIZE = 500
+_api_key_cache: dict[str, str] = {}
+_api_key_cache_expiry: dict[str, float] = {}
+_api_key_cache_order: list[str] = []
+_api_key_cache_lock = threading.Lock()
+
+
+def _get_cached_api_key(key_hash: str) -> Optional[str]:
+    """Return a cached route_id for an API key hash if available and fresh."""
+    now = time.monotonic()
+    expiry = _api_key_cache_expiry.get(key_hash, 0.0)
+    if key_hash in _api_key_cache and now < expiry:
+        return _api_key_cache[key_hash]
+    return None
+
+
+def _cache_api_key(key_hash: str, route_id: str) -> None:
+    """Store an API key hash → route_id mapping with TTL and max size."""
+    _api_key_cache[key_hash] = route_id
+    _api_key_cache_expiry[key_hash] = time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
+    with _api_key_cache_lock:
+        _api_key_cache_order.append(key_hash)
+        oldest = None
+        while len(_api_key_cache_order) > _API_KEY_CACHE_MAX_SIZE:
+            oldest = _api_key_cache_order.pop(0)
+        if oldest is not None:
+            _api_key_cache.pop(oldest, None)
+            _api_key_cache_expiry.pop(oldest, None)

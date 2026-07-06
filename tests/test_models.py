@@ -101,6 +101,11 @@ class TestRouteUpdate:
         dumped = update.model_dump(exclude_none=True)
         assert dumped == {"name": "New Name", "rate_limit": 50}
 
+    def test_can_clear_webhook_secret(self):
+        update = RouteUpdate(webhook_secret=None)
+        dumped = update.model_dump(exclude_none=True)
+        assert "webhook_secret" not in dumped
+
 
 class TestRouteResponse:
     """Tests for RouteResponse serialization."""
@@ -127,6 +132,38 @@ class TestRouteResponse:
         )
         assert response.transform_headers == {"X-Injected": "true"}
         assert response.transform_body_template == '{"email": "{{data.customer.email}}"}'
+
+
+class TestSlugValidation:
+    """Tests for Slug type validation."""
+
+    def test_rejects_empty_slug(self):
+        from pydantic import TypeAdapter
+        from app.models import Slug
+
+        with pytest.raises(ValidationError):
+            TypeAdapter(Slug).validate_python("")
+
+    def test_rejects_uppercase(self):
+        from pydantic import TypeAdapter
+        from app.models import Slug
+
+        with pytest.raises(ValidationError):
+            TypeAdapter(Slug).validate_python("UpperCase")
+
+    def test_rejects_special_chars(self):
+        from pydantic import TypeAdapter
+        from app.models import Slug
+
+        with pytest.raises(ValidationError):
+            TypeAdapter(Slug).validate_python("slug_with_underscores")
+
+    def test_accepts_valid_slug(self):
+        from pydantic import TypeAdapter
+        from app.models import Slug
+
+        result = TypeAdapter(Slug).validate_python("my-route-123")
+        assert result == "my-route-123"
 
 
 class TestUserCreate:

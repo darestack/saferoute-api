@@ -22,6 +22,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _FALLBACK_PREFIX = "safe_plain:"
+_VERSION_PREFIX = "v1:"
 
 
 def _derive_key(raw_key: str) -> Optional[bytes]:
@@ -79,6 +80,9 @@ def _get_fernet() -> Optional[Fernet]:
 def encrypt_webhook_secret(plaintext: Optional[str]) -> Optional[str]:
     """Encrypt a webhook secret for storage.
 
+    Supports key rotation via versioned prefix. Future versions can decrypt
+    older versions during rotation windows.
+
     Args:
         plaintext: The plaintext secret, or ``None``.
 
@@ -95,11 +99,15 @@ def encrypt_webhook_secret(plaintext: Optional[str]) -> Optional[str]:
     if fernet is None:
         return f"{_FALLBACK_PREFIX}{plaintext}"
 
-    return fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+    encrypted = fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+    return f"{_VERSION_PREFIX}{encrypted}"
 
 
 def decrypt_webhook_secret(ciphertext: Optional[str]) -> Optional[str]:
     """Decrypt a stored webhook secret.
+
+    Handles versioned encrypted values, plaintext fallback prefix, and
+    raw ciphertext when encryption is not configured.
 
     Args:
         ciphertext: The encrypted secret from the database, or ``None``.
@@ -114,6 +122,9 @@ def decrypt_webhook_secret(ciphertext: Optional[str]) -> Optional[str]:
 
     if ciphertext.startswith(_FALLBACK_PREFIX):
         return ciphertext[len(_FALLBACK_PREFIX):]
+
+    if ciphertext.startswith(_VERSION_PREFIX):
+        ciphertext = ciphertext[len(_VERSION_PREFIX):]
 
     fernet = _get_fernet()
     if fernet is None:

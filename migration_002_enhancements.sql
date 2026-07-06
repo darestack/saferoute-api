@@ -92,3 +92,42 @@ BEGIN
     WHERE created_at < timezone('utc'::text, now()) - interval '24 hours';
 END;
 $$ LANGUAGE plpgsql;
+
+-- ========================================
+-- 6. Webhook failures dead-letter queue
+-- ========================================
+CREATE TABLE IF NOT EXISTS public.webhook_failures (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    route_id uuid NOT NULL REFERENCES public.routes(id) ON DELETE CASCADE,
+    webhook_log_id bigint,
+    status_code integer,
+    error_message text,
+    request_body jsonb,
+    response_body text,
+    ip_address inet,
+    user_agent text,
+    retry_count integer DEFAULT 0,
+    max_retries integer DEFAULT 3,
+    created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_failures_route_id
+    ON public.webhook_failures(route_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_failures_created_at
+    ON public.webhook_failures(created_at);
+
+ALTER TABLE public.webhook_failures ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE tablename = 'webhook_failures'
+        AND policyname = 'Service role full access webhook_failures'
+    ) THEN
+        EXECUTE 'CREATE POLICY "Service role full access webhook_failures"
+            ON public.webhook_failures FOR ALL
+            TO service_role
+            USING (true)';
+    END IF;
+END $$;

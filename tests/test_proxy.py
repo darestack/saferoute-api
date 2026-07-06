@@ -54,6 +54,24 @@ class TestGetClientIp:
 
         assert get_client_ip(FakeRequest()) == "unknown"
 
+    def test_trusted_proxy_allows_x_forwarded_for(self):
+        class FakeRequest:
+            headers = {"X-Forwarded-For": "1.2.3.4"}
+            client = type("c", (), {"host": "10.0.0.1"})()
+
+        with patch("app.routes.proxy.settings") as mock_settings:
+            mock_settings.TRUSTED_PROXIES = "10.0.0.1, 10.0.0.2"
+            assert get_client_ip(FakeRequest()) == "1.2.3.4"
+
+    def test_untrusted_proxy_ignores_x_forwarded_for(self):
+        class FakeRequest:
+            headers = {"X-Forwarded-For": "1.2.3.4"}
+            client = type("c", (), {"host": "192.168.1.1"})()
+
+        with patch("app.routes.proxy.settings") as mock_settings:
+            mock_settings.TRUSTED_PROXIES = "10.0.0.1, 10.0.0.2"
+            assert get_client_ip(FakeRequest()) == "192.168.1.1"
+
 
 class TestParsePayload:
     """Tests for payload parsing."""
@@ -311,10 +329,11 @@ class TestProcessRetriesEmptyDestination:
         from app.routes.proxy import process_retries
 
         with patch("app.routes.proxy.admin") as mock_admin, \
-             patch("app.routes.proxy.settings") as mock_settings:
+             patch("app.routes.proxy.settings") as mock_settings, \
+             patch("app.routes.proxy._get_retry_window_cutoff", return_value="2026-01-01T00:00:00Z"):
             mock_settings.RETRY_ENDPOINT_SECRET = "secret"
             mock_settings.API_KEY_SALT = "fallback"
-            mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.limit.return_value.execute.return_value.data = [
+            mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.gte.return_value.limit.return_value.execute.return_value.data = [
                 {
                     "id": 1,
                     "retry_count": 0,
@@ -468,10 +487,11 @@ class TestRetryBodyReconstruction:
         from app.routes.proxy import process_retries
 
         with patch("app.routes.proxy.admin") as mock_admin, \
-             patch("app.routes.proxy.settings") as mock_settings:
+             patch("app.routes.proxy.settings") as mock_settings, \
+             patch("app.routes.proxy._get_retry_window_cutoff", return_value="2026-01-01T00:00:00Z"):
             mock_settings.RETRY_ENDPOINT_SECRET = "secret"
             mock_settings.API_KEY_SALT = "fallback"
-            mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.limit.return_value.execute.return_value.data = [
+            mock_admin.table.return_value.select.return_value.eq.return_value.lte.return_value.lt.return_value.gte.return_value.limit.return_value.execute.return_value.data = [
                 {
                     "id": 1,
                     "retry_count": 0,
@@ -495,3 +515,45 @@ class TestRetryBodyReconstruction:
             ))
             assert response["processed"] == 1
             assert response["results"][0]["outcome"] == "exhausted"
+
+
+class TestRouteCache:
+    """Tests for in-memory route caching."""
+
+    def test_cache_miss_returns_none(self):
+        from app.routes.proxy import _get_cached_route
+
+        assert _get_cached_route("nonexistent-slug") is None
+
+    def test_cache_hit_returns_route(self):
+        from app.routes.proxy import _cache_route, _get_cached_route
+
+        route = {"id": "route-1", "slug": "test"}
+        _cache_route("test-route", route)
+        assert _get_cached_route("test-route") == route
+
+
+class TestApiKeyCache:
+    """Tests for in-memory API key verification caching."""
+
+    def test_cache_miss_returns_none(self):
+        from app.database import _get_cached_api_key
+
+        assert _get_cached_api_key("nonexistent-hash") is None
+
+    def test_fifo_eviction_when_full(self):
+        from app.database import (
+            _cache_api_key,
+            _api_key_cache_order,
+            _api_key_cache,
+            _API_KEY_CACHE_MAX_SIZE,
+        )
+
+        for i in range(_API_KEY_CACHE_MAX_SIZE):
+            _cache_api_key(f"hash-{i:04d}", f"route-{i}")
+
+        assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
+
+        _cache_api_key("hash-new", "route-new")
+        assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
+        assert "hash-0000" not in _api_key_cache

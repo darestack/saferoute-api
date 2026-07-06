@@ -189,6 +189,34 @@ create policy "Service role full access idempotency_cache"
     using (true);
 
 -- ========================================
+-- Webhook failures (dead-letter queue)
+-- ========================================
+create table public.webhook_failures (
+    id uuid default uuid_generate_v4() primary key,
+    route_id uuid not null references public.routes(id) on delete cascade,
+    webhook_log_id bigint,
+    status_code integer,
+    error_message text,
+    request_body jsonb,
+    response_body text,
+    ip_address inet,
+    user_agent text,
+    retry_count integer default 0,
+    max_retries integer default 3,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_webhook_failures_route_id on public.webhook_failures(route_id);
+create index idx_webhook_failures_created_at on public.webhook_failures(created_at);
+
+alter table public.webhook_failures enable row level security;
+
+create policy "Service role full access webhook_failures"
+    on public.webhook_failures for all
+    to service_role
+    using (true);
+
+-- ========================================
 -- Triggers
 -- ========================================
 create or replace function public.update_updated_at()

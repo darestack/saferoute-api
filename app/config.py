@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = ""
     FRONTEND_URL: str = "http://localhost:8000"
     ENVIRONMENT: str = "development"
+    TRUSTED_PROXIES: str = ""
 
     @property
     def is_production(self) -> bool:

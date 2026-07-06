@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ConfigDict
 # ---------------------------------------------------------------------------
 # Shared constrained types
 # ---------------------------------------------------------------------------
-Slug = Annotated[str, Field(pattern="^[a-z0-9-]+$", max_length=50)]
+Slug = Annotated[str, Field(pattern="^[a-z0-9-]+$", min_length=1, max_length=50)]
 """Public route identifier. Lowercase alphanumeric and hyphens only."""
 
 HttpsUrl = Annotated[
@@ -159,6 +159,36 @@ class WebhookLogResponse(BaseModel):
     retry_count: int = 0
     retry_status: str = "none"
     created_at: str
+
+
+class WebhookFailureResponse(BaseModel):
+    """Schema for a webhook failure entry."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    route_id: str
+    status_code: Optional[int] = None
+    error_message: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 3
+    created_at: str
+
+
+class WebhookFailuresResponse(BaseModel):
+    """Paginated list of webhook failures for a route."""
+
+    route_id: str
+    failures: list[WebhookFailureResponse]
+    next_cursor: Optional[str] = None
+
+
+class HealthResponse(BaseModel):
+    """Health check response."""
+
+    status: str
+    database: str
+    service: str
 
 
 class RouteStatsResponse(BaseModel):

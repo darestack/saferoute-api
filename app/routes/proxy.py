@@ -15,6 +15,7 @@ import hmac
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -50,6 +51,20 @@ _MAX_RETRIES = 3
 _RETRY_BACKOFF_BASE_SECONDS = 5
 """Base delay for exponential backoff: delay = base * (2 ^ retry_count)."""
 
+# In-memory caches for performance.
+_ROUTE_CACHE_TTL_SECONDS = 30
+_API_KEY_CACHE_TTL_SECONDS = 300
+_API_KEY_CACHE_MAX_SIZE = 500
+
+_route_cache: dict[str, dict] = {}
+_route_cache_expiry: dict[str, float] = {}
+_route_cache_lock = threading.Lock()
+
+_api_key_cache: dict[str, str] = {}
+_api_key_cache_expiry: dict[str, float] = {}
+_api_key_cache_order: list[str] = []
+_api_key_cache_lock = threading.Lock()
+
 # Regex for template placeholders: {{field.path}}
 _TEMPLATE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
 
@@ -71,7 +86,12 @@ def get_client_ip(request: Request) -> str:
     """
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        client_host = request.client.host if request.client else ""
+        trusted_proxies = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()]
+        if trusted_proxies and client_host in trusted_proxies:
+            return forwarded.split(",")[0].strip()
+        if not trusted_proxies:
+            return forwarded.split(",")[0].strip()
 
     if request.client:
         return request.client.host
@@ -452,6 +472,53 @@ def _calculate_next_retry(retry_count: int) -> str:
     ).isoformat()
 
 
+def _get_retry_window_cutoff() -> str:
+    """Return the ISO timestamp for the oldest retryable log entry.
+
+    Retries older than 7 days are no longer processed to prevent unbounded
+    queue growth.
+    """
+    return (
+        datetime.now(timezone.utc) - timedelta(days=7)
+    ).isoformat()
+
+
+def _get_cached_route(slug: str) -> Optional[dict]:
+    """Return a cached active route dict if available and fresh."""
+    now = time.monotonic()
+    expiry = _route_cache_expiry.get(slug, 0.0)
+    if slug in _route_cache and now < expiry:
+        return _route_cache[slug]
+    return None
+
+
+def _cache_route(slug: str, route: dict) -> None:
+    """Store a route in the cache with TTL."""
+    _route_cache[slug] = route
+    _route_cache_expiry[slug] = time.monotonic() + _ROUTE_CACHE_TTL_SECONDS
+
+
+def _get_cached_api_key(key_hash: str) -> Optional[str]:
+    """Return a cached route_id for an API key hash if available and fresh."""
+    now = time.monotonic()
+    expiry = _api_key_cache_expiry.get(key_hash, 0.0)
+    if key_hash in _api_key_cache and now < expiry:
+        return _api_key_cache[key_hash]
+    return None
+
+
+def _cache_api_key(key_hash: str, route_id: str) -> None:
+    """Store an API key hash → route_id mapping with TTL and max size."""
+    _api_key_cache[key_hash] = route_id
+    _api_key_cache_expiry[key_hash] = time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
+    with _api_key_cache_lock:
+        _api_key_cache_order.append(key_hash)
+        while len(_api_key_cache_order) > _API_KEY_CACHE_MAX_SIZE:
+            oldest = _api_key_cache_order.pop(0)
+            _api_key_cache.pop(oldest, None)
+            _api_key_cache_expiry.pop(oldest, None)
+
+
 # ---------------------------------------------------------------------------
 # Public proxy endpoint
 # ---------------------------------------------------------------------------
@@ -510,20 +577,23 @@ async def proxy_webhook(
     payload.pop("_gotcha", None)
 
     # Look up the route by public slug.
-    route_result = (
-        admin.table("routes")
-        .select("*")
-        .eq("slug", slug)
-        .eq("is_active", True)
-        .execute()
-    )
-
-    if not route_result.data:
-        raise HTTPException(
-            status_code=404, detail="Active routing link not found."
+    route = _get_cached_route(slug)
+    if not route:
+        route_result = (
+            admin.table("routes")
+            .select("*")
+            .eq("slug", slug)
+            .eq("is_active", True)
+            .execute()
         )
 
-    route = route_result.data[0]
+        if not route_result.data:
+            raise HTTPException(
+                status_code=404, detail="Active routing link not found."
+            )
+
+        route = route_result.data[0]
+        _cache_route(slug, route)
 
     # --- Signature verification ---
     raw_webhook_secret = route.get("webhook_secret")
@@ -545,7 +615,13 @@ async def proxy_webhook(
     if idempotency_key:
         cached = check_idempotency(route["id"], idempotency_key)
         if cached:
-            return cached
+            return {
+                "status": "idempotent",
+                "destination_status": cached["destination_status"],
+                "response_body": cached.get("response_body"),
+                "response_headers": cached.get("response_headers") or {},
+                "idempotent": True,
+            }
 
     # --- Rate limiting (per-route config) ---
     route_rate_limit = route.get("rate_limit", _DEFAULT_RATE_LIMIT)
@@ -657,6 +733,7 @@ async def process_retries(
         .eq("retry_status", "pending")
         .lte("next_retry_at", now)
         .lt("retry_count", _MAX_RETRIES)
+        .gte("created_at", _get_retry_window_cutoff())
         .limit(10)
         .execute()
     )
@@ -769,6 +846,23 @@ async def process_retries(
                 "next_retry_at": next_retry,
             }
         ).eq("id", log_id).execute()
+
+        # Insert into dead-letter queue if exhausted.
+        if new_status == "exhausted":
+            admin.table("webhook_failures").insert(
+                {
+                    "route_id": log_entry["route_id"],
+                    "webhook_log_id": log_id,
+                    "status_code": status_code,
+                    "response_body": response_body[:_MAX_LOG_BODY_BYTES]
+                    if response_body
+                    else None,
+                    "ip_address": log_entry.get("ip_address"),
+                    "user_agent": log_entry.get("user_agent"),
+                    "retry_count": retry_count,
+                    "max_retries": _MAX_RETRIES,
+                }
+            ).execute()
 
         # Update idempotency cache if key exists and response is successful.
         idempotency_key = log_entry.get("idempotency_key")

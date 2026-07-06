@@ -16,7 +16,7 @@ class TestEncryptDecryptWebhookSecret:
             mock_get.return_value = mock_fernet
 
             result = encrypt_webhook_secret("my-secret")
-            assert result == "encrypted"
+            assert result == "v1:encrypted"
 
     def test_decrypt_returns_string(self):
         with patch("app.crypto._get_fernet") as mock_get:
@@ -65,7 +65,7 @@ class TestEncryptDecryptWebhookSecret:
             plaintext = "super-secret-webhook-key"
             encrypted = encrypt_webhook_secret(plaintext)
             assert encrypted != plaintext
-            assert encrypted.startswith("gAAAAAB")
+            assert encrypted.startswith("v1:gAAAAAB")
 
             decrypted = decrypt_webhook_secret(encrypted)
             assert decrypted == plaintext
