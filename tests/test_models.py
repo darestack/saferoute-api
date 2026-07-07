@@ -105,6 +105,7 @@ class TestRouteUpdate:
         update = RouteUpdate(webhook_secret=None)
         dumped = update.model_dump(exclude_none=True)
         assert "webhook_secret" not in dumped
+        assert "webhook_secret" in update.model_fields_set
 
 
 class TestRouteResponse:
@@ -131,7 +132,9 @@ class TestRouteResponse:
             has_transform=True,
         )
         assert response.transform_headers == {"X-Injected": "true"}
-        assert response.transform_body_template == '{"email": "{{data.customer.email}}"}'
+        assert (
+            response.transform_body_template == '{"email": "{{data.customer.email}}"}'
+        )
 
 
 class TestSlugValidation:

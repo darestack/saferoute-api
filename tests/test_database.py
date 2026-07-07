@@ -30,6 +30,7 @@ class TestGenerateApiKey:
         full_key, _, hash1 = generate_api_key()
         # Manually verify by re-hashing.
         from app.database import _hash_api_key
+
         hash2 = _hash_api_key(full_key)
         assert hash1 == hash2
 

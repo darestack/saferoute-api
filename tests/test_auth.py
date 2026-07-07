@@ -43,7 +43,9 @@ class TestUserCache:
         mock_user.created_at = "2026-01-01T00:00:00Z"
 
         with patch("app.routes.auth.admin") as mock_admin:
-            mock_admin.auth.admin.get_user_by_id.return_value = MagicMock(user=mock_user)
+            mock_admin.auth.admin.get_user_by_id.return_value = MagicMock(
+                user=mock_user
+            )
 
             user = asyncio.run(_fetch_and_cache_user("user-123"))
             assert user.id == "user-123"
@@ -99,12 +101,80 @@ class TestGenerateSlug:
 
     def test_collapses_double_hyphens(self):
         slug = generate_slug("My  Route", "user-1")
-        assert "--" not in slug.split("-")[1:-1]  # Check middle part has no double hyphens
+        assert (
+            "--" not in slug.split("-")[1:-1]
+        )  # Check middle part has no double hyphens
 
     def test_strips_leading_trailing_hyphens(self):
         slug = generate_slug("---Test---", "user-1")
         assert not slug.startswith("-")
         assert not slug.endswith("-")
+
+
+class TestJwtAuth:
+    """Tests for JWT authentication edge cases."""
+
+    def test_missing_token_returns_401(self):
+        from app.routes.auth import get_current_user_from_jwt
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(get_current_user_from_jwt(authorization=None))
+        assert exc.value.status_code == 401
+
+    def test_malformed_bearer_header_returns_401(self):
+        from app.routes.auth import get_current_user_from_jwt
+        from fastapi import HTTPException
+
+        # "Bearer" with no token → must return 401, not crash with 500.
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(get_current_user_from_jwt(authorization="Bearer"))
+        assert exc.value.status_code == 401
+
+    def test_user_with_null_created_at_does_not_500(self):
+        from app.routes.auth import _fetch_and_cache_user
+
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+        mock_user.email = "test@example.com"
+        mock_user.full_name = None
+        mock_user.created_at = None  # Supabase may return None
+
+        with patch("app.routes.auth.admin") as mock_admin:
+            mock_admin.auth.admin.get_user_by_id.return_value = MagicMock(
+                user=mock_user
+            )
+            user = asyncio.run(_fetch_and_cache_user("user-123"))
+            assert user.id == "user-123"
+            assert user.created_at is None  # Optional now accepts None
+
+    def test_public_key_uses_ec_algorithm_for_es_tokens(self):
+        from app.routes.auth import _public_key_from_jwks
+
+        jwks = {
+            "keys": [
+                {
+                    "kid": "key-1",
+                    "alg": "ES256",
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": "x",
+                    "y": "y",
+                }
+            ]
+        }
+
+        with (
+            patch(
+                "app.routes.auth.ECAlgorithm.from_jwk", return_value="ec-key"
+            ) as ec_from_jwk,
+            patch("app.routes.auth.RSAAlgorithm.from_jwk") as rsa_from_jwk,
+        ):
+            key = _public_key_from_jwks(jwks, "key-1", "ES256")
+
+        assert key == "ec-key"
+        ec_from_jwk.assert_called_once()
+        rsa_from_jwk.assert_not_called()
 
 
 class TestHealthEndpoint:

@@ -13,8 +13,10 @@ client = TestClient(app)
 @contextmanager
 def _mock_jwt():
     """Mock JWT validation to bypass auth in integration tests."""
-    with patch("app.routes.auth._get_cached_jwks") as mock_jwks, \
-         patch("app.routes.auth.jwt") as mock_jwt:
+    with (
+        patch("app.routes.auth._get_cached_jwks") as mock_jwks,
+        patch("app.routes.auth.jwt") as mock_jwt,
+    ):
         mock_jwks.return_value = {"keys": []}
         mock_jwt.get_unverified_header.return_value = {"kid": "test-kid"}
         mock_jwt.decode.return_value = {"sub": "test-user-id"}
@@ -55,7 +57,12 @@ class TestProxyWebhookIntegration:
         """Test that /auth/routes/{route_id}/stats returns aggregated stats."""
         from app.models import User
 
-        fake_user = User(id="test-user-id", email="test@example.com", full_name=None, created_at="2026-01-01T00:00:00Z")
+        fake_user = User(
+            id="test-user-id",
+            email="test@example.com",
+            full_name=None,
+            created_at="2026-01-01T00:00:00Z",
+        )
 
         with patch("app.routes.auth.admin") as mock_admin:
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
@@ -76,6 +83,7 @@ class TestProxyWebhookIntegration:
 
             app.dependency_overrides = {}
             from app.routes.auth import get_current_user_from_jwt
+
             app.dependency_overrides[get_current_user_from_jwt] = lambda: fake_user
 
             try:
@@ -100,7 +108,7 @@ class TestProxyWebhookIntegration:
             user_id="user-1",
             name="Test",
             slug="test",
-            destination_url="https://example.com",
+            destination_url="https://1.1.1.1",
             method="POST",
             headers={},
             is_active=True,

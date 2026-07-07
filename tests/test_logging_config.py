@@ -72,8 +72,13 @@ class TestRequestIdFilter:
         request_id_var.set("req-abc-123")
         filter_ = RequestIdFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=1, msg="hello", args=None, exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="hello",
+            args=None,
+            exc_info=None,
         )
         assert filter_.filter(record) is True
         assert getattr(record, "request_id", None) == "req-abc-123"

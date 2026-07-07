@@ -60,6 +60,7 @@ class TestEncryptDecryptWebhookSecret:
 
             # Force re-creation of fernet instance
             import app.crypto as crypto
+
             crypto._fernet = None
 
             plaintext = "super-secret-webhook-key"

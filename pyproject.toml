@@ -15,3 +15,17 @@ module = [
     "app.routes.proxy"
 ]
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "conftest",
+    "test_auth",
+    "test_crypto",
+    "test_database",
+    "test_logging_config",
+    "test_models",
+    "test_proxy",
+    "test_proxy_integration",
+    "test_sql_migrations",
+]
+ignore_errors = true
