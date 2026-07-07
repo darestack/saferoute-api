@@ -121,10 +121,10 @@ def decrypt_webhook_secret(ciphertext: Optional[str]) -> Optional[str]:
         return None
 
     if ciphertext.startswith(_FALLBACK_PREFIX):
-        return ciphertext[len(_FALLBACK_PREFIX):]
+        return ciphertext[len(_FALLBACK_PREFIX) :]
 
     if ciphertext.startswith(_VERSION_PREFIX):
-        ciphertext = ciphertext[len(_VERSION_PREFIX):]
+        ciphertext = ciphertext[len(_VERSION_PREFIX) :]
 
     fernet = _get_fernet()
     if fernet is None:

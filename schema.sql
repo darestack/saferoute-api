@@ -247,7 +247,7 @@ begin
 end;
 $$ language plpgsql;
 
--- Atomically increment rate limit window or create a new one
+-- Atomically increment a fixed rate-limit window or create a new one
 create or replace function public.increment_rate_limit(
     p_route_id uuid,
     p_ip inet,
@@ -259,12 +259,12 @@ returns table (
     new_count integer
 ) as $$
 begin
-    update public.rate_limits
-    set request_count = request_count + 1
-    where route_id = p_route_id
-      and ip_address = p_ip
-      and window_start >= p_window_start
-      and request_count < p_max_requests
+    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
+    values (p_route_id, p_ip, 1, p_window_start)
+    on conflict (route_id, ip_address, window_start)
+    do update
+        set request_count = public.rate_limits.request_count + 1
+        where public.rate_limits.request_count < p_max_requests
     returning request_count into new_count;
 
     if found then
@@ -277,20 +277,10 @@ begin
     from public.rate_limits
     where route_id = p_route_id
       and ip_address = p_ip
-      and window_start >= p_window_start
+      and window_start = p_window_start
     limit 1;
 
-    if found then
-        success := false;
-        return next;
-        return;
-    end if;
-
-    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
-    values (p_route_id, p_ip, 1, p_window_start)
-    returning request_count into new_count;
-
-    success := true;
+    success := false;
     return next;
     return;
 end;
@@ -318,9 +308,10 @@ $$ language plpgsql;
 create or replace function public.consume_pkce_verifier(p_code_challenge text)
 returns table (code_verifier text) as $$
 begin
-    delete from public.pkce_verifiers
-    where code_challenge = p_code_challenge
-    returning code_verifier into code_verifier;
+    return query
+    delete from public.pkce_verifiers verifier
+    where verifier.code_challenge = p_code_challenge
+    returning verifier.code_verifier;
 end;
 $$ language plpgsql;
 

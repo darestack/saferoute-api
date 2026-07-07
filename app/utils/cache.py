@@ -7,7 +7,9 @@ for caching routes, JWKS, users, and API keys.
 import asyncio
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
+
+T = TypeVar("T")
 
 
 class TTLCache:
@@ -22,7 +24,7 @@ class TTLCache:
         ttl_seconds: int,
         max_size: Optional[int] = None,
         use_lock: bool = True,
-    ):
+    ) -> None:
         """Initialize the TTL cache.
 
         Args:
@@ -39,7 +41,7 @@ class TTLCache:
         self._order: list[Any] = []
         self._lock = threading.Lock() if use_lock else None
 
-    def _with_lock(self, func):
+    def _with_lock(self, func: Callable[[], T]) -> T:
         """Execute a function with lock protection if lock is enabled."""
         if self._lock:
             with self._lock:
@@ -55,7 +57,8 @@ class TTLCache:
         Returns:
             The cached value or None if not found/expired.
         """
-        def _get():
+
+        def _get() -> Optional[Any]:
             now = time.monotonic()
             expiry = self._expiry.get(key, 0.0)
             if key in self._data and now < expiry:
@@ -77,7 +80,8 @@ class TTLCache:
             key: The cache key.
             value: The value to cache.
         """
-        def _set():
+
+        def _set() -> None:
             self._data[key] = value
             self._expiry[key] = time.monotonic() + self._ttl_seconds
             if key not in self._order:
@@ -93,7 +97,8 @@ class TTLCache:
 
     def clear(self) -> None:
         """Clear all cache entries."""
-        def _clear():
+
+        def _clear() -> None:
             self._data.clear()
             self._expiry.clear()
             self._order.clear()
@@ -111,7 +116,7 @@ class AsyncTTLCache:
         self,
         ttl_seconds: int,
         max_size: Optional[int] = None,
-    ):
+    ) -> None:
         """Initialize the async TTL cache.
 
         Args:

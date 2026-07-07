@@ -12,13 +12,18 @@ from typing import Optional
 
 import httpx
 import jwt
-from jwt.algorithms import RSAAlgorithm
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.config import settings
-from app.crypto import decrypt_webhook_secret, encrypt_webhook_secret
-from app.database import admin, verify_api_key, generate_api_key
+from app.crypto import encrypt_webhook_secret
+from app.database import (
+    admin,
+    clear_api_key_cache_for_route,
+    generate_api_key,
+    verify_api_key,
+)
 from app.models import (
     RouteCreate,
     RouteResponse,
@@ -31,7 +36,16 @@ from app.models import (
     WebhookFailureResponse,
     WebhookFailuresResponse,
 )
-from app.utils.security import safe_error_detail, generate_slug
+from app.utils.security import (
+    generate_slug,
+    safe_error_detail,
+    validate_destination_url_async,
+)
+from app.utils.routes import (
+    assert_owned_route_exists,
+    get_owned_route_or_404,
+    route_to_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +87,29 @@ async def _get_cached_jwks() -> dict:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Unable to validate token at this time",
             )
+
+
+def _public_key_from_jwks(jwks: dict, key_id: Optional[str], algorithm: str) -> object:
+    """Return the public key matching a JWT ``kid`` and signing algorithm."""
+    for key in jwks.get("keys", []):
+        if key.get("kid") != key_id:
+            continue
+
+        key_algorithm = key.get("alg") or algorithm
+        if key_algorithm.startswith("ES"):
+            return ECAlgorithm.from_jwk(key)
+        if key_algorithm.startswith("RS"):
+            return RSAAlgorithm.from_jwk(key)
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token: unsupported signing algorithm",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid token: signing key not found",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -166,24 +203,21 @@ async def get_current_user_from_jwt(
             detail="Missing or invalid authorization header",
         )
 
-    token_str = authorization.split(" ", 1)[1]
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or not parts[1]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization header format",
+        )
+    token_str = parts[1]
 
     try:
         jwks = await _get_cached_jwks()
 
         unverified_header = jwt.get_unverified_header(token_str)
         key_id = unverified_header.get("kid")
-        public_key = None
-        for key in jwks.get("keys", []):
-            if key.get("kid") == key_id:
-                public_key = RSAAlgorithm.from_jwk(key)
-                break
-
-        if not public_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: signing key not found",
-            )
+        algorithm = unverified_header.get("alg", "")
+        public_key = _public_key_from_jwks(jwks, key_id, algorithm)
 
         payload = jwt.decode(
             token_str,
@@ -254,9 +288,7 @@ async def get_current_user_from_api_key(
             detail="Invalid API key",
         )
 
-    route_result = (
-        admin.table("routes").select("user_id").eq("id", route_id).execute()
-    )
+    route_result = admin.table("routes").select("user_id").eq("id", route_id).execute()
 
     if not route_result.data:
         raise HTTPException(
@@ -284,47 +316,6 @@ def _generate_slug(name: str, user_id: str) -> str:
     return generate_slug(name, user_id)
 
 
-def _route_to_response(route: dict, api_key: Optional[str] = None) -> dict:
-    """Build a RouteResponse-compatible dict from a DB route row.
-
-    Computes ``has_webhook_secret`` and ``has_transform`` from the raw
-    data, and strips sensitive fields.
-
-    Args:
-        route: The raw route dict from Supabase.
-        api_key: If provided, includes the API key (for create/rotate).
-
-    Returns:
-        A dict suitable for constructing RouteResponse or RouteCreateResponse.
-    """
-    response = {
-        "id": route["id"],
-        "user_id": route["user_id"],
-        "name": route["name"],
-        "slug": route["slug"],
-        "destination_url": route["destination_url"],
-        "method": route["method"],
-        "headers": route["headers"],
-        "is_active": route["is_active"],
-        "requests_count": route["requests_count"],
-        "last_used_at": route.get("last_used_at"),
-        "api_key_prefix": route.get("api_key_prefix"),
-        "rate_limit": route.get("rate_limit", 30),
-        "has_webhook_secret": bool(decrypt_webhook_secret(route.get("webhook_secret"))),
-        "has_transform": bool(
-            route.get("transform_body_template")
-            or route.get("transform_headers")
-        ),
-        "transform_headers": route.get("transform_headers") or {},
-        "transform_body_template": route.get("transform_body_template"),
-        "created_at": route["created_at"],
-        "updated_at": route["updated_at"],
-    }
-    if api_key is not None:
-        response["api_key"] = api_key
-    return response
-
-
 # ---------------------------------------------------------------------------
 # Deprecated email/password auth
 # ---------------------------------------------------------------------------
@@ -334,7 +325,7 @@ async def register_user(credentials: UserCreate):
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail="Email/password registration is deprecated. "
-              "Use /auth/oauth/google or /auth/oauth/github instead.",
+        "Use /auth/oauth/google or /auth/oauth/github instead.",
     )
 
 
@@ -344,7 +335,7 @@ async def login_user(credentials: UserCreate):
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail="Email/password login is deprecated. "
-              "Use /auth/oauth/google or /auth/oauth/github instead.",
+        "Use /auth/oauth/google or /auth/oauth/github instead.",
     )
 
 
@@ -376,6 +367,13 @@ async def create_route(
     """
     slug = _generate_slug(route_data.name, current_user.id)
     full_key, key_prefix, key_hash = generate_api_key()
+    try:
+        await validate_destination_url_async(str(route_data.destination_url))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
     insert_data = {
         "user_id": current_user.id,
@@ -391,7 +389,9 @@ async def create_route(
     }
 
     if route_data.webhook_secret:
-        insert_data["webhook_secret"] = encrypt_webhook_secret(route_data.webhook_secret)
+        insert_data["webhook_secret"] = encrypt_webhook_secret(
+            route_data.webhook_secret
+        )
     if route_data.transform_body_template:
         insert_data["transform_body_template"] = route_data.transform_body_template
 
@@ -405,7 +405,7 @@ async def create_route(
             )
 
         route = result.data[0]
-        return RouteCreateResponse(**_route_to_response(route, api_key=full_key))
+        return RouteCreateResponse(**route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
     except Exception as exc:
@@ -437,7 +437,7 @@ async def list_routes(
         .execute()
     )
 
-    return [RouteResponse(**_route_to_response(row)) for row in result.data]
+    return [RouteResponse(**route_to_response(row)) for row in result.data]
 
 
 @router.get("/routes/{route_id}", response_model=RouteResponse)
@@ -446,21 +446,8 @@ async def get_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID."""
-    result = (
-        admin.table("routes")
-        .select("*")
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
-        .execute()
-    )
-
-    if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Route not found",
-        )
-
-    return RouteResponse(**_route_to_response(result.data[0]))
+    route = get_owned_route_or_404(admin, route_id, current_user.id)
+    return RouteResponse(**route_to_response(route))
 
 
 @router.put("/routes/{route_id}", response_model=RouteResponse)
@@ -473,10 +460,22 @@ async def update_route(
 
     When ``name`` is updated, the ``slug`` is regenerated.
     """
+    existing_route = get_owned_route_or_404(
+        admin, route_id, current_user.id, columns="slug"
+    )
+    old_slug = existing_route["slug"]
+
     updates = route_data.model_dump(exclude_none=True)
 
     if "destination_url" in updates:
         updates["destination_url"] = str(updates["destination_url"])
+        try:
+            await validate_destination_url_async(updates["destination_url"])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            )
 
     if "name" in updates:
         updates["slug"] = _generate_slug(updates["name"], current_user.id)
@@ -495,8 +494,13 @@ async def update_route(
                 detail="Slug already in use",
             )
 
-    if "webhook_secret" in updates and updates["webhook_secret"]:
-        updates["webhook_secret"] = encrypt_webhook_secret(updates["webhook_secret"])
+    if "webhook_secret" in route_data.model_fields_set:
+        if route_data.webhook_secret:
+            updates["webhook_secret"] = encrypt_webhook_secret(
+                route_data.webhook_secret
+            )
+        else:
+            updates["webhook_secret"] = None
 
     try:
         result = (
@@ -513,7 +517,12 @@ async def update_route(
                 detail="Route not found",
             )
 
-        return RouteResponse(**_route_to_response(result.data[0]))
+        route = result.data[0]
+        from app.routes.proxy import clear_route_cache
+
+        clear_route_cache(old_slug)
+        clear_route_cache(route["slug"])
+        return RouteResponse(**route_to_response(route))
     except HTTPException:
         raise
     except Exception as exc:
@@ -535,6 +544,11 @@ async def delete_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Delete a route owned by the authenticated user."""
+    existing_route = get_owned_route_or_404(
+        admin, route_id, current_user.id, columns="slug"
+    )
+    old_slug = existing_route["slug"]
+
     result = (
         admin.table("routes")
         .delete()
@@ -549,6 +563,9 @@ async def delete_route(
             detail="Route not found",
         )
 
+    from app.routes.proxy import clear_route_cache
+
+    clear_route_cache(old_slug)
     return None
 
 
@@ -581,7 +598,8 @@ async def rotate_api_key(
             )
 
         route = result.data[0]
-        return RouteCreateResponse(**_route_to_response(route, api_key=full_key))
+        clear_api_key_cache_for_route(route_id)
+        return RouteCreateResponse(**route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
     except Exception as exc:
@@ -606,19 +624,7 @@ async def list_route_logs(
     offset: int = Query(default=0, ge=0),
 ):
     """List webhook delivery logs for a route (newest first, paginated)."""
-    route_check = (
-        admin.table("routes")
-        .select("id")
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
-        .execute()
-    )
-
-    if not route_check.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Route not found",
-        )
+    assert_owned_route_exists(admin, route_id, current_user.id)
 
     result = (
         admin.table("webhook_logs")
@@ -648,25 +654,9 @@ async def get_route_stats(
     Uses a single SQL aggregation query for performance, avoiding loading
     all log rows into application memory.
     """
-    route_check = (
-        admin.table("routes")
-        .select("id")
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
-        .execute()
-    )
+    assert_owned_route_exists(admin, route_id, current_user.id)
 
-    if not route_check.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Route not found",
-        )
-
-    stats = (
-        admin.rpc("get_route_stats", {"p_route_id": route_id})
-        .execute()
-        .data
-    )
+    stats = admin.rpc("get_route_stats", {"p_route_id": route_id}).execute().data
 
     if not stats:
         return RouteStatsResponse(route_id=route_id)
@@ -740,19 +730,7 @@ async def list_route_failures(
     Raises:
         HTTPException: 404 if the route does not exist or belongs to another user.
     """
-    route_check = (
-        admin.table("routes")
-        .select("id")
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
-        .execute()
-    )
-
-    if not route_check.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Route not found",
-        )
+    assert_owned_route_exists(admin, route_id, current_user.id)
 
     query = (
         admin.table("webhook_failures")

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
         """
         return self.ENVIRONMENT == "production"
 
+    @property
+    def is_development(self) -> bool:
+        """Return ``True`` if the app is running in local development."""
+        return self.ENVIRONMENT == "development"
+
     def get_allowed_hosts(self) -> list[str]:
         """Return the list of allowed hosts for TrustedHostMiddleware.
 
@@ -59,14 +64,16 @@ class Settings(BaseSettings):
         In development, allows all hosts.
         """
         if self.is_production and self.ALLOWED_HOSTS:
-            return [host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()]
+            return [
+                host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()
+            ]
         return ["*"]
 
     @model_validator(mode="after")
     def validate_production_encryption(self) -> "Settings":
         """Ensure encryption is configured in production."""
-        if self.is_production and not self.ENCRYPTION_KEY:
-            raise ValueError("ENCRYPTION_KEY must be set in production")
+        if not self.is_development and not self.ENCRYPTION_KEY:
+            raise ValueError("ENCRYPTION_KEY must be set outside development")
         return self
 
 

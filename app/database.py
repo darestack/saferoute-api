@@ -158,9 +158,7 @@ def bump_route_metrics_atomic(route_id: str) -> None:
     try:
         admin.rpc("increment_route_count", {"p_route_id": route_id}).execute()
     except Exception:
-        logger.exception(
-            "Failed to increment route metrics for route_id=%s", route_id
-        )
+        logger.exception("Failed to increment route metrics for route_id=%s", route_id)
 
 
 # Shared module-level clients. Import these elsewhere rather than calling
@@ -194,12 +192,25 @@ def _cache_api_key(key_hash: str, route_id: str) -> None:
     """Store an API key hash → route_id mapping with TTL and max size."""
     with _api_key_cache_lock:
         _api_key_cache[key_hash] = route_id
-        _api_key_cache_expiry[key_hash] = (
-            time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
-        )
+        _api_key_cache_expiry[key_hash] = time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
         if key_hash not in _api_key_cache_order:
             _api_key_cache_order.append(key_hash)
         while len(_api_key_cache_order) > _API_KEY_CACHE_MAX_SIZE:
             oldest = _api_key_cache_order.pop(0)
             _api_key_cache.pop(oldest, None)
             _api_key_cache_expiry.pop(oldest, None)
+
+
+def clear_api_key_cache_for_route(route_id: str) -> None:
+    """Remove cached API-key lookups for a route after key rotation."""
+    with _api_key_cache_lock:
+        stale_hashes = [
+            key_hash
+            for key_hash, cached_route_id in _api_key_cache.items()
+            if cached_route_id == route_id
+        ]
+        for key_hash in stale_hashes:
+            _api_key_cache.pop(key_hash, None)
+            _api_key_cache_expiry.pop(key_hash, None)
+            if key_hash in _api_key_cache_order:
+                _api_key_cache_order.remove(key_hash)

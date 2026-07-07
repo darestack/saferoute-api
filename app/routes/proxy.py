@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -23,8 +23,18 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from app.config import settings
 from app.crypto import decrypt_webhook_secret
 from app.database import admin, bump_route_metrics_atomic, get_http_client
-from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
-from app.utils.security import verify_webhook_signature, get_client_ip
+from app.utils.retry import (
+    build_retry_result,
+    calculate_next_retry,
+    get_retry_window_cutoff,
+    should_retry,
+    update_retry_log_status,
+)
+from app.utils.security import (
+    get_client_ip,
+    validate_destination_url_async,
+    verify_webhook_signature,
+)
 from app.utils.transform import parse_payload, render_template
 
 logger = logging.getLogger(__name__)
@@ -33,7 +43,7 @@ router = APIRouter(tags=["Proxy Engine"])
 
 # Tunables
 _RATE_LIMIT_WINDOW_SECONDS = 60
-"""Sliding window duration for per-IP rate limiting."""
+"""Fixed-window duration for per-IP rate limiting."""
 
 _DEFAULT_RATE_LIMIT = 30
 """Default max requests per IP per route within the window."""
@@ -83,6 +93,21 @@ def _cache_route(slug: str, route: dict) -> None:
             _route_cache_expiry.pop(oldest, None)
 
 
+def clear_route_cache(slug: Optional[str] = None) -> None:
+    """Clear cached route entries after route-management mutations."""
+    with _route_cache_lock:
+        if slug is None:
+            _route_cache.clear()
+            _route_cache_expiry.clear()
+            _route_cache_order.clear()
+            return
+
+        _route_cache.pop(slug, None)
+        _route_cache_expiry.pop(slug, None)
+        if slug in _route_cache_order:
+            _route_cache_order.remove(slug)
+
+
 def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> None:
     """Check and increment the per-IP rate limit for a route.
 
@@ -96,24 +121,22 @@ def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> None
     Raises:
         HTTPException: 429 if the client has exceeded the rate limit.
     """
-    window_start_cutoff = (
-        datetime.now(timezone.utc)
-        - timedelta(seconds=_RATE_LIMIT_WINDOW_SECONDS)
+    now = datetime.now(timezone.utc)
+    window_start = now.replace(
+        second=(now.second // _RATE_LIMIT_WINDOW_SECONDS) * _RATE_LIMIT_WINDOW_SECONDS,
+        microsecond=0,
     ).isoformat()
 
     try:
-        result = (
-            admin.rpc(
-                "increment_rate_limit",
-                {
-                    "p_route_id": route_id,
-                    "p_ip": client_ip,
-                    "p_window_start": window_start_cutoff,
-                    "p_max_requests": max_requests,
-                },
-            )
-            .execute()
-        )
+        result = admin.rpc(
+            "increment_rate_limit",
+            {
+                "p_route_id": route_id,
+                "p_ip": client_ip,
+                "p_window_start": window_start,
+                "p_max_requests": max_requests,
+            },
+        ).execute()
 
         if result.data:
             row = result.data[0]
@@ -139,9 +162,7 @@ def check_idempotency(route_id: str, idempotency_key: str) -> Optional[dict]:
     Returns:
         The cached response dict if found and fresh (< 24h), or ``None``.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=24)
-    ).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
     result = (
         admin.table("idempotency_cache")
@@ -244,7 +265,7 @@ async def forward_payload(
 def log_delivery(
     route_id: str,
     status_code: int,
-    payload: dict,
+    payload: Any,
     response_body: str,
     response_headers: dict,
     client_ip: str,
@@ -274,37 +295,37 @@ def log_delivery(
     Returns:
         The log entry ID if insertion succeeded, or ``None``.
     """
-    truncated_body = (
-        response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
-    )
+    truncated_body = response_body[:_MAX_LOG_BODY_BYTES] if response_body else None
 
     # Populate error_message for non-2xx responses to aid diagnostics.
     error_message = None
     if status_code is not None and not (200 <= status_code < 300):
-        error_message = (
-            response_body[:500] if response_body else f"HTTP {status_code}"
-        )
+        error_message = response_body[:500] if response_body else f"HTTP {status_code}"
 
     try:
-        result = admin.table("webhook_logs").insert(
-            {
-                "route_id": route_id,
-                "status_code": status_code,
-                "request_body": (
-                    payload if isinstance(payload, (dict, list)) else str(payload)
-                ),
-                "response_body": truncated_body,
-                "response_headers": response_headers,
-                "error_message": error_message,
-                "ip_address": client_ip,
-                "user_agent": user_agent,
-                "duration_ms": duration_ms,
-                "content_type": content_type,
-                "idempotency_key": idempotency_key,
-                "retry_status": retry_status,
-                "next_retry_at": next_retry_at,
-            }
-        ).execute()
+        result = (
+            admin.table("webhook_logs")
+            .insert(
+                {
+                    "route_id": route_id,
+                    "status_code": status_code,
+                    "request_body": (
+                        payload if isinstance(payload, (dict, list)) else str(payload)
+                    ),
+                    "response_body": truncated_body,
+                    "response_headers": response_headers,
+                    "error_message": error_message,
+                    "ip_address": client_ip,
+                    "user_agent": user_agent,
+                    "duration_ms": duration_ms,
+                    "content_type": content_type,
+                    "idempotency_key": idempotency_key,
+                    "retry_status": retry_status,
+                    "next_retry_at": next_retry_at,
+                }
+            )
+            .execute()
+        )
 
         if result.data:
             return result.data[0].get("id")
@@ -368,8 +389,9 @@ async def proxy_webhook(
     payload = parse_payload(body, content_type)
 
     # Honeypot — drop obvious spam silently.
-    payload.pop("honeypot_field", None)
-    payload.pop("_gotcha", None)
+    if isinstance(payload, dict):
+        payload.pop("honeypot_field", None)
+        payload.pop("_gotcha", None)
 
     # Look up the route by public slug.
     route = _get_cached_route(slug)
@@ -423,11 +445,27 @@ async def proxy_webhook(
     enforce_rate_limit(route["id"], client_ip, route_rate_limit)
 
     # --- Payload transformation ---
-    forward_body = body
+    # Always reconstruct the forwarded body from the cleaned `payload` so that
+    # honeypot fields stripped above are never forwarded. Only fall back to
+    # the raw bytes for content types we cannot safely re-encode (binary, etc.).
     transform_template = route.get("transform_body_template")
     if transform_template:
         rendered = render_template(transform_template, payload)
         forward_body = rendered.encode("utf-8")
+    elif "application/json" in content_type or isinstance(payload, (dict, list)):
+        try:
+            forward_body = json.dumps(payload).encode("utf-8")
+        except (TypeError, ValueError):
+            forward_body = body
+    elif "application/x-www-form-urlencoded" in content_type:
+        try:
+            from urllib.parse import urlencode
+
+            forward_body = urlencode(payload).encode("utf-8")
+        except (TypeError, ValueError):
+            forward_body = body
+    else:
+        forward_body = body
 
     # Merge route-level transform headers with configured headers.
     outbound_headers = dict(route.get("headers", {}))
@@ -438,6 +476,17 @@ async def proxy_webhook(
     # --- Forward ---
     destination = route["destination_url"]
     method = route.get("method", "POST")
+    try:
+        await validate_destination_url_async(destination)
+    except ValueError:
+        logger.warning(
+            "Blocked unsafe destination during forwarding for route_id=%s",
+            route["id"],
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Unsafe destination URL",
+        )
 
     status_code, response_body, response_headers = await forward_payload(
         method=method,
@@ -521,7 +570,9 @@ async def process_retries(
     # Fetch pending retries that are due.
     pending = (
         admin.table("webhook_logs")
-        .select("*, routes!inner(destination_url, method, headers, transform_headers, transform_body_template)")
+        .select(
+            "*, routes!inner(destination_url, method, headers, transform_headers, transform_body_template)"
+        )
         .eq("retry_status", "pending")
         .lte("next_retry_at", now)
         .lt("retry_count", _MAX_RETRIES)
@@ -540,36 +591,30 @@ async def process_retries(
 
         if not destination_url:
             new_status = "exhausted"
-            next_retry = None
-            result = (
-                admin.table("webhook_logs")
-                .update(
-                    {
-                        "retry_count": retry_count,
-                        "retry_status": new_status,
-                        "next_retry_at": next_retry,
-                    }
+            if not update_retry_log_status(admin, log_id, retry_count, new_status):
+                logger.warning(
+                    "Retry mark-exhausted update failed for log_id=%s", log_id
                 )
-                .eq("id", log_id)
-                .execute()
-            )
-            if not result.data:
-                logger.warning("Retry mark-exhausted update failed for log_id=%s", log_id)
-            results.append(
-                {
-                    "log_id": log_id,
-                    "retry_count": retry_count,
-                    "status_code": 0,
-                    "outcome": new_status,
-                }
-            )
+            results.append(build_retry_result(log_id, retry_count, 0, new_status))
+            continue
+
+        try:
+            await validate_destination_url_async(destination_url)
+        except ValueError:
+            new_status = "exhausted"
+            if not update_retry_log_status(admin, log_id, retry_count, new_status):
+                logger.warning("Unsafe-destination update failed for log_id=%s", log_id)
+            results.append(build_retry_result(log_id, retry_count, 0, new_status))
             continue
 
         # Claim this entry to reduce concurrent retry collisions.
+        # NOTE: "retrying" is a valid value in the retry_status CHECK
+        # constraint; "processing" is NOT and would cause the UPDATE to fail.
         claim_result = (
             admin.table("webhook_logs")
-            .update({"retry_status": "processing"})
+            .update({"retry_status": "retrying"})
             .eq("id", log_id)
+            .eq("retry_status", "pending")
             .execute()
         )
         if not claim_result.data:
@@ -584,37 +629,25 @@ async def process_retries(
         if not stored_body:
             # Empty body is fine.
             pass
-        elif "application/json" in content_type or isinstance(stored_body, (dict, list)):
+        elif "application/json" in content_type or isinstance(
+            stored_body, (dict, list)
+        ):
             body = json.dumps(stored_body).encode("utf-8")
         elif "application/x-www-form-urlencoded" in content_type:
             from urllib.parse import urlencode
+
             body = urlencode(stored_body).encode("utf-8")
-        elif content_type in ("application/xml", "text/xml", "application/protobuf", "application/octet-stream"):
+        elif content_type in (
+            "application/xml",
+            "text/xml",
+            "application/protobuf",
+            "application/octet-stream",
+        ):
             # Cannot reliably reconstruct these from jsonb; skip retry.
             new_status = "exhausted"
-            next_retry = None
-            result = (
-                admin.table("webhook_logs")
-                .update(
-                    {
-                        "retry_count": retry_count,
-                        "retry_status": new_status,
-                        "next_retry_at": next_retry,
-                    }
-                )
-                .eq("id", log_id)
-                .execute()
-            )
-            if not result.data:
+            if not update_retry_log_status(admin, log_id, retry_count, new_status):
                 logger.warning("Retry exhaust update failed for log_id=%s", log_id)
-            results.append(
-                {
-                    "log_id": log_id,
-                    "retry_count": retry_count,
-                    "status_code": 0,
-                    "outcome": new_status,
-                }
-            )
+            results.append(build_retry_result(log_id, retry_count, 0, new_status))
             continue
         else:
             # Generic text fallback.
@@ -639,35 +672,27 @@ async def process_retries(
             headers=outbound_headers,
         )
 
-        # Determine outcome.
+        # Determine outcome. Use the same retry predicate as the forward
+        # path (should_retry) to stay consistent.
         if 200 <= status_code < 300:
             new_status = "succeeded"
             next_retry = None
-        elif status_code < 500:
-            # 4xx are permanent client errors — no point retrying.
-            new_status = "exhausted"
-            next_retry = None
-        elif retry_count >= _MAX_RETRIES:
-            new_status = "exhausted"
-            next_retry = None
-        else:
+        elif should_retry(status_code) and retry_count < _MAX_RETRIES:
             new_status = "pending"
             next_retry = calculate_next_retry(retry_count)
+        else:
+            # 4xx (except retryable 429) and exhausted attempts are terminal.
+            new_status = "exhausted"
+            next_retry = None
 
-        result = (
-            admin.table("webhook_logs")
-            .update(
-                {
-                    "retry_count": retry_count,
-                    "retry_status": new_status,
-                    "status_code": status_code,
-                    "next_retry_at": next_retry,
-                }
-            )
-            .eq("id", log_id)
-            .execute()
-        )
-        if not result.data:
+        if not update_retry_log_status(
+            admin,
+            log_id,
+            retry_count,
+            new_status,
+            next_retry_at=next_retry,
+            status_code=status_code,
+        ):
             logger.warning("Retry status update failed for log_id=%s", log_id)
 
         # Insert into dead-letter queue if exhausted.
@@ -704,14 +729,7 @@ async def process_retries(
                 response_headers,
             )
 
-        results.append(
-            {
-                "log_id": log_id,
-                "retry_count": retry_count,
-                "status_code": status_code,
-                "outcome": new_status,
-            }
-        )
+        results.append(build_retry_result(log_id, retry_count, status_code, new_status))
 
     logger.info("Processed %d retries", len(results))
 

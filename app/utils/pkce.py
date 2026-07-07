@@ -7,7 +7,7 @@ import base64
 import hashlib
 import logging
 import secrets
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -25,13 +25,13 @@ def generate_pkce_pair() -> tuple[str, str]:
     """
     code_verifier = secrets.token_urlsafe(PKCE_CODE_VERIFIER_LENGTH)
     hashed = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-    code_challenge = (
-        base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
-    )
+    code_challenge = base64.urlsafe_b64encode(hashed).rstrip(b"=").decode("utf-8")
     return code_verifier, code_challenge
 
 
-def store_pkce_verifier(admin_client: "Client", code_challenge: str, code_verifier: str) -> None:
+def store_pkce_verifier(
+    admin_client: "Client", code_challenge: str, code_verifier: str
+) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table.
 
     This replaces the in-memory dict so the verifier survives across
@@ -54,7 +54,9 @@ def store_pkce_verifier(admin_client: "Client", code_challenge: str, code_verifi
         raise
 
 
-def retrieve_and_delete_pkce_verifier(admin_client: "Client", code_challenge: str) -> Optional[str]:
+def retrieve_and_delete_pkce_verifier(
+    admin_client: "Client", code_challenge: str
+) -> Optional[str]:
     """Atomically retrieve and delete a PKCE verifier from the database.
 
     Uses the ``consume_pkce_verifier`` SQL function to prevent reuse races.
@@ -67,13 +69,15 @@ def retrieve_and_delete_pkce_verifier(admin_client: "Client", code_challenge: st
         The code verifier string, or ``None`` if not found.
     """
     try:
-        result = (
-            admin_client.rpc("consume_pkce_verifier", {"p_code_challenge": code_challenge})
-            .execute()
-        )
+        result = admin_client.rpc(
+            "consume_pkce_verifier", {"p_code_challenge": code_challenge}
+        ).execute()
 
-        if result.data:
-            return result.data[0]["code_verifier"]
+        rows = cast(Any, result.data)
+        if isinstance(rows, list) and rows:
+            verifier = rows[0].get("code_verifier")
+            if isinstance(verifier, str):
+                return verifier
     except Exception:
         logger.exception("Failed to retrieve PKCE verifier")
 

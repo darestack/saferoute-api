@@ -9,6 +9,7 @@ for a Supabase JWT session.
 
 import inspect
 import logging
+import secrets
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -17,7 +18,11 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import admin, supabase_client
-from app.utils.pkce import generate_pkce_pair, store_pkce_verifier, retrieve_and_delete_pkce_verifier
+from app.utils.pkce import (
+    generate_pkce_pair,
+    retrieve_and_delete_pkce_verifier,
+    store_pkce_verifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,16 +100,14 @@ async def oauth_redirect(provider: str):
     if provider not in ("google", "github"):
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unsupported provider: {provider}. "
-                "Use 'google' or 'github'."
-            ),
+            detail=(f"Unsupported provider: {provider}. Use 'google' or 'github'."),
         )
 
     code_verifier, code_challenge = _generate_pkce_pair()
+    state = secrets.token_urlsafe(32)
 
     try:
-        _store_pkce_verifier(code_challenge, code_verifier)
+        _store_pkce_verifier(state, code_verifier)
     except Exception:
         raise HTTPException(
             status_code=500,
@@ -118,11 +121,9 @@ async def oauth_redirect(provider: str):
         "redirect_to": redirect_uri,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
+        "state": state,
     }
-    auth_url = (
-        f"{settings.SUPABASE_URL}/auth/v1/authorize?"
-        + urlencode(params)
-    )
+    auth_url = f"{settings.SUPABASE_URL}/auth/v1/authorize?" + urlencode(params)
 
     return OAuthRedirectResponse(auth_url=auth_url)
 
@@ -131,6 +132,7 @@ async def oauth_redirect(provider: str):
 async def oauth_callback_post(
     code: str = Query(...),
     code_challenge: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
 ):
     """Handle the OAuth callback from Supabase (POST preferred).
 
@@ -148,13 +150,14 @@ async def oauth_callback_post(
     Raises:
         HTTPException: 400 if the code exchange fails or state is missing.
     """
-    return await _exchange_code(code, code_challenge)
+    return await _exchange_code(code, state or code_challenge)
 
 
 @router.get("/callback", response_model=CallbackResponse)
 async def oauth_callback_get(
     code: str = Query(...),
     code_challenge: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
 ):
     """Handle the OAuth callback from Supabase (GET fallback).
 
@@ -162,7 +165,7 @@ async def oauth_callback_get(
         Use POST /auth/callback instead to avoid logging the authorization
         code in query strings.
     """
-    return await _exchange_code(code, code_challenge)
+    return await _exchange_code(code, state or code_challenge)
 
 
 async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackResponse:

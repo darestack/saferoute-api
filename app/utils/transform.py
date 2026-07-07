@@ -52,7 +52,7 @@ def resolve_dot_path(data: Any, path: str) -> Any:
     return current
 
 
-def render_template(template: str, payload: dict) -> str:
+def render_template(template: str, payload: Any) -> str:
     """Render a template string by replacing ``{{field.path}}`` placeholders.
 
     Uses :func:`resolve_dot_path` for nested access. Missing fields are
@@ -66,7 +66,7 @@ def render_template(template: str, payload: dict) -> str:
         The rendered string.
     """
 
-    def replacer(match: re.Match) -> str:
+    def replacer(match: re.Match[str]) -> str:
         path = match.group(1)
         value = resolve_dot_path(payload, path)
         if value is None:
@@ -76,18 +76,18 @@ def render_template(template: str, payload: dict) -> str:
     return _TEMPLATE_PATTERN.sub(replacer, template)
 
 
-def parse_payload(body: bytes, content_type: str) -> dict:
-    """Parse the incoming request body into a dictionary.
+def parse_payload(body: bytes, content_type: str) -> Any:
+    """Parse the incoming request body into JSON-compatible data.
 
-    Supports JSON and form-urlencoded payloads. Falls back to an empty
-    dict on parse failure.
+    Supports JSON and form-urlencoded payloads. Falls back to an empty dict
+    on parse failure so callers always receive JSON-serializable data.
 
     Args:
         body: Raw request body bytes.
         content_type: The ``Content-Type`` header value.
 
     Returns:
-        Parsed payload as a dictionary.
+        Parsed payload as a JSON-compatible object.
     """
     if not body:
         return {}
@@ -95,6 +95,9 @@ def parse_payload(body: bytes, content_type: str) -> dict:
     try:
         if "application/json" in content_type:
             return json.loads(body)
+
+        if "application/x-www-form-urlencoded" in content_type:
+            return {k: v[0] for k, v in parse_qs(body.decode()).items()}
 
         # If content-type is missing, try JSON first, then fall back to form data.
         try:

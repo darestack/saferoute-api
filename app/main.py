@@ -9,7 +9,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 
-from typing import Callable, Awaitable, Any
+from typing import Callable, Awaitable, Any, MutableMapping, TypeAlias
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -25,6 +25,9 @@ configure_logging(environment=settings.ENVIRONMENT)
 from app.routes import auth, oauth, proxy  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+ASGIMessage: TypeAlias = MutableMapping[str, Any]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
@@ -50,6 +53,7 @@ app = FastAPI(
     },
     lifespan=lifespan,
 )
+
 
 # ---------------------------------------------------------------------------
 # Request ID middleware
@@ -83,6 +87,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 _ALLOWED_HEADERS_PRODUCTION = ["Authorization", "Content-Type", "X-API-Key"]
 
+
 def _get_cors_origins() -> list[str]:
     """Build the list of allowed CORS origins from settings."""
     if settings.ENVIRONMENT == "development":
@@ -97,9 +102,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=(
-        ["*"]
-        if settings.ENVIRONMENT == "development"
-        else _ALLOWED_HEADERS_PRODUCTION
+        ["*"] if settings.ENVIRONMENT == "development" else _ALLOWED_HEADERS_PRODUCTION
     ),
     max_age=600,
 )
@@ -142,12 +145,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 _DEFAULT_MAX_BODY_BYTES = 1024 * 1024  # 1 MiB
 
 
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+class RequestTooLargeError(Exception):
+    """Raised when a streaming request body exceeds the configured limit."""
+
+
+class RequestSizeLimitMiddleware:
     """Reject requests with bodies larger than the configured limit.
 
-    Checks both the ``Content-Length`` header (cheap, up-front rejection)
-    and the actual body length (to prevent clients that omit or lie about
-    the header).
+    Checks ``Content-Length`` for fast rejection and wraps the ASGI ``receive``
+    callable so oversized chunked bodies are rejected without pre-reading the
+    body before route handlers run.
     """
 
     def __init__(self, app: Any, max_size: int = _DEFAULT_MAX_BODY_BYTES) -> None:
@@ -157,36 +164,54 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
             app: The downstream ASGI app.
             max_size: Maximum allowed request body size in bytes.
         """
-        super().__init__(app)
+        self.app = app
         self.max_size = max_size
 
-    async def dispatch(
+    async def __call__(
         self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """Reject oversized requests before they reach route handlers."""
-        content_length = request.headers.get("content-length")
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[ASGIMessage]],
+        send: Callable[[ASGIMessage], Awaitable[None]],
+    ) -> None:
+        """Reject oversized HTTP request bodies."""
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        content_length = headers.get(b"content-length")
         if content_length:
             try:
                 length = int(content_length)
             except (ValueError, TypeError):
                 length = 0
             if length > self.max_size:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=413,
                     content={"detail": "Request body too large"},
                 )
+                await response(scope, receive, send)
+                return
 
-        if request.method in ("POST", "PUT", "PATCH"):
-            body = await request.body()
-            if len(body) > self.max_size:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "Request body too large"},
-                )
+        received = 0
 
-        return await call_next(request)
+        async def limited_receive() -> ASGIMessage:
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_size:
+                    raise RequestTooLargeError
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except RequestTooLargeError:
+            response = JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large"},
+            )
+            await response(scope, receive, send)
 
 
 # Middleware ordering: outermost runs first.
@@ -206,6 +231,7 @@ logger.info("SafeRoute API initialized (environment=%s)", settings.ENVIRONMENT)
 async def shutdown_event() -> None:
     """Close shared resources on application shutdown."""
     from app.database import get_http_client
+
     client = get_http_client()
     if not client.is_closed:
         await client.aclose()

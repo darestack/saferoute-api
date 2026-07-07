@@ -239,7 +239,7 @@ class User(BaseModel):
     id: str
     email: str
     full_name: Optional[str] = None
-    created_at: str
+    created_at: Optional[str] = None
 
 
 class UserCreate(BaseModel):
