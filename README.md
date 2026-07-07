@@ -1,13 +1,13 @@
 # SafeRoute API
 
-[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI 0.139](https://img.shields.io/badge/FastAPI-0.139-green)](https://fastapi.tiangolo.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-Ready-3ECF8E)](https://supabase.com/)
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors/darestack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/darestack/saferoute-api)
 
-A lightweight, secure webhook proxy. Point your static forms or public webhooks at a SafeRoute URL and we'll forward them to Zapier, Make, Slack, or any destination — with spam filtering and rate limiting built in.
+A lightweight, secure webhook proxy. Point your static forms or public webhooks at a SafeRoute URL and SafeRoute forwards them to an HTTPS destination with per-route rate limiting, optional HMAC verification, retry handling, and webhook logging.
 
 **Live demo:** https://saferoute-api.vercel.app  
 **Status:** Alpha — not production-ready. Use at your own risk.
@@ -34,8 +34,7 @@ Detailed setup with Supabase + OAuth: [SETUP.md](SETUP.md)
 | ---------- | ---------------------------- |
 | API        | FastAPI + Uvicorn            |
 | Database   | Supabase (PostgreSQL + Auth) |
-| Deployment | Vercel Functions             |
-| Payments   | Stripe (planned)             |
+| Deployment | Docker or ASGI hosting       |
 
 ## Usage
 
@@ -79,7 +78,6 @@ SafeRoute validates the payload, rate-limits by IP, logs the request, and forwar
 │       ├── oauth.py     # Google/GitHub OAuth flows
 │       └── proxy.py     # Webhook forwarding engine
 ├── requirements.txt
-├── vercel.json
 └── schema.sql           # Supabase tables + RLS policies
 ```
 
@@ -88,17 +86,16 @@ SafeRoute validates the payload, rate-limits by IP, logs the request, and forwar
 - [x] Google/GitHub OAuth via Supabase Auth
 - [x] API key generation and verification for route management
 - [x] Proxy forwarding with rate limiting and webhook logging
+- [x] Retry processing for retryable delivery failures
+- [x] Optional webhook signature verification
 - [x] Security headers, CORS, request size limits
+- [x] Basic SSRF guardrails for outbound destinations
 - [x] Supabase schema with RLS, rate-limit table, webhook logs
 
 ## What's missing
 
-- [ ] Spam filtering (honeypot + IP rate limiting)
-- [ ] Retry logic with exponential backoff
 - [ ] Dashboard UI
-- [ ] Stripe billing
-- [ ] Webhook signature verification
-- [ ] Tests
+- [ ] Managed network egress controls. Current SSRF protection is implemented in application code with standard-library URL/IP/DNS checks to keep operating cost at $0.
 
 ## Contributing
 

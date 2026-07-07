@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.14+
+- Python 3.12+
 - Supabase account (free tier works)
 - Google Cloud account (for Google OAuth) OR GitHub account (for GitHub OAuth)
 
@@ -42,6 +42,8 @@ SUPABASE_KEY=eyJhbGciOi...
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
 WEBHOOK_SECRET=dev-secret-change-in-production
 API_KEY_SALT=dev-salt-change-in-production
+RETRY_ENDPOINT_SECRET=dev-retry-secret-change-in-production
+ENCRYPTION_KEY=dev-encryption-key-change-outside-development
 FRONTEND_URL=http://localhost:8000
 ENVIRONMENT=development
 ```
@@ -49,6 +51,8 @@ ENVIRONMENT=development
 - `SUPABASE_URL` and `SUPABASE_KEY` from Project Settings → API
 - `SUPABASE_SERVICE_ROLE_KEY` from the same page
 - `API_KEY_SALT` — any random string, used to hash API keys
+- `RETRY_ENDPOINT_SECRET` — shared secret for `/internal/process-retries`
+- `ENCRYPTION_KEY` — required outside local development for webhook-secret encryption
 - `FRONTEND_URL` — where Supabase redirects after OAuth (e.g. `http://localhost:8000` for dev, `https://your-app.vercel.app` for production)
 
 ## 4. Run locally
@@ -68,10 +72,10 @@ curl http://localhost:8000/auth/oauth/google
 
 Open the `auth_url` in a browser, sign in, and you'll get a JWT token back.
 
-## Deploying to Vercel
+## Deploying
 
 1. Push to GitHub
-2. Import repo in Vercel
-3. Set environment variables in Vercel dashboard
+2. Deploy with Docker or an ASGI-compatible host
+3. Set environment variables in your hosting platform
 4. Update `FRONTEND_URL` to your production URL
 5. Add production URL to OAuth provider dashboards if needed

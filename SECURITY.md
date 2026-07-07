@@ -14,7 +14,8 @@ Do not open a public issue for security vulnerabilities.
 
 ## Best Practices
 
-- All routes verify route ownership via Supabase RLS before proxying
+- Route-management endpoints verify ownership before exposing route data
 - Destination URLs are server-side only — never exposed to the client
 - Rate limiting is enforced per-route per-IP
-- Webhook payloads are not logged by default in production
+- Outbound destinations are restricted to public HTTPS targets with no-cost application-level SSRF checks
+- Webhook payloads and destination responses are stored in delivery logs. Avoid sending sensitive payloads unless your deployment retention, access controls, and privacy policy allow it.
