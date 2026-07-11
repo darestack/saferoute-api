@@ -217,7 +217,7 @@ async def get_current_user_from_jwt(
         payload = jwt.decode(
             token_str,
             public_key,
-            algorithms=["ES256", "RS256"],
+            algorithms=["RS256"],
             audience="authenticated",
             issuer=f"{settings.SUPABASE_URL}/auth/v1",
         )

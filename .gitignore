@@ -37,3 +37,6 @@ htmlcov/
 .vercel/
 .vercel
 .env*
+
+# Playwright MCP browser session artifacts
+.playwright-mcp/

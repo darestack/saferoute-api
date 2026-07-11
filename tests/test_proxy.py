@@ -9,10 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.utils.security import verify_webhook_signature, get_client_ip
 from app.utils.transform import parse_payload, render_template, resolve_dot_path
 from app.utils.retry import should_retry, calculate_next_retry
+from app.main import app
+
+client = TestClient(app)
 
 
 class TestGetClientIp:
@@ -1267,3 +1271,97 @@ class TestRateLimitResetAlignment:
         # Reset must be in the future and aligned to a 60s boundary.
         assert reset > now
         assert reset % _RATE_LIMIT_WINDOW_SECONDS == 0
+
+
+
+
+class TestFillRouteCacheSingleFlight:
+    """Tests for single-flight cache fill behavior."""
+
+    def test_single_flight_awaits_existing_future(self):
+        """When a future already exists for a slug, await it instead of querying."""
+        from app.routes.proxy import _fill_route_cache, _route_cache_fills
+
+        route_row = {
+            "id": "route-1",
+            "slug": "test-route",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "is_active": True,
+            "user_id": "user-1",
+            "name": "Test",
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+
+        call_count = 0
+
+        def mock_query():
+            nonlocal call_count
+            call_count += 1
+            return MagicMock(data=[route_row])
+
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.routes.proxy._cache_route", new_callable=AsyncMock),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute = mock_query
+
+            from app.routes.proxy import clear_route_cache
+            clear_route_cache()
+
+            async def scenario():
+                # Manually inject a completed future into the fills dict to
+                # simulate an in-flight request that just finished.
+                loop = asyncio.get_running_loop()
+                fut = loop.create_future()
+                fut.set_result(route_row)
+                _route_cache_fills["test-route"] = fut
+
+                # This call should await the existing future, not hit the DB.
+                result = await _fill_route_cache("test-route")
+                return result
+
+            result = asyncio.run(scenario())
+
+        assert result == route_row
+        assert call_count == 0, f"Expected 0 DB calls, got {call_count}"
+
+    def test_failure_removes_inflight_marker(self):
+        """On DB failure, the in-flight marker must be removed so retries work."""
+        from app.routes.proxy import _fill_route_cache
+        from fastapi import HTTPException
+
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.routes.proxy._route_cache_fills", {}),
+            patch("app.routes.proxy._route_cache_fills_lock"),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(_fill_route_cache("missing-route"))
+            assert exc_info.value.status_code == 404
+
+            # The in-flight marker must be gone so the next request can retry.
+            from app.routes.proxy import _route_cache_fills as fills
+            assert "missing-route" not in fills
+
+    def test_health_check_requires_auth(self):
+        """Outbound health check must reject unauthenticated requests."""
+        response = client.get("/internal/health/outbound")
+        assert response.status_code == 401
+
+    def test_health_check_rejects_wrong_secret(self):
+        """Outbound health check must reject invalid secrets."""
+        response = client.get(
+            "/internal/health/outbound",
+            headers={"X-Retry-Secret": "wrong-secret"},
+        )
+        assert response.status_code == 401

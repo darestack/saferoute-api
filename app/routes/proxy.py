@@ -171,7 +171,7 @@ async def _fill_route_cache(slug: str) -> dict:
         if existing is not None:
             return await existing  # type: ignore[no-any-return]
 
-        fut = asyncio.get_event_loop().create_future()
+        fut = asyncio.get_running_loop().create_future()
         _route_cache_fills[slug] = fut
 
     try:
@@ -190,10 +190,11 @@ async def _fill_route_cache(slug: str) -> dict:
 
         route = result.data[0]
         await _cache_route(slug, route)
+        fut.set_result(route)
         return route
-    except Exception:
-        # On failure, remove the in-flight marker so the next request can retry.
-        _route_cache_fills.pop(slug, None)
+    except Exception as exc:
+        if not fut.done():
+            fut.set_exception(exc)
         raise
     finally:
         _route_cache_fills.pop(slug, None)
@@ -1127,17 +1128,28 @@ def cleanup_idempotency_cache() -> bool:
 
 
 @router.get("/internal/health/outbound")
-async def outbound_health_check():
+async def outbound_health_check(
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+):
     """Check outbound HTTPS connectivity.
 
-    Sends a lightweight HEAD request to a well-known endpoint to verify
-    that the application can reach the public internet. This detects
-    network egress issues that would not be caught by the database
-    health check alone.
+    Secured by the ``RETRY_ENDPOINT_SECRET`` shared secret to prevent
+    unauthorized network probing. Sends a lightweight HEAD request to a
+    well-known endpoint to verify that the application can reach the
+    public internet. This detects network egress issues that would not
+    be caught by the database health check alone.
+
+    Args:
+        x_retry_secret: The shared secret from ``RETRY_ENDPOINT_SECRET``.
 
     Returns:
         JSON with outbound connectivity status and latency.
     """
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     client = get_http_client()
     target = "https://www.google.com/generate_204"
     start = time.perf_counter()

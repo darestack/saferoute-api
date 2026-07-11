@@ -36,7 +36,10 @@ class TestOutboundHealthCheck:
         with patch("app.routes.proxy.get_http_client") as mock_client:
             mock_client.return_value.head = mock_head
 
-            response = client.get("/internal/health/outbound")
+            response = client.get(
+                "/internal/health/outbound",
+                headers={"X-Retry-Secret": "test-retry-secret"},
+            )
 
             assert response.status_code == 200
             data = response.json()
@@ -47,7 +50,10 @@ class TestOutboundHealthCheck:
         with patch("app.routes.proxy.get_http_client") as mock_client:
             mock_client.return_value.head.side_effect = Exception("Network error")
 
-            response = client.get("/internal/health/outbound")
+            response = client.get(
+                "/internal/health/outbound",
+                headers={"X-Retry-Secret": "test-retry-secret"},
+            )
 
             assert response.status_code == 200
             data = response.json()
@@ -60,7 +66,10 @@ class TestOutboundHealthCheckReal:
     @pytest.mark.integration
     def test_outbound_health_check_reachable(self):
         """Verify the health check can reach the public internet."""
-        response = client.get("/internal/health/outbound")
+        response = client.get(
+            "/internal/health/outbound",
+            headers={"X-Retry-Secret": "test-retry-secret"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"

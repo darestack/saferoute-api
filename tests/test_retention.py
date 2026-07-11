@@ -135,7 +135,7 @@ class TestProxyDestinationValidation:
     """Regression coverage for the proxy destination-validation path."""
 
     def test_invalid_destination_returns_400_not_crash(self):
-        from app.routes.proxy import clear_route_cache, proxy_webhook
+        from app.routes.proxy import clear_route_cache, proxy_webhook, _route_cache
 
         route = {
             "id": "route-1",
@@ -146,7 +146,7 @@ class TestProxyDestinationValidation:
             "webhook_secret": None,
             "transform_body_template": None,
             "transform_headers": {},
-            "slug": "test-route",
+            "slug": "unique-test-route-xyz",
             "name": "Test",
             "user_id": "user-1",
             "is_active": True,
@@ -161,6 +161,7 @@ class TestProxyDestinationValidation:
                 new=AsyncMock(return_value=(200, "ok", {})),
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
+            patch("app.routes.proxy.verify_api_key", new_callable=AsyncMock, return_value=None),
         ):
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                 route
@@ -169,6 +170,7 @@ class TestProxyDestinationValidation:
                 {"success": True, "new_count": 1}
             ]
             clear_route_cache()
+            assert "unique-test-route-xyz" not in _route_cache
 
             request = MagicMock()
             request.headers = {}
@@ -178,9 +180,10 @@ class TestProxyDestinationValidation:
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(
                     proxy_webhook(
-                        slug="test-route",
+                        slug="unique-test-route-xyz",
                         request=request,
                         idempotency_key=None,
+                        x_api_key=None,
                     )
                 )
             # Must be a clean 400, not a NameError/500 from the missing import.
