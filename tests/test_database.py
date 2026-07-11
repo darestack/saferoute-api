@@ -1,11 +1,12 @@
 """Tests for database helper functions (API key generation and verification)."""
 
+import asyncio
+
 from app.database import generate_api_key, verify_api_key
 
 
 class TestGenerateApiKey:
     """Tests for API key generation."""
-
     def test_returns_three_parts(self):
         full_key, prefix, key_hash = generate_api_key()
         assert isinstance(full_key, str)
@@ -39,9 +40,9 @@ class TestVerifyApiKey:
     """Tests for API key verification (requires Supabase for full test)."""
 
     def test_none_key_returns_none(self):
-        result = verify_api_key(None)
+        result = asyncio.run(verify_api_key(None))
         assert result is None
 
     def test_empty_key_returns_none(self):
-        result = verify_api_key("")
+        result = asyncio.run(verify_api_key(""))
         assert result is None

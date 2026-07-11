@@ -61,17 +61,7 @@ CREATE TABLE IF NOT EXISTS public.idempotency_cache (
 CREATE INDEX IF NOT EXISTS idx_idempotency_cache_lookup
     ON public.idempotency_cache(route_id, idempotency_key);
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'pkce_verifiers_code_challenge_key'
-    ) THEN
-        ALTER TABLE public.pkce_verifiers
-            ADD CONSTRAINT pkce_verifiers_code_challenge_key
-            UNIQUE (code_challenge);
-    END IF;
-END $$;
+ALTER TABLE public.pkce_verifiers ADD CONSTRAINT IF NOT EXISTS pkce_verifiers_code_challenge_key UNIQUE (code_challenge);
 
 -- ========================================
 -- 4. RLS for idempotency_cache
@@ -100,57 +90,6 @@ RETURNS void AS $$
 BEGIN
     DELETE FROM public.idempotency_cache
     WHERE created_at < timezone('utc'::text, now()) - interval '24 hours';
-END;
-$$ LANGUAGE plpgsql;
-
--- ========================================
--- 5b. Atomic helper function repairs
--- ========================================
-CREATE OR REPLACE FUNCTION public.increment_rate_limit(
-    p_route_id uuid,
-    p_ip inet,
-    p_window_start timestamp with time zone,
-    p_max_requests integer
-)
-RETURNS TABLE (
-    success boolean,
-    new_count integer
-) AS $$
-BEGIN
-    INSERT INTO public.rate_limits (route_id, ip_address, request_count, window_start)
-    VALUES (p_route_id, p_ip, 1, p_window_start)
-    ON CONFLICT (route_id, ip_address, window_start)
-    DO UPDATE
-        SET request_count = public.rate_limits.request_count + 1
-        WHERE public.rate_limits.request_count < p_max_requests
-    RETURNING request_count INTO new_count;
-
-    IF FOUND THEN
-        success := true;
-        RETURN NEXT;
-        RETURN;
-    END IF;
-
-    SELECT request_count INTO new_count
-    FROM public.rate_limits
-    WHERE route_id = p_route_id
-      AND ip_address = p_ip
-      AND window_start = p_window_start
-    LIMIT 1;
-
-    success := false;
-    RETURN NEXT;
-    RETURN;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION public.consume_pkce_verifier(p_code_challenge text)
-RETURNS TABLE (code_verifier text) AS $$
-BEGIN
-    RETURN QUERY
-    DELETE FROM public.pkce_verifiers verifier
-    WHERE verifier.code_challenge = p_code_challenge
-    RETURNING verifier.code_verifier;
 END;
 $$ LANGUAGE plpgsql;
 

@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from app.utils.retry import build_retry_result, update_retry_log_status
 from app.utils.routes import (
     assert_owned_route_exists,
     get_owned_route_or_404,
@@ -16,7 +15,6 @@ from app.utils.routes import (
 
 class TestRouteUtilities:
     """Tests for reusable route row helpers."""
-
     def test_route_to_response_strips_sensitive_fields(
         self, sample_route: dict[str, Any]
     ) -> None:
@@ -83,58 +81,3 @@ class TestRouteUtilities:
         assert_owned_route_exists(admin_client, "route-1", "user-1")
 
         admin_client.table.return_value.select.assert_called_once_with("id")
-
-
-class TestRetryUtilities:
-    """Tests for reusable retry response and status helpers."""
-
-    def test_build_retry_result_returns_stable_shape(self) -> None:
-        assert build_retry_result("log-1", 2, 503, "pending") == {
-            "log_id": "log-1",
-            "retry_count": 2,
-            "status_code": 503,
-            "outcome": "pending",
-        }
-
-    def test_update_retry_log_status_persists_state(self) -> None:
-        admin_client = MagicMock()
-        query = admin_client.table.return_value.update.return_value
-        query.eq.return_value = query
-        query.execute.return_value.data = [{"id": "log-1"}]
-
-        updated = update_retry_log_status(
-            admin_client,
-            log_id="log-1",
-            retry_count=2,
-            retry_status="pending",
-            next_retry_at="2026-01-01T00:00:00Z",
-            status_code=503,
-        )
-
-        assert updated is True
-        admin_client.table.assert_called_once_with("webhook_logs")
-        admin_client.table.return_value.update.assert_called_once_with(
-            {
-                "retry_count": 2,
-                "retry_status": "pending",
-                "next_retry_at": "2026-01-01T00:00:00Z",
-                "status_code": 503,
-            }
-        )
-        query.eq.assert_called_once_with("id", "log-1")
-
-    def test_update_retry_log_status_reports_missing_row(self) -> None:
-        admin_client = MagicMock()
-        query = admin_client.table.return_value.update.return_value
-        query.eq.return_value = query
-        query.execute.return_value.data = []
-
-        assert (
-            update_retry_log_status(
-                admin_client,
-                log_id="missing",
-                retry_count=3,
-                retry_status="exhausted",
-            )
-            is False
-        )

@@ -97,6 +97,52 @@ SafeRoute validates the payload, rate-limits by IP, logs the request, and forwar
 - [ ] Dashboard UI
 - [ ] Managed network egress controls. Current SSRF protection is implemented in application code with standard-library URL/IP/DNS checks to keep operating cost at $0.
 
+## Security model
+
+* **Route secret (primary):** each route's proxy URL is
+  `POST /v1/route/{slug}` where `slug` ends in a 48-bit random suffix
+  (`secrets.token_hex(6)`), making the URL itself the unguessable secret.
+* **API key (optional, defense-in-depth):** a route may also require an
+  `X-API-Key` header. If a caller presents one it is verified (constant-time
+  HMAC) against the stored `api_key_hash`; an invalid key is rejected with
+  `401`. A missing key is allowed (slug-only auth) for compatibility with
+  webhook senders that only know the slug.
+* **Webhook signatures:** routes with a `webhook_secret` require a valid
+  HMAC-SHA256 signature (`X-Hub-Signature-256` / `X-Webhook-Signature`).
+* **Rate limiting:** per-route, per-IP, fixed 60-second windows enforced by
+  the atomic `increment_rate_limit` Postgres function. **Behind a CDN/Vercel
+  you must set `TRUSTED_PROXIES`** or every client collapses into one bucket.
+* **SSRF guardrails:** destinations are validated at *write time* (HTTPS only,
+  no embedded credentials, resolves to a public IP). A cheap, DNS-free check
+  also runs per request (scheme / literal-IP invariants). Full egress-firewall
+  controls are out of scope for the $0 cost target.
+* **Route cache:** an in-memory route cache (30s TTL) is invalidated on
+  update/delete/key-rotation so config and `is_active` changes take effect
+  immediately rather than after a stale window.
+
+## Deploying
+
+1. Push to GitHub
+2. Deploy with Docker or an ASGI-compatible host (e.g. Vercel via `api/index.py`)
+3. Set environment variables in your hosting platform
+4. Update `FRONTEND_URL` to your production URL
+5. Add production URL to OAuth provider dashboards if needed
+
+### Required production trust-boundary variables
+
+When `ENVIRONMENT=production` the app **fails to start** (fail-closed) unless
+these are set:
+
+* `ALLOWED_HOSTS` — comma-separated `Host` values permitted by
+  `TrustedHostMiddleware`. **On Vercel set this to your app domain(s)**
+  (e.g. `saferoute-api.vercel.app,your-domain.com`); empty rejects every
+  request with `400`.
+* `TRUSTED_PROXIES` — comma-separated edge/CDN IPs whose `X-Forwarded-For` is
+  trusted for per-IP rate limiting. **Required behind Vercel/Cloudflare**, else
+  all clients share one rate-limit bucket.
+* `ENCRYPTION_KEY` — required in production for `webhook_secret` encryption at
+  rest (Fernet).
+
 ## Contributing
 
 1. Fork and clone

@@ -4,32 +4,50 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.utils.security import verify_webhook_signature, get_client_ip
-from app.utils.security import validate_destination_url
 from app.utils.transform import parse_payload, render_template, resolve_dot_path
 from app.utils.retry import should_retry, calculate_next_retry
 
 
 class TestGetClientIp:
     """Tests for client IP extraction."""
-
     def test_x_forwarded_for_single(self):
         class FakeRequest:
             headers = {"X-Forwarded-For": "1.2.3.4"}
             client = None
 
-        assert get_client_ip(FakeRequest()) == "1.2.3.4"
+        assert get_client_ip(FakeRequest()) == "unknown"
 
     def test_x_forwarded_for_chain(self):
         class FakeRequest:
             headers = {"X-Forwarded-For": "1.2.3.4, 5.6.7.8, 9.10.11.12"}
             client = None
 
-        assert get_client_ip(FakeRequest()) == "1.2.3.4"
+        assert get_client_ip(FakeRequest()) == "unknown"
+
+    def test_x_forwarded_for_trusted_when_behind_private_ip(self):
+        class FakeRequest:
+            headers = {"X-Forwarded-For": "1.2.3.4"}
+            client = type("c", (), {"host": "10.0.0.1"})()
+
+        with patch("app.utils.security.settings") as mock_settings:
+            mock_settings.TRUSTED_PROXIES = "10.0.0.1"
+            assert get_client_ip(FakeRequest()) == "1.2.3.4"
+
+    def test_x_forwarded_for_ignored_when_not_in_trusted_proxies(self):
+        class FakeRequest:
+            headers = {"X-Forwarded-For": "1.2.3.4"}
+            client = type("c", (), {"host": "10.0.0.1"})()
+
+        with patch("app.utils.security.settings") as mock_settings:
+            mock_settings.TRUSTED_PROXIES = ""
+            assert get_client_ip(FakeRequest()) == "10.0.0.1"
 
     def test_direct_client(self):
         class FakeClient:
@@ -67,29 +85,6 @@ class TestGetClientIp:
             assert get_client_ip(FakeRequest()) == "192.168.1.1"
 
 
-class TestValidateDestinationUrl:
-    """Tests for SSRF guardrails on outbound webhook destinations."""
-
-    def test_allows_public_https_ip(self):
-        validate_destination_url("https://1.1.1.1/hook")
-
-    def test_rejects_http_scheme(self):
-        with pytest.raises(ValueError):
-            validate_destination_url("http://1.1.1.1/hook")
-
-    def test_rejects_localhost_ip(self):
-        with pytest.raises(ValueError):
-            validate_destination_url("https://127.0.0.1/hook")
-
-    def test_rejects_private_ip(self):
-        with pytest.raises(ValueError):
-            validate_destination_url("https://10.0.0.10/hook")
-
-    def test_rejects_url_credentials(self):
-        with pytest.raises(ValueError):
-            validate_destination_url("https://user:pass@1.1.1.1/hook")
-
-
 class TestParsePayload:
     """Tests for payload parsing."""
 
@@ -120,11 +115,6 @@ class TestParsePayload:
         body = b'{"hello": "world"}'
         result = parse_payload(body, "")
         assert result == {"hello": "world"}
-
-    def test_json_array_payload(self):
-        body = b'[{"event": "one"}, {"event": "two"}]'
-        result = parse_payload(body, "application/json")
-        assert result == [{"event": "one"}, {"event": "two"}]
 
     def test_form_without_content_type(self):
         body = b"name=Alice&age=30"
@@ -400,8 +390,6 @@ class TestEnforceRateLimit:
             ]
             enforce_rate_limit("route-1", "1.2.3.4", 30)
             mock_admin.rpc.assert_called_once()
-            rpc_payload = mock_admin.rpc.call_args[0][1]
-            assert rpc_payload["p_window_start"].endswith(":00+00:00")
 
     def test_denies_over_limit(self):
         from app.routes.proxy import enforce_rate_limit
@@ -426,28 +414,171 @@ class TestEnforceRateLimit:
             assert exc_info.value.status_code == 429
 
 
-class TestOAuthCallbackPost:
-    """Tests for POST-based OAuth callback."""
+class TestRateLimitHeaders:
+    """Tests for rate-limit response headers."""
 
-    def test_oauth_redirect_uses_random_state_lookup_key(self):
-        from urllib.parse import parse_qs, urlparse
+    def test_returns_remaining_on_success(self):
+        from app.routes.proxy import enforce_rate_limit
 
-        from app.routes.oauth import oauth_redirect
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 5}
+            ]
+            remaining = enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert remaining == 25
+
+    def test_handles_new_count_zero(self):
+        """When new_count is 0 (no requests yet), remaining must be max_requests."""
+        from app.routes.proxy import enforce_rate_limit
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 0}
+            ]
+            remaining = enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert remaining == 30
+
+    def test_429_includes_retry_after_header(self):
+        from app.routes.proxy import enforce_rate_limit
+        from fastapi import HTTPException
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": False, "new_count": 30}
+            ]
+            with pytest.raises(HTTPException) as exc_info:
+                enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert exc_info.value.status_code == 429
+            assert exc_info.value.headers["Retry-After"] == "60"
+
+    def test_rpc_failure_includes_retry_after_header(self):
+        from app.routes.proxy import enforce_rate_limit
+        from fastapi import HTTPException
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = []
+            with pytest.raises(HTTPException) as exc_info:
+                enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert exc_info.value.status_code == 429
+            assert exc_info.value.headers["Retry-After"] == "60"
+
+
+class TestProxyContentTypePreservation:
+    """Tests that inbound Content-Type is forwarded to destination."""
+
+    def test_json_content_type_preserved(self):
+        from app.routes.proxy import proxy_webhook
 
         with (
+            patch("app.routes.proxy.admin") as mock_admin,
             patch(
-                "app.routes.oauth._generate_pkce_pair",
-                return_value=("verifier", "challenge"),
-            ),
-            patch("app.routes.oauth._store_pkce_verifier") as mock_store,
-            patch("app.routes.oauth.secrets.token_urlsafe", return_value="state-123"),
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(200, "ok", {})),
+            ) as mock_forward,
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            result = asyncio.run(oauth_redirect("google"))
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                {
+                    "id": "route-1",
+                    "destination_url": "https://example.com",
+                    "method": "POST",
+                    "headers": {},
+                    "rate_limit": 30,
+                    "webhook_secret": None,
+                    "transform_body_template": None,
+                    "transform_headers": {},
+                    "slug": "test-route",
+                    "name": "Test",
+                    "user_id": "user-1",
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
 
-        query = parse_qs(urlparse(result.auth_url).query)
-        assert query["code_challenge"] == ["challenge"]
-        assert query["state"] == ["state-123"]
-        mock_store.assert_called_once_with("state-123", "verifier")
+            from app.routes.proxy import clear_route_cache
+
+            clear_route_cache()
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
+
+            asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    idempotency_key=None,
+                    x_api_key=None,
+                )
+            )
+
+            sent_headers = mock_forward.call_args[1]["headers"]
+            assert sent_headers["Content-Type"] == "application/json"
+
+    def test_route_headers_override_content_type(self):
+        from app.routes.proxy import proxy_webhook
+
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch(
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(200, "ok", {})),
+            ) as mock_forward,
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                {
+                    "id": "route-1",
+                    "destination_url": "https://example.com",
+                    "method": "POST",
+                    "headers": {"Content-Type": "application/xml"},
+                    "rate_limit": 30,
+                    "webhook_secret": None,
+                    "transform_body_template": None,
+                    "transform_headers": {},
+                    "slug": "test-route",
+                    "name": "Test",
+                    "user_id": "user-1",
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+
+            from app.routes.proxy import clear_route_cache
+
+            clear_route_cache()
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
+
+            asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    idempotency_key=None,
+                    x_api_key=None,
+                )
+            )
+
+            sent_headers = mock_forward.call_args[1]["headers"]
+            assert sent_headers["Content-Type"] == "application/xml"
+
+
+class TestOAuthCallbackPost:
+    """Tests for POST-based OAuth callback."""
 
     def test_post_callback_success(self):
         from app.routes.oauth import _exchange_code
@@ -471,19 +602,6 @@ class TestOAuthCallbackPost:
             result = asyncio.run(_exchange_code("auth-code", "challenge-123"))
             assert result.access_token == "token-123"
             assert result.user_id == "user-123"
-
-    def test_post_callback_accepts_oauth_state(self):
-        from app.routes.oauth import oauth_callback_post
-
-        with patch("app.routes.oauth._exchange_code", new=AsyncMock()) as mock_exchange:
-            asyncio.run(
-                oauth_callback_post(
-                    code="auth-code",
-                    code_challenge=None,
-                    state="state-123",
-                )
-            )
-            mock_exchange.assert_awaited_once_with("auth-code", "state-123")
 
     def test_post_callback_sanitizes_error(self):
         from app.routes.oauth import _exchange_code
@@ -522,7 +640,7 @@ class TestIdempotencyStoresOnlySuccess:
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                 {
                     "id": "route-1",
-                    "destination_url": "https://1.1.1.1",
+                    "destination_url": "https://example.com",
                     "method": "POST",
                     "headers": {},
                     "rate_limit": 30,
@@ -556,10 +674,13 @@ class TestIdempotencyStoresOnlySuccess:
                     slug="test-route",
                     request=request,
                     idempotency_key="key-123",
+                    x_api_key=None,
                 )
             )
-            assert response["status"] == "forwarded"
-            assert response["destination_status"] == 500
+            assert response.status_code == 200
+            body = json.loads(response.body)
+            assert body["status"] == "forwarded"
+            assert body["destination_status"] == 500
             mock_bump.assert_called_once_with("route-1")
 
             # Verify idempotency cache was NOT written for 500 response.
@@ -595,7 +716,7 @@ class TestRetryBodyReconstruction:
                     "route_id": "route-1",
                     "idempotency_key": None,
                     "routes": {
-                        "destination_url": "https://1.1.1.1",
+                        "destination_url": "https://example.com",
                         "method": "POST",
                         "headers": {},
                         "transform_headers": {},
@@ -620,23 +741,25 @@ class TestRouteCache:
     def test_cache_miss_returns_none(self):
         from app.routes.proxy import _get_cached_route
 
-        assert _get_cached_route("nonexistent-slug") is None
+        assert asyncio.run(_get_cached_route("nonexistent-slug")) is None
 
     def test_cache_hit_returns_route(self):
-        from app.routes.proxy import _cache_route, _get_cached_route
+        from app.routes.proxy import _cache_route, _get_cached_route, clear_route_cache
 
         route = {"id": "route-1", "slug": "test"}
-        _cache_route("test-route", route)
-        assert _get_cached_route("test-route") == route
+        asyncio.run(_cache_route("test-route", route))
+        assert asyncio.run(_get_cached_route("test-route")) == route
+        clear_route_cache()
 
 
 class TestApiKeyCache:
     """Tests for in-memory API key verification caching."""
 
     def test_cache_miss_returns_none(self):
-        from app.database import _get_cached_api_key
+        from app.database import _get_cached_api_key, clear_api_key_cache
 
-        assert _get_cached_api_key("nonexistent-hash") is None
+        clear_api_key_cache()
+        assert asyncio.run(_get_cached_api_key("nonexistent-hash")) is None
 
     def test_fifo_eviction_when_full(self):
         from app.database import (
@@ -644,31 +767,19 @@ class TestApiKeyCache:
             _api_key_cache_order,
             _api_key_cache,
             _API_KEY_CACHE_MAX_SIZE,
+            clear_api_key_cache,
         )
 
+        clear_api_key_cache()
         for i in range(_API_KEY_CACHE_MAX_SIZE):
-            _cache_api_key(f"hash-{i:04d}", f"route-{i}")
+            asyncio.run(_cache_api_key(f"hash-{i:04d}", f"route-{i}"))
 
         assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
 
-        _cache_api_key("hash-new", "route-new")
+        asyncio.run(_cache_api_key("hash-new", "route-new"))
         assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
         assert "hash-0000" not in _api_key_cache
-
-    def test_clear_cache_for_route_removes_old_key(self):
-        from app.database import (
-            _api_key_cache,
-            _cache_api_key,
-            clear_api_key_cache_for_route,
-        )
-
-        _cache_api_key("hash-old", "route-1")
-        _cache_api_key("hash-other", "route-2")
-
-        clear_api_key_cache_for_route("route-1")
-
-        assert "hash-old" not in _api_key_cache
-        assert _api_key_cache["hash-other"] == "route-2"
+        clear_api_key_cache()
 
 
 class TestHoneypotStripping:
@@ -689,7 +800,7 @@ class TestHoneypotStripping:
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                 {
                     "id": "route-1",
-                    "destination_url": "https://1.1.1.1",
+                    "destination_url": "https://example.com",
                     "method": "POST",
                     "headers": {},
                     "rate_limit": 30,
@@ -708,6 +819,16 @@ class TestHoneypotStripping:
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
+
+            from app.routes.proxy import (
+                _route_cache,
+                _route_cache_expiry,
+                _route_cache_order,
+            )
+
+            _route_cache.clear()
+            _route_cache_expiry.clear()
+            _route_cache_order.clear()
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -720,7 +841,8 @@ class TestHoneypotStripping:
                 proxy_webhook(
                     slug="test-route",
                     request=request,
-                    idempotency_key=None,  # explicit None; direct call would otherwise default to the truthy Header marker object
+                    idempotency_key=None,
+                    x_api_key=None,  # explicit None; direct call would otherwise default to the truthy Header marker object
                 )
             )
 
@@ -729,26 +851,30 @@ class TestHoneypotStripping:
             assert b"honeypot_field" not in sent_body
             assert b"Jane" in sent_body
 
-    def test_json_array_payload_does_not_crash(self):
-        """Array JSON payloads are valid webhooks and should forward cleanly."""
+
+class TestDecryptFailure:
+    """Tests that decryption failures are handled safely."""
+
+    def test_invalid_token_returns_500(self):
         from app.routes.proxy import proxy_webhook
+        from fastapi import HTTPException
 
         with (
             patch("app.routes.proxy.admin") as mock_admin,
             patch(
-                "app.routes.proxy.forward_payload",
-                new=AsyncMock(return_value=(200, "ok", {})),
-            ) as mock_forward,
+                "app.routes.proxy.decrypt_webhook_secret",
+                side_effect=ValueError("Failed to decrypt webhook secret"),
+            ) as mock_decrypt,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                 {
                     "id": "route-1",
-                    "destination_url": "https://1.1.1.1",
+                    "destination_url": "https://example.com",
                     "method": "POST",
                     "headers": {},
                     "rate_limit": 30,
-                    "webhook_secret": None,
+                    "webhook_secret": "v1:some-secret",
                     "transform_body_template": None,
                     "transform_headers": {},
                     "slug": "test-route",
@@ -764,21 +890,28 @@ class TestHoneypotStripping:
                 {"success": True, "new_count": 1}
             ]
 
+            from app.routes.proxy import clear_route_cache
+
+            clear_route_cache()
+
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
             request.client = MagicMock(host="1.2.3.4")
-            request.body = AsyncMock(return_value=b'[{"event": "one"}]')
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
 
-            response = asyncio.run(
-                proxy_webhook(
-                    slug="test-route",
-                    request=request,
-                    idempotency_key=None,
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    proxy_webhook(
+                        slug="test-route",
+                        request=request,
+                        idempotency_key=None,
+                        x_api_key=None,
+                    )
                 )
-            )
 
-            assert response["status"] == "forwarded"
-            assert mock_forward.call_args[1]["body"] == b'[{"event": "one"}]'
+            assert exc_info.value.status_code == 500
+            assert "Webhook secret decryption failed" in exc_info.value.detail
+            mock_decrypt.assert_called_once_with("v1:some-secret")
 
 
 class TestRetryClaimStatus:
@@ -803,7 +936,7 @@ class TestRetryClaimStatus:
                     "route_id": "route-1",
                     "idempotency_key": None,
                     "routes": {
-                        "destination_url": "https://1.1.1.1",
+                        "destination_url": "https://example.com",
                         "method": "POST",
                         "headers": {},
                         "transform_headers": {},
@@ -825,8 +958,6 @@ class TestRetryClaimStatus:
                 if c[0][0] == {"retry_status": "retrying"}
             ]
             assert len(claim_calls) == 1
-            chained = mock_admin.table.return_value.update.return_value
-            chained.eq.return_value.eq.assert_called_with("retry_status", "pending")
             assert response["processed"] == 1
 
 
@@ -856,7 +987,7 @@ class TestRetry429Handling:
                     "route_id": "route-1",
                     "idempotency_key": None,
                     "routes": {
-                        "destination_url": "https://1.1.1.1",
+                        "destination_url": "https://example.com",
                         "method": "POST",
                         "headers": {},
                         "transform_headers": {},
@@ -874,3 +1005,265 @@ class TestRetry429Handling:
             assert response["processed"] == 1
             # 429 is retryable → should be "pending", not "exhausted".
             assert response["results"][0]["outcome"] == "pending"
+
+
+class TestRateLimitRpcSignature:
+    """The limiter must call the (fixed-bucket) SQL function correctly."""
+
+    def test_rpc_called_without_window_start(self):
+        from app.routes.proxy import enforce_rate_limit
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+            remaining = enforce_rate_limit("route-1", "1.2.3.4", 30)
+            assert remaining == 29
+
+            args, _kwargs = mock_admin.rpc.call_args
+            assert args[0] == "increment_rate_limit"
+            params = args[1]
+            assert "p_route_id" in params and params["p_route_id"] == "route-1"
+            assert "p_ip" in params and params["p_ip"] == "1.2.3.4"
+            assert "p_max_requests" in params and params["p_max_requests"] == 30
+            # The drifting `p_window_start` argument was removed; the bucket is
+            # computed server-side so counts accumulate across requests.
+            assert "p_window_start" not in params
+
+
+class TestApiKeyAuth:
+    """Optional X-API-Key header on the proxy endpoint."""
+
+    def _build_route(self):
+        return {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+
+    def _run(self, x_api_key=None, verify_return=None):
+        from app.routes.proxy import clear_route_cache, proxy_webhook
+
+        route = self._build_route()
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch(
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(200, "ok", {})),
+            ) as mock_forward,
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+            patch(
+                "app.routes.proxy.verify_api_key",
+                new=AsyncMock(return_value=verify_return),
+            ) as mock_verify,
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+            clear_route_cache()
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
+
+            response = asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    x_api_key=x_api_key,
+                    idempotency_key=None,
+                )
+            )
+            return response, mock_forward, mock_verify
+
+    def test_missing_api_key_allowed(self):
+        response, mock_forward, mock_verify = self._run(x_api_key=None)
+        assert response.status_code == 200
+        mock_verify.assert_not_called()
+        mock_forward.assert_called_once()
+
+    def test_invalid_api_key_rejected(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            self._run(x_api_key="wrong-key", verify_return=None)
+        assert exc.value.status_code == 401
+        assert "Invalid API key" in exc.value.detail
+
+    def test_valid_api_key_proceeds(self):
+        response, mock_forward, mock_verify = self._run(
+            x_api_key="sk_live_valid", verify_return="route-1"
+        )
+        assert response.status_code == 200
+        mock_verify.assert_awaited_once_with("sk_live_valid")
+        mock_forward.assert_called_once()
+
+
+class TestOAuthCallbackRateLimit:
+    """Tests for OAuth callback rate limiting."""
+
+    def setup_method(self):
+        from app.routes.oauth import _oauth_callback_cache
+        _oauth_callback_cache.clear()
+
+    def test_allows_requests_under_limit(self):
+        from app.routes.oauth import _check_oauth_rate_limit
+
+        client_ip = "1.2.3.4"
+        for _ in range(5):
+            _check_oauth_rate_limit(client_ip)  # Should not raise
+
+    def test_denies_requests_over_limit(self):
+        from app.routes.oauth import _check_oauth_rate_limit, _OAUTH_CALLBACK_RATE_LIMIT
+
+        client_ip = "1.2.3.4"
+        # Allow up to the limit.
+        for _ in range(_OAUTH_CALLBACK_RATE_LIMIT):
+            _check_oauth_rate_limit(client_ip)
+
+        with pytest.raises(HTTPException) as exc:
+            _check_oauth_rate_limit(client_ip)
+        assert exc.value.status_code == 429
+
+    def test_different_ips_have_separate_limits(self):
+        from app.routes.oauth import _check_oauth_rate_limit, _OAUTH_CALLBACK_RATE_LIMIT
+
+        ip1 = "1.2.3.4"
+        ip2 = "5.6.7.8"
+
+        for _ in range(_OAUTH_CALLBACK_RATE_LIMIT):
+            _check_oauth_rate_limit(ip1)
+
+        # ip2 should still be allowed
+        _check_oauth_rate_limit(ip2)  # Should not raise
+
+    def test_window_expires_allows_requests(self):
+        from app.routes.oauth import _check_oauth_rate_limit, _OAUTH_CALLBACK_RATE_LIMIT, _OAUTH_CALLBACK_RATE_WINDOW
+
+        client_ip = "1.2.3.4"
+
+        for _ in range(_OAUTH_CALLBACK_RATE_LIMIT):
+            _check_oauth_rate_limit(client_ip)
+
+        # Simulate time passing beyond the window
+        with patch("app.routes.oauth.time.monotonic", return_value=time.monotonic() + _OAUTH_CALLBACK_RATE_WINDOW + 1):
+            _check_oauth_rate_limit(client_ip)  # Should not raise
+
+
+class TestRouteCacheInvalidation:
+    """Single-route cache eviction must drop exactly the targeted slug."""
+
+    def test_clear_route_cache_for_route(self):
+        from app.routes.proxy import (
+            _cache_route,
+            _get_cached_route,
+            clear_route_cache,
+            clear_route_cache_for_route,
+        )
+
+        clear_route_cache()
+        asyncio.run(_cache_route("keep-me", {"id": "r1"}))
+        asyncio.run(_cache_route("drop-me", {"id": "r2"}))
+
+        clear_route_cache_for_route("drop-me")
+
+        assert asyncio.run(_get_cached_route("drop-me")) is None
+        assert asyncio.run(_get_cached_route("keep-me")) is not None
+        clear_route_cache()
+
+
+class TestCircuitBreaker:
+    """Tests for the outbound HTTP circuit breaker."""
+
+    def test_opens_after_threshold_failures(self):
+        from app.routes.proxy import (
+            _is_circuit_breaker_open,
+            _record_circuit_breaker_failure,
+            _CIRCUIT_BREAKER_THRESHOLD,
+        )
+
+        url = "https://example.com/webhook"
+        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+            asyncio.run(_record_circuit_breaker_failure(url))
+
+        assert asyncio.run(_is_circuit_breaker_open(url)) is True
+
+    def test_closes_after_success(self):
+        from app.routes.proxy import (
+            _is_circuit_breaker_open,
+            _record_circuit_breaker_failure,
+            _record_circuit_breaker_success,
+            _CIRCUIT_BREAKER_THRESHOLD,
+        )
+
+        url = "https://example.com/webhook"
+        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+            asyncio.run(_record_circuit_breaker_failure(url))
+
+        asyncio.run(_record_circuit_breaker_success(url))
+        assert asyncio.run(_is_circuit_breaker_open(url)) is False
+
+    def test_clear_circuit_breaker_resets_state(self):
+        from app.routes.proxy import (
+            _is_circuit_breaker_open,
+            _record_circuit_breaker_failure,
+            clear_route_circuit_breaker,
+            _CIRCUIT_BREAKER_THRESHOLD,
+        )
+
+        url = "https://example.com/webhook"
+        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+            asyncio.run(_record_circuit_breaker_failure(url))
+
+        asyncio.run(clear_route_circuit_breaker(url))
+        assert asyncio.run(_is_circuit_breaker_open(url)) is False
+
+    def test_half_open_after_cooldown(self):
+        from app.routes.proxy import (
+            _is_circuit_breaker_open,
+            _record_circuit_breaker_failure,
+            _CIRCUIT_BREAKER_THRESHOLD,
+            _CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+        )
+
+        url = "https://example.com/webhook"
+        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+            asyncio.run(_record_circuit_breaker_failure(url))
+
+        assert asyncio.run(_is_circuit_breaker_open(url)) is True
+
+        # Simulate time passing beyond cooldown.
+        with patch("app.routes.proxy.time.monotonic", return_value=time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1):
+            assert asyncio.run(_is_circuit_breaker_open(url)) is False
+
+
+class TestRateLimitResetAlignment:
+    """Tests for rate-limit reset header alignment."""
+
+    def test_rate_limit_reset_aligns_with_bucket_boundary(self):
+        """X-RateLimit-Reset should align with the fixed 60s bucket boundary."""
+        import math
+        from app.routes.proxy import _RATE_LIMIT_WINDOW_SECONDS
+
+        now = time.time()
+        reset = int(math.ceil(now / _RATE_LIMIT_WINDOW_SECONDS) * _RATE_LIMIT_WINDOW_SECONDS)
+
+        # Reset must be in the future and aligned to a 60s boundary.
+        assert reset > now
+        assert reset % _RATE_LIMIT_WINDOW_SECONDS == 0

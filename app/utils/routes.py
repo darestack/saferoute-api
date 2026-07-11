@@ -1,10 +1,10 @@
 """Reusable helpers for route rows and route ownership checks."""
 
+from __future__ import annotations
+
 from typing import Any, Optional, cast
 
 from fastapi import HTTPException, status
-
-from app.crypto import decrypt_webhook_secret
 
 
 def route_to_response(
@@ -30,7 +30,7 @@ def route_to_response(
         "last_used_at": route.get("last_used_at"),
         "api_key_prefix": route.get("api_key_prefix"),
         "rate_limit": route.get("rate_limit", 30),
-        "has_webhook_secret": bool(decrypt_webhook_secret(route.get("webhook_secret"))),
+        "has_webhook_secret": bool(route.get("webhook_secret")),
         "has_transform": bool(
             route.get("transform_body_template") or route.get("transform_headers")
         ),

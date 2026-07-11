@@ -7,26 +7,63 @@ or popup. After the user authenticates, the OAuth provider redirects to
 for a Supabase JWT session.
 """
 
+from __future__ import annotations
+import asyncio
 import inspect
 import logging
-import secrets
+import time
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.config import settings
 from app.database import admin, supabase_client
 from app.utils.pkce import (
     generate_pkce_pair,
-    retrieve_and_delete_pkce_verifier,
     store_pkce_verifier,
+    retrieve_and_delete_pkce_verifier,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
+
+__all__ = [
+    "router",
+]
+
+# ---------------------------------------------------------------------------
+# OAuth callback rate limiting (per-IP, in-memory)
+# ---------------------------------------------------------------------------
+_OAUTH_CALLBACK_RATE_LIMIT = 10
+_OAUTH_CALLBACK_RATE_WINDOW = 60
+
+_oauth_callback_cache: dict[str, list[float]] = {}
+_oauth_callback_lock = asyncio.Lock()
+
+
+def _check_oauth_rate_limit(client_ip: str) -> None:
+    """Raise 429 if the client has exceeded the OAuth callback rate limit."""
+    now = time.monotonic()
+    window_start = now - _OAUTH_CALLBACK_RATE_WINDOW
+
+    timestamps = _oauth_callback_cache.get(client_ip, [])
+    timestamps = [ts for ts in timestamps if ts > window_start]
+
+    if len(timestamps) >= _OAUTH_CALLBACK_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many OAuth callback attempts",
+            headers={"Retry-After": str(_OAUTH_CALLBACK_RATE_WINDOW)},
+        )
+
+    timestamps.append(now)
+    if timestamps:
+        _oauth_callback_cache[client_ip] = timestamps
+    else:
+        _oauth_callback_cache.pop(client_ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -104,24 +141,22 @@ async def oauth_redirect(provider: str):
         )
 
     code_verifier, code_challenge = _generate_pkce_pair()
-    state = secrets.token_urlsafe(32)
 
     try:
-        _store_pkce_verifier(state, code_verifier)
+        _store_pkce_verifier(code_challenge, code_verifier)
     except Exception:
         raise HTTPException(
             status_code=500,
             detail="Failed to initiate OAuth flow",
         )
 
-    redirect_uri = settings.FRONTEND_URL.rstrip("/") + "/auth/callback"
+    redirect_uri = urljoin(settings.FRONTEND_URL.rstrip("/") + "/", "auth/callback")
 
     params = {
         "provider": provider,
         "redirect_to": redirect_uri,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "state": state,
     }
     auth_url = f"{settings.SUPABASE_URL}/auth/v1/authorize?" + urlencode(params)
 
@@ -130,17 +165,27 @@ async def oauth_redirect(provider: str):
 
 @router.post("/callback", response_model=CallbackResponse)
 async def oauth_callback_post(
+    request: Request,
     code: str = Query(...),
     code_challenge: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
 ):
-    """Handle the OAuth callback from Supabase (POST preferred).
+    """Handle the OAuth callback from Supabase.
 
-    The frontend should POST the authorization code here after Supabase
-    redirects back to the frontend. This avoids putting the code in browser
-    history or server logs via query parameters.
+    The frontend must POST the authorization ``code`` here after Supabase
+    redirects back. POST (not GET) is required so the code is not recorded in
+    browser history or server access logs via the query string.
+
+    Security notes:
+        * The PKCE ``code_verifier`` is consumed (deleted) on first use by
+          ``consume_pkce_verifier``, preventing replay of a captured code.
+        * The frontend is responsible for binding this flow to the initiating
+          session (e.g. via a same-site ``state`` cookie / session value). PKCE
+          proves possession of the verifier but does not itself bind the flow to
+          a specific browser session, so a frontend-side ``state`` check is the
+          recommended defense against login-CSRF.
 
     Args:
+        request: The incoming request (used for IP-based rate limiting).
         code: The authorization code from the OAuth provider.
         code_challenge: The PKCE challenge from the authorize request.
 
@@ -148,24 +193,17 @@ async def oauth_callback_post(
         Access token and user info on success.
 
     Raises:
-        HTTPException: 400 if the code exchange fails or state is missing.
+        HTTPException: 400 if the code exchange fails or the challenge is
+            missing/invalid.
+        HTTPException: 429 if the client has exceeded the rate limit.
     """
-    return await _exchange_code(code, state or code_challenge)
+    from app.utils.security import get_client_ip
 
+    client_ip = get_client_ip(request)
+    async with _oauth_callback_lock:
+        _check_oauth_rate_limit(client_ip)
 
-@router.get("/callback", response_model=CallbackResponse)
-async def oauth_callback_get(
-    code: str = Query(...),
-    code_challenge: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-):
-    """Handle the OAuth callback from Supabase (GET fallback).
-
-    .. deprecated::
-        Use POST /auth/callback instead to avoid logging the authorization
-        code in query strings.
-    """
-    return await _exchange_code(code, state or code_challenge)
+    return await _exchange_code(code, code_challenge)
 
 
 async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackResponse:
@@ -195,8 +233,11 @@ async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackRe
         )
 
     try:
+        # supabase-py's CodeExchangeParams TypedDict marks ``redirect_to`` as
+        # required, but the token endpoint accepts the call without it; the
+        # ignore is scoped to that over-specified key only.
         result = supabase_client.auth.exchange_code_for_session(
-            {  # type: ignore[arg-type, typeddict-item]
+            {  # type: ignore[typeddict-item]
                 "auth_code": code,
                 "code_verifier": code_verifier,
             }

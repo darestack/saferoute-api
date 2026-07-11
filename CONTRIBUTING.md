@@ -70,14 +70,39 @@ Run these checks **before** submitting a pull request:
 
 ```bash
 # Lint
-ruff check app/
+ruff check app/ tests/
 
 # Format check
-ruff format --check app/
+ruff format --check app/ tests/
 
 # Type check
-mypy app/ --ignore-missing-imports
+mypy app/
 ```
+
+### Style Rules
+
+- All code must pass `ruff` linting and `mypy --strict` type checking.
+- Use `from __future__ import annotations` in all new modules.
+- Prefer `async`/`await` over synchronous blocking calls in async contexts.
+- Use `asyncio.Lock()` instead of `threading.Lock()` in async code.
+- All public functions must have docstrings with Args/Returns/Raises sections.
+- Use type annotations for all function parameters and return values.
+- Do not add paid dependencies or external services without discussion.
+
+### Cleanup and Refactoring
+
+When fixing issues or adding features:
+- Remove dead code, unused imports, and redundant comments in the same PR.
+- Update inline documentation to reflect new behavior.
+- Add tests for any new code paths or bug fixes.
+- If you change public APIs, update `__all__` declarations.
+
+### Zero-Cost Constraint
+
+All changes must respect the $0 total cost constraint:
+- No paid tools, paid third-party services, or paid dependencies.
+- No external APIs or cloud services that require payment.
+- Use open-source, self-hosted, or built-in alternatives only.
 
 ---
 

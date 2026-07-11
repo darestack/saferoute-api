@@ -15,7 +15,6 @@ from app.models import (
 
 class TestRouteCreate:
     """Validation tests for RouteCreate schema."""
-
     def test_valid_minimal(self):
         route = RouteCreate(
             name="My Route",

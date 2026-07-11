@@ -4,25 +4,26 @@ Provides JWT-based authentication, route CRUD, API key rotation,
 webhook log retrieval, and route analytics.
 """
 
+from __future__ import annotations
 import asyncio
 import inspect
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 import jwt
-from jwt.algorithms import ECAlgorithm, RSAAlgorithm
+from jwt.algorithms import RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.config import settings
 from app.crypto import encrypt_webhook_secret
-from app.database import (
-    admin,
-    clear_api_key_cache_for_route,
-    generate_api_key,
-    verify_api_key,
+from app.database import admin, clear_api_key_cache_for_route, generate_api_key
+from app.routes.proxy import (
+    clear_route_cache_for_route,
+    clear_circuit_breaker_for_url,
 )
 from app.models import (
     RouteCreate,
@@ -36,20 +37,21 @@ from app.models import (
     WebhookFailureResponse,
     WebhookFailuresResponse,
 )
+from app.utils.routes import get_owned_route_or_404, route_to_response
 from app.utils.security import (
-    generate_slug,
     safe_error_detail,
-    validate_destination_url_async,
-)
-from app.utils.routes import (
-    assert_owned_route_exists,
-    get_owned_route_or_404,
-    route_to_response,
+    generate_slug,
+    validate_destination_url,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
+
+__all__ = [
+    "router",
+    "close_jwks_client",
+]
 
 # ---------------------------------------------------------------------------
 # JWKS cache
@@ -59,6 +61,12 @@ _jwks_cache: Optional[dict] = None
 _jwks_cache_expiry: float = 0.0
 _jwks_lock = asyncio.Lock()
 _jwks_client = httpx.AsyncClient(timeout=5.0)
+
+
+async def close_jwks_client() -> None:
+    """Close the shared JWKS HTTP client on application shutdown."""
+    if not _jwks_client.is_closed:
+        await _jwks_client.aclose()
 
 
 async def _get_cached_jwks() -> dict:
@@ -89,29 +97,6 @@ async def _get_cached_jwks() -> dict:
             )
 
 
-def _public_key_from_jwks(jwks: dict, key_id: Optional[str], algorithm: str) -> object:
-    """Return the public key matching a JWT ``kid`` and signing algorithm."""
-    for key in jwks.get("keys", []):
-        if key.get("kid") != key_id:
-            continue
-
-        key_algorithm = key.get("alg") or algorithm
-        if key_algorithm.startswith("ES"):
-            return ECAlgorithm.from_jwk(key)
-        if key_algorithm.startswith("RS"):
-            return RSAAlgorithm.from_jwk(key)
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token: unsupported signing algorithm",
-        )
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid token: signing key not found",
-    )
-
-
 # ---------------------------------------------------------------------------
 # User cache
 # ---------------------------------------------------------------------------
@@ -125,10 +110,11 @@ _user_cache_lock = asyncio.Lock()
 
 async def _get_cached_user(user_id: str) -> Optional[User]:
     """Return a cached User if available and fresh."""
-    now = time.monotonic()
-    expiry = _user_cache_expiry.get(user_id, 0.0)
-    if user_id in _user_cache and now < expiry:
-        return _user_cache[user_id]
+    async with _user_cache_lock:
+        now = time.monotonic()
+        expiry = _user_cache_expiry.get(user_id, 0.0)
+        if user_id in _user_cache and now < expiry:
+            return _user_cache[user_id]
     return None
 
 
@@ -216,8 +202,17 @@ async def get_current_user_from_jwt(
 
         unverified_header = jwt.get_unverified_header(token_str)
         key_id = unverified_header.get("kid")
-        algorithm = unverified_header.get("alg", "")
-        public_key = _public_key_from_jwks(jwks, key_id, algorithm)
+        public_key = None
+        for key in jwks.get("keys", []):
+            if key.get("kid") == key_id:
+                public_key = RSAAlgorithm.from_jwk(key)
+                break
+
+        if not public_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: signing key not found",
+            )
 
         payload = jwt.decode(
             token_str,
@@ -243,7 +238,8 @@ async def get_current_user_from_jwt(
                 detail="User not found",
             )
 
-        # Prefer JWT claims when cached user data is stale.
+        # Prefer the cached DB email, falling back to the JWT claim when the
+        # cached profile has no email (e.g. just-created account).
         return User(
             id=user.id,
             email=user.email or email or "",
@@ -269,51 +265,6 @@ async def get_current_user_from_jwt(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token validation failed",
         )
-
-
-async def get_current_user_from_api_key(
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-) -> tuple[User, str]:
-    """Return the route owner and route ID from a valid API key."""
-    if not x_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-API-Key header",
-        )
-
-    route_id = verify_api_key(x_api_key)
-    if not route_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-    route_result = admin.table("routes").select("user_id").eq("id", route_id).execute()
-
-    if not route_result.data:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Route not found for API key",
-        )
-
-    user_id = route_result.data[0]["user_id"]
-
-    user = await _fetch_and_cache_user(user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found for API key",
-        )
-
-    return user, route_id
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers (not exported for reuse)
-# ---------------------------------------------------------------------------
-def _generate_slug(name: str, user_id: str) -> str:
-    """Generate a collision-safe slug from a route name."""
-    return generate_slug(name, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -365,21 +316,23 @@ async def create_route(
     Generates a public ``slug`` and a unique API key. The full API key
     is returned only once — store it securely.
     """
-    slug = _generate_slug(route_data.name, current_user.id)
+    slug = generate_slug(route_data.name)
     full_key, key_prefix, key_hash = generate_api_key()
+
+    destination_url = str(route_data.destination_url)
     try:
-        await validate_destination_url_async(str(route_data.destination_url))
+        validate_destination_url(destination_url, resolve_dns=True)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
-        )
+        ) from exc
 
     insert_data = {
         "user_id": current_user.id,
         "name": route_data.name,
         "slug": slug,
-        "destination_url": str(route_data.destination_url),
+        "destination_url": destination_url,
         "method": route_data.method,
         "headers": route_data.headers,
         "api_key_prefix": key_prefix,
@@ -409,10 +362,14 @@ async def create_route(
     except HTTPException:
         raise
     except Exception as exc:
-        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+        if (
+            getattr(exc, "code", None) == "23505"
+            or "unique" in str(exc).lower()
+            or "duplicate" in str(exc).lower()
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="A route with this name already exists",
+                detail="A route with this identifier already exists",
             )
         logger.exception("Failed to create route")
         raise HTTPException(
@@ -446,8 +403,21 @@ async def get_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID."""
-    route = get_owned_route_or_404(admin, route_id, current_user.id)
-    return RouteResponse(**route_to_response(route))
+    result = (
+        admin.table("routes")
+        .select("*")
+        .eq("id", route_id)
+        .eq("user_id", current_user.id)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
+
+    return RouteResponse(**route_to_response(result.data[0]))
 
 
 @router.put("/routes/{route_id}", response_model=RouteResponse)
@@ -460,25 +430,28 @@ async def update_route(
 
     When ``name`` is updated, the ``slug`` is regenerated.
     """
-    existing_route = get_owned_route_or_404(
-        admin, route_id, current_user.id, columns="slug"
-    )
-    old_slug = existing_route["slug"]
-
     updates = route_data.model_dump(exclude_none=True)
 
     if "destination_url" in updates:
         updates["destination_url"] = str(updates["destination_url"])
         try:
-            await validate_destination_url_async(updates["destination_url"])
+            validate_destination_url(updates["destination_url"], resolve_dns=True)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
+            ) from exc
+
+    if updates.pop("clear_webhook_secret", False):
+        if updates.get("webhook_secret"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot clear and set webhook_secret in the same request",
             )
+        updates["webhook_secret"] = None
 
     if "name" in updates:
-        updates["slug"] = _generate_slug(updates["name"], current_user.id)
+        updates["slug"] = generate_slug(updates["name"])
 
     if "slug" in updates:
         existing = (
@@ -494,13 +467,20 @@ async def update_route(
                 detail="Slug already in use",
             )
 
-    if "webhook_secret" in route_data.model_fields_set:
-        if route_data.webhook_secret:
-            updates["webhook_secret"] = encrypt_webhook_secret(
-                route_data.webhook_secret
-            )
-        else:
-            updates["webhook_secret"] = None
+    if "webhook_secret" in updates and updates["webhook_secret"]:
+        updates["webhook_secret"] = encrypt_webhook_secret(updates["webhook_secret"])
+
+    # Fetch the current slug and destination up front so a rename or
+    # destination change can evict both old and new cache entries and reset
+    # circuit breakers (see cache invalidation below).
+    old_route = (
+        admin.table("routes")
+        .select("slug, destination_url")
+        .eq("id", route_id)
+        .eq("user_id", current_user.id)
+        .execute()
+    )
+    old_slug = old_route.data[0]["slug"] if old_route.data else None
 
     try:
         result = (
@@ -517,16 +497,36 @@ async def update_route(
                 detail="Route not found",
             )
 
-        route = result.data[0]
-        from app.routes.proxy import clear_route_cache
+        # Drop the cached proxy rows so the next webhook sees the new config
+        # (destination, secret, headers, transforms, is_active, ...). On a
+        # rename the OLD slug must also be evicted, otherwise the previous
+        # public URL keeps working (serving the renamed route) for up to the
+        # 30s cache TTL.
+        new_slug = result.data[0]["slug"]
+        clear_route_cache_for_route(new_slug)
+        if old_slug and old_slug != new_slug:
+            clear_route_cache_for_route(old_slug)
 
-        clear_route_cache(old_slug)
-        clear_route_cache(route["slug"])
-        return RouteResponse(**route_to_response(route))
+        # Reset circuit breakers for old and new destinations so a previously
+        # open circuit does not block traffic after a destination change.
+        old_destination = (
+            old_route.data[0].get("destination_url") if old_route.data else None
+        )
+        new_destination = result.data[0].get("destination_url")
+        if old_destination and old_destination != new_destination:
+            await clear_circuit_breaker_for_url(old_destination)
+        if new_destination:
+            await clear_circuit_breaker_for_url(new_destination)
+
+        return RouteResponse(**route_to_response(result.data[0]))
     except HTTPException:
         raise
     except Exception as exc:
-        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+        if (
+            getattr(exc, "code", None) == "23505"
+            or "unique" in str(exc).lower()
+            or "duplicate" in str(exc).lower()
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Slug already in use",
@@ -544,11 +544,6 @@ async def delete_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Delete a route owned by the authenticated user."""
-    existing_route = get_owned_route_or_404(
-        admin, route_id, current_user.id, columns="slug"
-    )
-    old_slug = existing_route["slug"]
-
     result = (
         admin.table("routes")
         .delete()
@@ -563,9 +558,11 @@ async def delete_route(
             detail="Route not found",
         )
 
-    from app.routes.proxy import clear_route_cache
+    # Evict the deleted route from the proxy cache so it stops accepting
+    # traffic immediately rather than serving the stale cached row.
+    clear_route_cache_for_route(result.data[0]["slug"])
+    await clear_circuit_breaker_for_url(result.data[0]["destination_url"])
 
-    clear_route_cache(old_slug)
     return None
 
 
@@ -597,8 +594,11 @@ async def rotate_api_key(
                 detail="Route not found",
             )
 
+        await clear_api_key_cache_for_route(route_id)
+        # The route's API key changed; also drop the cached proxy row so the
+        # new key is reflected on the next request.
+        clear_route_cache_for_route(result.data[0]["slug"])
         route = result.data[0]
-        clear_api_key_cache_for_route(route_id)
         return RouteCreateResponse(**route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
@@ -624,7 +624,7 @@ async def list_route_logs(
     offset: int = Query(default=0, ge=0),
 ):
     """List webhook delivery logs for a route (newest first, paginated)."""
-    assert_owned_route_exists(admin, route_id, current_user.id)
+    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
     result = (
         admin.table("webhook_logs")
@@ -654,7 +654,7 @@ async def get_route_stats(
     Uses a single SQL aggregation query for performance, avoiding loading
     all log rows into application memory.
     """
-    assert_owned_route_exists(admin, route_id, current_user.id)
+    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
     stats = admin.rpc("get_route_stats", {"p_route_id": route_id}).execute().data
 
@@ -730,7 +730,7 @@ async def list_route_failures(
     Raises:
         HTTPException: 404 if the route does not exist or belongs to another user.
     """
-    assert_owned_route_exists(admin, route_id, current_user.id)
+    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
     query = (
         admin.table("webhook_failures")
@@ -741,7 +741,11 @@ async def list_route_failures(
     )
 
     if cursor:
-        query = query.lte("created_at", cursor)
+        # Results are ordered newest-first (desc). The cursor is the
+        # ``created_at`` of the last item returned on the previous page, so the
+        # next page must fetch items *strictly older* than the cursor. Using
+        # ``<=`` would re-include (and duplicate) that boundary row.
+        query = query.lt("created_at", cursor)
 
     result = query.execute()
 
@@ -768,3 +772,60 @@ async def list_route_failures(
         ],
         next_cursor=next_cursor,
     )
+
+
+@router.post("/routes/{route_id}/failures/{log_id}/retry")
+async def retry_failed_webhook(
+    route_id: str,
+    log_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Manually retry a failed webhook delivery.
+
+    Moves the webhook log entry from `exhausted` back to `pending` so the
+    next cron run will pick it up. This is useful for operators who want to
+    force a retry without waiting for the scheduled job.
+
+    Args:
+        route_id: The route UUID.
+        log_id: The webhook log entry ID to retry.
+        current_user: Injected authenticated user.
+
+    Returns:
+        JSON confirmation of the retry request.
+
+    Raises:
+        HTTPException: 404 if the route or log entry does not exist.
+    """
+    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+
+    result = (
+        admin.table("webhook_logs")
+        .select("id, retry_status")
+        .eq("id", log_id)
+        .eq("route_id", route_id)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Webhook log not found",
+        )
+
+    log_entry = result.data[0]
+    if log_entry["retry_status"] != "exhausted":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only exhausted deliveries can be manually retried",
+        )
+
+    admin.table("webhook_logs").update(
+        {
+            "retry_status": "pending",
+            "next_retry_at": datetime.now(timezone.utc).isoformat(),
+            "retry_count": 0,
+        }
+    ).eq("id", log_id).execute()
+
+    return {"status": "queued", "log_id": log_id}

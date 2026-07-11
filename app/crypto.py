@@ -10,6 +10,7 @@ returned unchanged so the application continues to function while secrets
 are being rotated.
 """
 
+from __future__ import annotations
 import base64
 import hashlib
 import logging
@@ -77,6 +78,17 @@ def _get_fernet() -> Optional[Fernet]:
     return _fernet
 
 
+def clear_fernet_cache() -> None:
+    """Drop the cached :class:`Fernet` instance.
+
+    Call this after ``ENCRYPTION_KEY`` rotation so the next encryption/decryption
+    operation derives and caches a fresh instance. Without this, the old key
+    remains cached until process restart.
+    """
+    global _fernet
+    _fernet = None
+
+
 def encrypt_webhook_secret(plaintext: Optional[str]) -> Optional[str]:
     """Encrypt a webhook secret for storage.
 
@@ -91,12 +103,22 @@ def encrypt_webhook_secret(plaintext: Optional[str]) -> Optional[str]:
         ``None``. If encryption is not configured, returns the original
         value prefixed with ``safe_plain:`` so callers can distinguish
         encrypted from plaintext data.
+
+    Raises:
+        RuntimeError: If encryption is required (production) but not
+            configured. The plaintext fallback is only permitted outside
+            production to keep CI and non-prod deploys runnable.
     """
     if plaintext is None:
         return None
 
     fernet = _get_fernet()
     if fernet is None:
+        if settings.is_production:
+            raise RuntimeError(
+                "ENCRYPTION_KEY is not configured or invalid; "
+                "cannot encrypt webhook secret in production"
+            )
         return f"{_FALLBACK_PREFIX}{plaintext}"
 
     encrypted = fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
@@ -132,9 +154,10 @@ def decrypt_webhook_secret(ciphertext: Optional[str]) -> Optional[str]:
 
     try:
         return fernet.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
-    except InvalidToken:
-        logger.warning("Failed to decrypt webhook secret; returning raw value")
-        return ciphertext
+    except InvalidToken as exc:
+        raise ValueError(
+            "Failed to decrypt webhook secret: invalid encryption key or corrupted data"
+        ) from exc
     except Exception:
         logger.exception("Unexpected error decrypting webhook secret")
-        return ciphertext
+        raise

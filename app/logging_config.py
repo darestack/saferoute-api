@@ -11,6 +11,7 @@ Usage::
     configure_logging(environment="production")
 """
 
+from __future__ import annotations
 import contextvars
 import json
 import logging
@@ -44,7 +45,9 @@ class JSONFormatter(logging.Formatter):
             A single-line JSON string.
         """
         log_entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

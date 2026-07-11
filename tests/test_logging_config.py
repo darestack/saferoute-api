@@ -8,7 +8,6 @@ from app.logging_config import configure_logging, JSONFormatter
 
 class TestJSONFormatter:
     """Tests for the production JSON log formatter."""
-
     def test_formats_as_json(self):
         formatter = JSONFormatter()
         record = logging.LogRecord(
@@ -41,6 +40,26 @@ class TestJSONFormatter:
         output = formatter.format(record)
         parsed = json.loads(output)
         assert parsed["request_id"] == "req-123"
+
+
+class TestJSONFormatterTimestamp:
+    """The emitted timestamp must reflect the event time, not emit time."""
+
+    def test_timestamp_uses_record_created(self):
+        from datetime import datetime, timezone
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="Test",
+            args=None,
+            exc_info=None,
+        )
+        expected = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+        output = JSONFormatter().format(record)
+        assert json.loads(output)["timestamp"] == expected
 
 
 class TestConfigureLogging:

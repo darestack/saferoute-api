@@ -1,7 +1,8 @@
 """Integration tests for the proxy webhook endpoints using FastAPI TestClient."""
 
+import pytest
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -23,6 +24,50 @@ def _mock_jwt():
         yield
 
 
+class TestOutboundHealthCheck:
+    """Tests for the outbound connectivity health check."""
+
+    def test_outbound_health_check_returns_status(self):
+        async def mock_head(*args, **kwargs):
+            mock_response = MagicMock()
+            mock_response.status_code = 204
+            return mock_response
+
+        with patch("app.routes.proxy.get_http_client") as mock_client:
+            mock_client.return_value.head = mock_head
+
+            response = client.get("/internal/health/outbound")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "healthy"
+            assert "duration_ms" in data
+
+    def test_outbound_health_check_handles_failure(self):
+        with patch("app.routes.proxy.get_http_client") as mock_client:
+            mock_client.return_value.head.side_effect = Exception("Network error")
+
+            response = client.get("/internal/health/outbound")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "unhealthy"
+            assert "error" in data
+
+class TestOutboundHealthCheckReal:
+    """Real integration tests for outbound connectivity (requires network)."""
+
+    @pytest.mark.integration
+    def test_outbound_health_check_reachable(self):
+        """Verify the health check can reach the public internet."""
+        response = client.get("/internal/health/outbound")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "duration_ms" in data
+        assert data["duration_ms"] >= 0
+
+
 class TestProxyWebhookIntegration:
     """Integration tests for the /v1/route/{slug} endpoint."""
 
@@ -31,8 +76,8 @@ class TestProxyWebhookIntegration:
         response = client.get("/")
         assert response.status_code == 200
         assert response.json() == {
-            "Status": "Healthy",
-            "service": "SafeRoute API Engine",
+            "status": "healthy",
+            "service": "SafeRoute API",
         }
 
     def test_missing_route_returns_404(self):
@@ -52,6 +97,9 @@ class TestProxyWebhookIntegration:
         response = client.post("/v1/route/some-slug", content=large_payload)
         assert response.status_code == 413
         assert response.json() == {"detail": "Request body too large"}
+        # Oversized rejections must still carry hardening headers.
+        assert response.headers.get("X-Content-Type-Options") == "nosniff"
+        assert "Content-Security-Policy" in response.headers
 
     def test_stats_endpoint_returns_correct_shape(self):
         """Test that /auth/routes/{route_id}/stats returns aggregated stats."""
@@ -126,3 +174,50 @@ class TestProxyWebhookIntegration:
         response = client.get("/")
         assert "X-Request-ID" in response.headers
         assert len(response.headers["X-Request-ID"]) > 0
+
+    def test_content_type_header_is_preserved_on_forward(self):
+        """Test that inbound Content-Type is forwarded when not overridden."""
+        with (
+            _mock_jwt(),
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch(
+                "app.routes.proxy.forward_payload", return_value=(200, "ok", {})
+            ) as mock_forward,
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                {
+                    "id": "route-1",
+                    "destination_url": "https://example.com",
+                    "method": "POST",
+                    "headers": {},
+                    "rate_limit": 30,
+                    "webhook_secret": None,
+                    "transform_body_template": None,
+                    "transform_headers": {},
+                    "slug": "test-route",
+                    "name": "Test",
+                    "user_id": "test-user-id",
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+
+            from app.routes.proxy import clear_route_cache
+
+            clear_route_cache()
+
+            response = client.post(
+                "/v1/route/test-route",
+                json={"name": "Jane"},
+                headers={"Content-Type": "application/json"},
+            )
+
+            assert response.status_code == 200
+            sent_headers = mock_forward.call_args.kwargs["headers"]
+            assert sent_headers["Content-Type"] == "application/json"

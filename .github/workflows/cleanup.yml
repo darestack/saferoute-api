@@ -1,0 +1,29 @@
+name: SafeRoute Retention Cleanup
+
+# Free, dependency-free scheduled job that invokes the internal cleanup
+# endpoint so database tables (webhook_logs, rate_limits, pkce_verifiers,
+# idempotency_cache) do not grow unbounded. No paid job-runner required.
+on:
+  schedule:
+    - cron: "13 3 * * *" # daily, off-peak
+  workflow_dispatch: {} # allow manual runs
+
+jobs:
+  cleanup:
+    name: Trigger retention cleanup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call internal cleanup endpoint
+        env:
+          CLEANUP_URL: ${{ secrets.CLEANUP_URL }}
+          RETRY_ENDPOINT_SECRET: ${{ secrets.RETRY_ENDPOINT_SECRET }}
+        run: |
+          if [ -z "${CLEANUP_URL}" ] || [ -z "${RETRY_ENDPOINT_SECRET}" ]; then
+            echo "CLEANUP_URL or RETRY_ENDPOINT_SECRET secret is not set; skipping."
+            exit 0
+          fi
+          curl --fail --silent --show-error \
+            -X POST "${CLEANUP_URL}/internal/cleanup" \
+            -H "X-Retry-Secret: ${RETRY_ENDPOINT_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d '{"keep_days": 30}'

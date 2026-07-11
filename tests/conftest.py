@@ -1,5 +1,7 @@
 """Shared test fixtures and configuration for SafeRoute API tests."""
 
+from __future__ import annotations
+
 import os
 import sys
 
@@ -10,7 +12,6 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-service-key")
 os.environ.setdefault("API_KEY_SALT", "test-salt")
 os.environ.setdefault("WEBHOOK_SECRET", "test-webhook-secret")
 os.environ.setdefault("RETRY_ENDPOINT_SECRET", "test-retry-secret")
-os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 os.environ.setdefault("ENVIRONMENT", "development")
 
@@ -19,32 +20,25 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 import pytest
+from unittest.mock import AsyncMock
 
 
-@pytest.fixture(autouse=True)
-def clear_in_memory_caches() -> None:
-    """Prevent module-level caches from leaking state across tests."""
-    from app.database import (
-        _api_key_cache,
-        _api_key_cache_expiry,
-        _api_key_cache_order,
-    )
-    from app.routes.auth import (
-        _user_cache,
-        _user_cache_expiry,
-        _user_cache_order,
-    )
-    from app.routes.proxy import clear_route_cache
+class FakeRequest:
+    """Reusable mock request for proxy tests."""
 
-    clear_route_cache()
-    _api_key_cache.clear()
-    _api_key_cache_expiry.clear()
-    _api_key_cache_order.clear()
-    _user_cache.clear()
-    _user_cache_expiry.clear()
-    _user_cache_order.clear()
-    yield
-    clear_route_cache()
+    def __init__(
+        self,
+        headers: dict | None = None,
+        client_host: str = "1.2.3.4",
+        body: bytes = b"{}",
+        method: str = "POST",
+        path: str = "/v1/route/test-route",
+    ) -> None:
+        self.headers = headers or {}
+        self.client = type("c", (), {"host": client_host})()
+        self.body = AsyncMock(return_value=body)
+        self.method = method
+        self.url = type("u", (), {"path": path})()
 
 
 @pytest.fixture

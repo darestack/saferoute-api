@@ -3,14 +3,14 @@
 Provides reusable PKCE generation for OAuth authentication flows.
 """
 
+from __future__ import annotations
 import base64
 import hashlib
 import logging
 import secrets
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import Optional
 
-if TYPE_CHECKING:
-    from supabase import Client
+from supabase import Client
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +73,8 @@ def retrieve_and_delete_pkce_verifier(
             "consume_pkce_verifier", {"p_code_challenge": code_challenge}
         ).execute()
 
-        rows = cast(Any, result.data)
-        if isinstance(rows, list) and rows:
-            verifier = rows[0].get("code_verifier")
-            if isinstance(verifier, str):
-                return verifier
+        if result.data:
+            return result.data[0]["code_verifier"]  # type: ignore[return-value, index, call-overload]
     except Exception:
         logger.exception("Failed to retrieve PKCE verifier")
 

@@ -32,6 +32,10 @@ create table public.routes (
 -- Index for fast lookups by slug (used in proxy path)
 create index idx_routes_slug on public.routes(slug);
 
+-- Partial index for the active-route proxy lookup (slug + is_active), the
+-- hottest read path. Restricting to active rows keeps the index small.
+create index idx_routes_slug_active on public.routes(slug) where is_active;
+
 -- Index for user's routes
 create index idx_routes_user_id on public.routes(user_id);
 
@@ -58,7 +62,8 @@ create table public.webhook_logs (
     next_retry_at timestamp with time zone,
     retry_status text default 'none' check (retry_status in ('none', 'pending', 'retrying', 'exhausted', 'succeeded')),
     idempotency_key text,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 -- Index for route logs lookup
@@ -232,6 +237,11 @@ create trigger update_routes_updated_at
     for each row
     execute function public.update_updated_at();
 
+create trigger update_webhook_logs_updated_at
+    before update on public.webhook_logs
+    for each row
+    execute function public.update_updated_at();
+
 -- ========================================
 -- Helper Functions
 -- ========================================
@@ -247,24 +257,42 @@ begin
 end;
 $$ language plpgsql;
 
--- Atomically increment a fixed rate-limit window or create a new one
+-- Atomically increment the rate-limit counter for a (route, ip) pair using a
+-- fixed 60-second bucket keyed on `window_start`.
+--
+-- NOTE: `window_start` is a *stable* bucket boundary (computed inside Postgres
+-- via date_bin) rather than a request-relative "now - 60s" value. The previous
+-- implementation stored `now - 60s` as the anchor and matched on
+-- `window_start >= p_window_start`; because every request passed a drifting
+-- cutoff, no stored row ever matched and a brand-new row was inserted on every
+-- call, so the counter never accumulated and the limit was never enforced.
+-- Keeping `window_start` as a fixed bucket shared by all requests in the same
+-- 60s window makes the UPDATE path hit reliably, so counts accumulate and the
+-- limit actually triggers. The `unique(route_id, ip_address, window_start)`
+-- constraint guarantees at most one row per bucket.
 create or replace function public.increment_rate_limit(
     p_route_id uuid,
     p_ip inet,
-    p_window_start timestamp with time zone,
     p_max_requests integer
 )
 returns table (
     success boolean,
     new_count integer
 ) as $$
+declare
+    v_bucket timestamptz := date_bin(
+        interval '60 seconds',
+        timezone('utc', now()),
+        '1970-01-01 00:00:00+00'::timestamptz
+    );
 begin
-    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
-    values (p_route_id, p_ip, 1, p_window_start)
-    on conflict (route_id, ip_address, window_start)
-    do update
-        set request_count = public.rate_limits.request_count + 1
-        where public.rate_limits.request_count < p_max_requests
+    -- Try to increment an existing row for the current 60s bucket.
+    update public.rate_limits
+    set request_count = request_count + 1
+    where route_id = p_route_id
+      and ip_address = p_ip
+      and window_start = v_bucket
+      and request_count < p_max_requests
     returning request_count into new_count;
 
     if found then
@@ -273,14 +301,38 @@ begin
         return;
     end if;
 
+    -- A row for this bucket exists but is already at/over the limit.
+    perform 1
+    from public.rate_limits
+    where route_id = p_route_id
+      and ip_address = p_ip
+      and window_start = v_bucket;
+
+    if found then
+        select request_count into new_count
+        from public.rate_limits
+        where route_id = p_route_id
+          and ip_address = p_ip
+          and window_start = v_bucket;
+        success := false;
+        return next;
+        return;
+    end if;
+
+    -- No row for the current bucket yet: create it. The unique constraint
+    -- makes this safe under concurrent inserts (a lost race simply re-reads
+    -- the row the winning writer created).
+    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
+    values (p_route_id, p_ip, 1, v_bucket)
+    on conflict (route_id, ip_address, window_start) do nothing;
+
     select request_count into new_count
     from public.rate_limits
     where route_id = p_route_id
       and ip_address = p_ip
-      and window_start = p_window_start
-    limit 1;
+      and window_start = v_bucket;
 
-    success := false;
+    success := true;
     return next;
     return;
 end;
@@ -308,10 +360,9 @@ $$ language plpgsql;
 create or replace function public.consume_pkce_verifier(p_code_challenge text)
 returns table (code_verifier text) as $$
 begin
-    return query
-    delete from public.pkce_verifiers verifier
-    where verifier.code_challenge = p_code_challenge
-    returning verifier.code_verifier;
+    delete from public.pkce_verifiers
+    where code_challenge = p_code_challenge
+    returning code_verifier into code_verifier;
 end;
 $$ language plpgsql;
 
@@ -321,6 +372,31 @@ returns void as $$
 begin
     delete from public.idempotency_cache
     where created_at < timezone('utc'::text, now()) - interval '24 hours';
+end;
+$$ language plpgsql;
+
+-- Clean up old webhook delivery logs and their dead-letter rows.
+-- Keeps the most recent `p_keep_days` of delivery history to bound storage
+-- growth. Safe to run on a schedule (see the /internal/cleanup endpoint or
+-- pg_cron). Returns the number of webhook_logs rows removed.
+create or replace function public.cleanup_webhook_logs(p_keep_days integer default 30)
+returns integer as $$
+declare
+    v_cutoff timestamp with time zone := timezone('utc'::text, now()) - (p_keep_days || ' days')::interval;
+    v_removed integer;
+begin
+    -- Dead-letter failures reference the original log; prune them first.
+    delete from public.webhook_failures
+    where created_at < v_cutoff;
+
+    with removed as (
+        delete from public.webhook_logs
+        where created_at < v_cutoff
+        returning 1
+    )
+    select count(*) into v_removed from removed;
+
+    return v_removed;
 end;
 $$ language plpgsql;
 

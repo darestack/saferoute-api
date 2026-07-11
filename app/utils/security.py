@@ -7,6 +7,7 @@ Provides reusable security functions including:
 - Client IP extraction from requests
 """
 
+from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
@@ -15,11 +16,10 @@ import logging
 import re
 import secrets
 import socket
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 from urllib.parse import urlparse
 
-if TYPE_CHECKING:
-    from fastapi import Request
+from fastapi import Request
 
 from app.config import settings
 
@@ -34,6 +34,9 @@ _ALLOWED_DESTINATION_SCHEMES = {"https"}
 
 def _is_public_ip(address: str) -> bool:
     """Return True only for globally routable IP addresses."""
+    # Strip IPv6 zone ID (e.g. "%eth0") before parsing.
+    if "%" in address:
+        address = address.split("%")[0]
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
@@ -148,20 +151,23 @@ def verify_webhook_signature(
     return hmac.compare_digest(expected, provided)
 
 
-def generate_slug(name: str, user_id_suffix: str = "") -> str:
+def generate_slug(name: str) -> str:
     """Generate a collision-safe slug from a route name.
 
     Args:
         name: The route name to convert to a slug.
-        user_id_suffix: Optional suffix to include (typically user ID first chars).
 
     Returns:
         A URL-safe slug with random suffix to prevent collisions.
     """
     slug_base = _SLUG_PATTERN.sub("", name.lower().replace(" ", "-"))
     slug_base = _DUPLICATE_HYPHEN_PATTERN.sub("-", slug_base)
+    # Leave room for the random suffix below so the total slug stays within the
+    # ``Slug`` max length (see app/models.py). 40 + 1 + 12 = 53 < 64.
     slug_base = slug_base.strip("-")[:40] or "route"
-    random_suffix = secrets.token_hex(3)
+    # 12 hex chars (48 bits) of entropy make the public slug unguessable; the
+    # slug is the primary secret protecting a route's proxy URL.
+    random_suffix = secrets.token_hex(6)
     return f"{slug_base}-{random_suffix}"
 
 
@@ -179,11 +185,12 @@ def safe_error_detail(exc: Exception) -> str:
     return "An internal error occurred"
 
 
-def get_client_ip(request: "Request") -> str:
+def get_client_ip(request: Request) -> str:
     """Extract the real client IP from the request.
 
-    Prefers ``X-Forwarded-For`` when behind a CDN / Vercel edge, then falls
-    back to the direct TCP peer address.
+    Trusts ``X-Forwarded-For`` only when the direct TCP peer is explicitly
+    listed in ``TRUSTED_PROXIES``. Falls back to the direct peer address
+    otherwise to prevent IP spoofing via spoofed XFF headers.
 
     Args:
         request: The incoming FastAPI request.
@@ -197,9 +204,8 @@ def get_client_ip(request: "Request") -> str:
         trusted_proxies = [
             p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()
         ]
+
         if trusted_proxies and client_host in trusted_proxies:
-            return forwarded.split(",")[0].strip()
-        if not trusted_proxies:
             return forwarded.split(",")[0].strip()
 
     if request.client:

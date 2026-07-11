@@ -5,6 +5,9 @@ trusted host restrictions. Mounts the proxy router so the app is runnable
 both locally and on Vercel via the Mangum ASGI handler.
 """
 
+from __future__ import annotations
+import asyncio
+import time
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -23,6 +26,7 @@ from app.logging_config import configure_logging, request_id_var
 configure_logging(environment=settings.ENVIRONMENT)
 
 from app.routes import auth, oauth, proxy  # noqa: E402
+from app.routes.auth import close_jwks_client  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,16 @@ ASGIMessage: TypeAlias = MutableMapping[str, Any]
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
     """Application lifespan manager for startup and shutdown."""
+    # Verify the admin client can bypass RLS by checking a known table.
+    # This catches misconfigured service-role keys early.
+    try:
+        from app.database import admin
+
+        admin.table("routes").select("id").limit(1).execute()
+        logger.info("Startup RLS bypass check passed")
+    except Exception as exc:
+        logger.warning("Startup RLS bypass check failed: %s", exc)
+
     yield
     await shutdown_event()
 
@@ -85,13 +99,16 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-_ALLOWED_HEADERS_PRODUCTION = ["Authorization", "Content-Type", "X-API-Key"]
+_ALLOWED_HEADERS_PRODUCTION = [
+    "Authorization",
+    "Content-Type",
+    "X-API-Key",
+    "Idempotency-Key",
+]
 
 
 def _get_cors_origins() -> list[str]:
     """Build the list of allowed CORS origins from settings."""
-    if settings.ENVIRONMENT == "development":
-        return ["*"]
     raw = settings.FRONTEND_URL
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
@@ -100,7 +117,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=(
         ["*"] if settings.ENVIRONMENT == "development" else _ALLOWED_HEADERS_PRODUCTION
     ),
@@ -116,6 +133,43 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.get_allowed_hos
 # ---------------------------------------------------------------------------
 # Security headers
 # ---------------------------------------------------------------------------
+# Interactive API docs (Swagger UI / ReDoc) load assets from a public CDN, so a
+# strict ``default-src 'none'`` policy would break them. We apply the strict
+# policy everywhere except the documented doc paths, which get a CSP that
+# permits the CDN. In production, docs should be disabled or served from a
+# locked-down origin.
+_DOCS_PATHS = {"/docs", "/docs/", "/openapi.json", "/redoc"}
+
+
+def _apply_security_headers(response: Response, path: str) -> None:
+    """Set standard hardening headers on ``response``.
+
+    Shared by :class:`SecurityHeadersMiddleware` (normal responses) and
+    :class:`RequestSizeLimitMiddleware` (413 rejections) so oversized requests
+    do not ship without hardening headers.
+    """
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # ``X-XSS-Protection`` is omitted on purpose: it is deprecated and can
+    # introduce vulnerabilities in legacy browsers; modern browsers ignore
+    # it in favour of CSP.
+    if path in _DOCS_PATHS:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data: https:; "
+            "script-src 'self' https://unpkg.com; "
+            "style-src 'self' https://unpkg.com 'unsafe-inline'; "
+            "connect-src 'self'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = "default-src 'none'"
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Inject standard security headers into every response."""
 
@@ -125,17 +179,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=31536000; includeSubDomains"
-        )
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = (
-            "geolocation=(), microphone=(), camera=()"
-        )
-        response.headers["Content-Security-Policy"] = "default-src 'none'"
+        _apply_security_headers(response, request.url.path)
         return response
 
 
@@ -143,10 +187,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # Request size limit
 # ---------------------------------------------------------------------------
 _DEFAULT_MAX_BODY_BYTES = 1024 * 1024  # 1 MiB
+_DEFAULT_MAX_BODY_SECONDS = 30
 
 
 class RequestTooLargeError(Exception):
     """Raised when a streaming request body exceeds the configured limit."""
+
+
+class RequestTimeoutError(Exception):
+    """Raised when a request body takes too long to arrive."""
 
 
 class RequestSizeLimitMiddleware:
@@ -154,18 +203,21 @@ class RequestSizeLimitMiddleware:
 
     Checks ``Content-Length`` for fast rejection and wraps the ASGI ``receive``
     callable so oversized chunked bodies are rejected without pre-reading the
-    body before route handlers run.
+    body before route handlers run. Also enforces a time limit to mitigate
+    slow-loris attacks.
     """
 
-    def __init__(self, app: Any, max_size: int = _DEFAULT_MAX_BODY_BYTES) -> None:
+    def __init__(self, app: Any, max_size: int = _DEFAULT_MAX_BODY_BYTES, max_seconds: int = _DEFAULT_MAX_BODY_SECONDS) -> None:
         """Initialize the middleware.
 
         Args:
             app: The downstream ASGI app.
             max_size: Maximum allowed request body size in bytes.
+            max_seconds: Maximum seconds allowed to receive the full body.
         """
         self.app = app
         self.max_size = max_size
+        self.max_seconds = max_seconds
 
     async def __call__(
         self,
@@ -173,7 +225,7 @@ class RequestSizeLimitMiddleware:
         receive: Callable[[], Awaitable[ASGIMessage]],
         send: Callable[[ASGIMessage], Awaitable[None]],
     ) -> None:
-        """Reject oversized HTTP request bodies."""
+        """Reject oversized or slow HTTP request bodies."""
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -190,13 +242,18 @@ class RequestSizeLimitMiddleware:
                     status_code=413,
                     content={"detail": "Request body too large"},
                 )
+                _apply_security_headers(response, scope.get("path", ""))
                 await response(scope, receive, send)
                 return
 
         received = 0
+        start_time = time.perf_counter()
 
         async def limited_receive() -> ASGIMessage:
             nonlocal received
+            if time.perf_counter() - start_time > self.max_seconds:
+                raise RequestTimeoutError
+
             message = await receive()
             if message.get("type") == "http.request":
                 received += len(message.get("body", b""))
@@ -211,11 +268,24 @@ class RequestSizeLimitMiddleware:
                 status_code=413,
                 content={"detail": "Request body too large"},
             )
+            _apply_security_headers(response, scope.get("path", ""))
+            await response(scope, receive, send)
+        except RequestTimeoutError:
+            response = JSONResponse(
+                status_code=408,
+                content={"detail": "Request body timeout"},
+            )
+            _apply_security_headers(response, scope.get("path", ""))
             await response(scope, receive, send)
 
 
-# Middleware ordering: outermost runs first.
-# Request ID → Security headers → Size limit → route handlers.
+# Middleware ordering: ``add_middleware`` prepends, so the LAST registered
+# middleware runs OUTERMOST. Effective order (outer → inner):
+# Size limit → Security headers → Request ID → route handlers.
+# All three mutate the same final ``Response`` object, so header injection is
+# order-independent in practice. ``SecurityHeadersMiddleware`` owns the security
+# header set; ``RequestSizeLimitMiddleware`` delegates to the same helper for
+# 413 responses so oversized rejections are hardened consistently.
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_size=_DEFAULT_MAX_BODY_BYTES)
@@ -230,11 +300,20 @@ logger.info("SafeRoute API initialized (environment=%s)", settings.ENVIRONMENT)
 
 async def shutdown_event() -> None:
     """Close shared resources on application shutdown."""
-    from app.database import get_http_client
+    from app import database as db_module
 
-    client = get_http_client()
-    if not client.is_closed:
-        await client.aclose()
+    try:
+        if db_module.has_http_client() and not db_module.get_http_client().is_closed:
+            await asyncio.wait_for(
+                db_module.get_http_client().aclose(), timeout=5.0
+            )
+    except asyncio.TimeoutError:
+        logger.warning("HTTP client shutdown timed out")
+
+    try:
+        await asyncio.wait_for(close_jwks_client(), timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.warning("JWKS client shutdown timed out")
 
 
 @app.get("/")
@@ -244,4 +323,7 @@ async def health_check() -> dict[str, str]:
     Returns:
         dict: Service name and health status.
     """
-    return {"Status": "Healthy", "service": "SafeRoute API Engine"}
+    return {
+        "status": "healthy",
+        "service": "SafeRoute API",
+    }

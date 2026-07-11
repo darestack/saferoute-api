@@ -6,10 +6,14 @@ Provides reusable functions for:
 - Rendering template strings with {{field.path}} placeholders
 """
 
+from __future__ import annotations
 import json
+import logging
 import re
 from typing import Any
 from urllib.parse import parse_qs
+
+logger = logging.getLogger(__name__)
 
 # Regex for template placeholders: {{field.path}}
 _TEMPLATE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
@@ -52,7 +56,7 @@ def resolve_dot_path(data: Any, path: str) -> Any:
     return current
 
 
-def render_template(template: str, payload: Any) -> str:
+def render_template(template: str, payload: dict[str, Any]) -> str:
     """Render a template string by replacing ``{{field.path}}`` placeholders.
 
     Uses :func:`resolve_dot_path` for nested access. Missing fields are
@@ -77,17 +81,17 @@ def render_template(template: str, payload: Any) -> str:
 
 
 def parse_payload(body: bytes, content_type: str) -> Any:
-    """Parse the incoming request body into JSON-compatible data.
+    """Parse the incoming request body into a dictionary.
 
-    Supports JSON and form-urlencoded payloads. Falls back to an empty dict
-    on parse failure so callers always receive JSON-serializable data.
+    Supports JSON and form-urlencoded payloads. Falls back to an empty
+    dict on parse failure.
 
     Args:
         body: Raw request body bytes.
         content_type: The ``Content-Type`` header value.
 
     Returns:
-        Parsed payload as a JSON-compatible object.
+        Parsed payload as a dictionary.
     """
     if not body:
         return {}
@@ -96,13 +100,16 @@ def parse_payload(body: bytes, content_type: str) -> Any:
         if "application/json" in content_type:
             return json.loads(body)
 
-        if "application/x-www-form-urlencoded" in content_type:
-            return {k: v[0] for k, v in parse_qs(body.decode()).items()}
-
         # If content-type is missing, try JSON first, then fall back to form data.
         try:
             return json.loads(body)
         except Exception:
-            return {k: v[0] for k, v in parse_qs(body.decode()).items()}
-    except Exception:
+            try:
+                decoded = body.decode("utf-8", errors="replace")
+            except Exception as decode_exc:
+                logger.warning("Failed to decode request body: %s", decode_exc)
+                return {}
+            return {k: v[0] for k, v in parse_qs(decoded).items()}
+    except Exception as exc:
+        logger.warning("Failed to parse payload: %s", exc)
         return {}

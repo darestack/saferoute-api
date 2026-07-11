@@ -5,6 +5,7 @@ an optional ``.env`` file. All required variables are validated at import
 time so the application fails fast if secrets are missing.
 """
 
+from __future__ import annotations
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 
@@ -22,13 +23,23 @@ class Settings(BaseSettings):
         RETRY_ENDPOINT_SECRET: Shared secret for the internal retry endpoint.
         FRONTEND_URL: Frontend origin for CORS and OAuth redirects.
         ENVIRONMENT: Deployment environment. Affects CORS, logging, and
-            error detail. Defaults to ``development``.
+            error detail. Defaults to ``production`` (fail-closed) so a
+            misconfigured deployment never silently runs in an insecure
+            development mode. Set explicitly to ``development`` for local
+            work.
+        TRUSTED_PROXIES: Comma-separated IPs of reverse proxies / CDNs whose
+            ``X-Forwarded-For`` header should be trusted for client-IP
+            extraction (per-IP rate limiting). Required when fronted by a
+            CDN; empty means the direct peer IP is used.
+        ALLOWED_HOSTS: Comma-separated Host header values permitted by
+            TrustedHostMiddleware in production.
     """
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        str_strip_whitespace=True,
     )
 
     SUPABASE_URL: str
@@ -39,9 +50,10 @@ class Settings(BaseSettings):
     RETRY_ENDPOINT_SECRET: str = ""
     ENCRYPTION_KEY: str = ""
     FRONTEND_URL: str = "http://localhost:8000"
-    ENVIRONMENT: str = "development"
+    ENVIRONMENT: str = "production"
     TRUSTED_PROXIES: str = ""
     ALLOWED_HOSTS: str = ""
+    RETENTION_DAYS: int = 30
 
     @property
     def is_production(self) -> bool:
@@ -63,17 +75,29 @@ class Settings(BaseSettings):
         In production, respects the ``ALLOWED_HOSTS`` setting.
         In development, allows all hosts.
         """
-        if self.is_production and self.ALLOWED_HOSTS:
+        if self.is_production:
+            if not self.ALLOWED_HOSTS.strip():
+                raise ValueError("ALLOWED_HOSTS must be set in production")
             return [
                 host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()
             ]
         return ["*"]
 
     @model_validator(mode="after")
-    def validate_production_encryption(self) -> "Settings":
-        """Ensure encryption is configured in production."""
-        if not self.is_development and not self.ENCRYPTION_KEY:
-            raise ValueError("ENCRYPTION_KEY must be set outside development")
+    def validate_production_settings(self) -> "Settings":
+        """Ensure critical security settings are configured in production.
+
+        ``ENCRYPTION_KEY`` is only *required* in production. Outside production
+        (development, testing, staging) a missing key is tolerated: the crypto
+        layer falls back to storing webhook secrets with the ``safe_plain:``
+        prefix rather than failing at import time. This keeps CI and non-prod
+        deploys runnable while still failing closed where it matters most.
+        """
+        if self.is_production:
+            if not self.ALLOWED_HOSTS.strip():
+                raise ValueError("ALLOWED_HOSTS must be set in production")
+            if not self.ENCRYPTION_KEY.strip():
+                raise ValueError("ENCRYPTION_KEY must be set in production")
         return self
 
 

@@ -7,14 +7,15 @@ This module creates and exports two Supabase clients:
   server side for operations like proxy lookups and log insertion.
 """
 
+from __future__ import annotations
 import hashlib
 import hmac
 import logging
 import secrets
-import threading
 import time
 from typing import Optional
 
+import asyncio
 import httpx
 from supabase import Client, create_client
 
@@ -49,6 +50,11 @@ def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def has_http_client() -> bool:
+    """Return whether the shared HTTP client has been created and is usable."""
+    return _http_client is not None and not _http_client.is_closed
+
+
 def get_supabase_client(use_service_role: bool = False) -> Client:
     """Create a Supabase client configured for the current environment.
 
@@ -75,6 +81,9 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
         logger.error("Database configuration error: SUPABASE_URL or key is empty")
         raise RuntimeError("Database configuration error")
 
+    # Note: The underlying httpx client uses a default 30s timeout.
+    # If a custom timeout is needed, set it on the underlying client after
+    # creation or use the per-call timeout mechanisms provided by supabase-py.
     return create_client(url, key)
 
 
@@ -106,7 +115,7 @@ def generate_api_key() -> tuple[str, str, str]:
     return full_key, prefix, key_hash
 
 
-def verify_api_key(full_key: Optional[str]) -> Optional[str]:
+async def verify_api_key(full_key: Optional[str]) -> Optional[str]:
     """Verify an API key and return the route ID if valid.
 
     Args:
@@ -120,7 +129,7 @@ def verify_api_key(full_key: Optional[str]) -> Optional[str]:
 
     key_hash = _hash_api_key(full_key)
 
-    cached = _get_cached_api_key(key_hash)
+    cached = await _get_cached_api_key(key_hash)
     if cached:
         return cached
 
@@ -135,7 +144,7 @@ def verify_api_key(full_key: Optional[str]) -> Optional[str]:
 
         if result.data:
             route_id = result.data[0]["id"]
-            _cache_api_key(key_hash, route_id)
+            await _cache_api_key(key_hash, route_id)
             return route_id
     except Exception:
         logger.exception(
@@ -175,12 +184,12 @@ _API_KEY_CACHE_MAX_SIZE = 500
 _api_key_cache: dict[str, str] = {}
 _api_key_cache_expiry: dict[str, float] = {}
 _api_key_cache_order: list[str] = []
-_api_key_cache_lock = threading.Lock()
+_api_key_cache_lock = asyncio.Lock()
 
 
-def _get_cached_api_key(key_hash: str) -> Optional[str]:
+async def _get_cached_api_key(key_hash: str) -> Optional[str]:
     """Return a cached route_id for an API key hash if available and fresh."""
-    with _api_key_cache_lock:
+    async with _api_key_cache_lock:
         now = time.monotonic()
         expiry = _api_key_cache_expiry.get(key_hash, 0.0)
         if key_hash in _api_key_cache and now < expiry:
@@ -188,9 +197,9 @@ def _get_cached_api_key(key_hash: str) -> Optional[str]:
         return None
 
 
-def _cache_api_key(key_hash: str, route_id: str) -> None:
+async def _cache_api_key(key_hash: str, route_id: str) -> None:
     """Store an API key hash → route_id mapping with TTL and max size."""
-    with _api_key_cache_lock:
+    async with _api_key_cache_lock:
         _api_key_cache[key_hash] = route_id
         _api_key_cache_expiry[key_hash] = time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
         if key_hash not in _api_key_cache_order:
@@ -201,9 +210,9 @@ def _cache_api_key(key_hash: str, route_id: str) -> None:
             _api_key_cache_expiry.pop(oldest, None)
 
 
-def clear_api_key_cache_for_route(route_id: str) -> None:
+async def clear_api_key_cache_for_route(route_id: str) -> None:
     """Remove cached API-key lookups for a route after key rotation."""
-    with _api_key_cache_lock:
+    async with _api_key_cache_lock:
         stale_hashes = [
             key_hash
             for key_hash, cached_route_id in _api_key_cache.items()
@@ -214,3 +223,13 @@ def clear_api_key_cache_for_route(route_id: str) -> None:
             _api_key_cache_expiry.pop(key_hash, None)
             if key_hash in _api_key_cache_order:
                 _api_key_cache_order.remove(key_hash)
+
+
+def clear_api_key_cache() -> None:
+    """Clear the entire API key verification cache.
+
+    Intended for test isolation. Safe to call from synchronous test code.
+    """
+    _api_key_cache.clear()
+    _api_key_cache_expiry.clear()
+    _api_key_cache_order.clear()

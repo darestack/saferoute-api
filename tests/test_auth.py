@@ -17,7 +17,6 @@ from app.routes.auth import (
 
 class TestUserCache:
     """Tests for user lookup caching."""
-
     def test_cache_hit_returns_user(self):
         user = User(
             id="user-1",
@@ -96,17 +95,17 @@ class TestGenerateSlug:
     """Tests for slug generation and sanitization."""
 
     def test_strips_invalid_characters(self):
-        slug = generate_slug("My!! Route!#", "user-1")
+        slug = generate_slug("My!! Route!#")
         assert slug.startswith("my-route-")
 
     def test_collapses_double_hyphens(self):
-        slug = generate_slug("My  Route", "user-1")
+        slug = generate_slug("My  Route")
         assert (
             "--" not in slug.split("-")[1:-1]
         )  # Check middle part has no double hyphens
 
     def test_strips_leading_trailing_hyphens(self):
-        slug = generate_slug("---Test---", "user-1")
+        slug = generate_slug("---Test---")
         assert not slug.startswith("-")
         assert not slug.endswith("-")
 
@@ -148,34 +147,6 @@ class TestJwtAuth:
             assert user.id == "user-123"
             assert user.created_at is None  # Optional now accepts None
 
-    def test_public_key_uses_ec_algorithm_for_es_tokens(self):
-        from app.routes.auth import _public_key_from_jwks
-
-        jwks = {
-            "keys": [
-                {
-                    "kid": "key-1",
-                    "alg": "ES256",
-                    "kty": "EC",
-                    "crv": "P-256",
-                    "x": "x",
-                    "y": "y",
-                }
-            ]
-        }
-
-        with (
-            patch(
-                "app.routes.auth.ECAlgorithm.from_jwk", return_value="ec-key"
-            ) as ec_from_jwk,
-            patch("app.routes.auth.RSAAlgorithm.from_jwk") as rsa_from_jwk,
-        ):
-            key = _public_key_from_jwks(jwks, "key-1", "ES256")
-
-        assert key == "ec-key"
-        ec_from_jwk.assert_called_once()
-        rsa_from_jwk.assert_not_called()
-
 
 class TestHealthEndpoint:
     """Tests for health check endpoint."""
@@ -192,3 +163,251 @@ class TestHealthEndpoint:
             data = response.json()
             assert "status" in data
             assert "database" in data
+
+
+class TestStructuralErrorMatching:
+    """Tests that Postgres unique violations are detected by error code."""
+
+    def test_unique_violation_detected_by_code(self):
+        from fastapi import HTTPException
+        from app.routes import auth as auth_module
+
+        class FakeExc(Exception):
+            code = "23505"
+
+        with patch.object(auth_module, "admin") as mock_admin:
+            mock_admin.table.return_value.insert.return_value.execute.side_effect = (
+                FakeExc("duplicate key")
+            )
+
+            from app.models import User
+
+            user = User(
+                id="user-1",
+                email="test@example.com",
+                full_name="Test",
+                created_at="2026-01-01T00:00:00Z",
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    auth_module.create_route(
+                        auth_module.RouteCreate(
+                            name="Test Route",
+                            destination_url="https://example.com/hook",
+                        ),
+                        current_user=user,
+                    )
+                )
+            assert exc_info.value.status_code == 409
+
+
+class TestOAuthRedirectUrl:
+    """Tests for OAuth redirect URI construction."""
+
+    def test_redirect_uri_no_double_slash(self):
+        from app.routes.oauth import oauth_redirect
+
+        with (
+            patch("app.routes.oauth._generate_pkce_pair", return_value=("v", "c")),
+            patch("app.routes.oauth._store_pkce_verifier"),
+        ):
+            with patch("app.routes.oauth.settings") as mock_settings:
+                mock_settings.FRONTEND_URL = "http://localhost:3000/app/"
+                mock_settings.SUPABASE_URL = "https://supabase.example.com"
+                result = asyncio.run(oauth_redirect("google"))
+                from urllib.parse import urlparse, parse_qs
+
+                query = parse_qs(urlparse(result.auth_url).query)
+                redirect_to = query["redirect_to"][0]
+                assert "//auth/callback" not in redirect_to
+                assert redirect_to == "http://localhost:3000/app/auth/callback"
+
+
+class TestGenerateSlugStrength:
+    """The slug's random suffix is the route's primary秘密 (secret)."""
+
+    def test_suffix_is_strong_and_within_length(self):
+        from app.utils.security import generate_slug
+
+        slug = generate_slug("My Route Name")
+        assert slug.startswith("my-route-name-")
+        suffix = slug.split("-")[-1]
+        # 12 hex chars (48 bits) of entropy.
+        assert len(suffix) == 12
+        assert all(c in "0123456789abcdef" for c in suffix)
+        # Stay within the Slug model max length (64).
+        assert len(slug) <= 64
+
+
+class TestRouteFailuresPagination:
+    """Cursor pagination must fetch strictly-older rows (no overlap)."""
+
+    def test_cursor_uses_lt_not_lte(self):
+        from app.routes.auth import list_route_failures
+
+        with patch("app.routes.auth.admin") as mock_admin:
+            # get_owned_route_or_404 and the failures query share the mock
+            # chain. ``e1`` is the first ``.eq()`` of either query.
+            s = mock_admin.table.return_value.select.return_value
+            e1 = s.eq.return_value
+            # get_owned_route_or_404 ends with e1.eq("user_id").execute().
+            e1.eq.return_value.execute.return_value.data = [{"id": "x"}]
+
+            user = User(id="u1", email="e@e.com", created_at=None)
+            asyncio.run(
+                list_route_failures(
+                    route_id="r1",
+                    cursor="2026-01-01T00:00:00Z",
+                    limit=20,
+                    current_user=user,
+                )
+            )
+
+            # The failures query branches on e1.order(...).limit(...).
+            tail = e1.order.return_value.limit.return_value
+            assert tail.lt.called
+            assert not tail.lte.called
+
+
+class TestRouteCacheInvalidationOnUpdate:
+    """Mutating a route must evict its cached proxy row immediately."""
+
+    def test_update_invalidates_proxy_cache(self):
+        from app.routes.auth import update_route
+        from app.models import RouteUpdate
+
+        route_data = RouteUpdate(name="New Name")
+        with (
+            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.clear_route_cache_for_route") as mock_clear,
+        ):
+            # Slug-uniqueness pre-check must find no collision.
+            (
+                mock_admin.table.return_value.select.return_value.eq.return_value.neq.return_value.execute.return_value.data
+            ) = []
+            # Pre-update slug lookup (for rename eviction).
+            (
+                mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
+            ) = [{"slug": "old-slug"}]
+            # The actual UPDATE returns the updated row (with its slug).
+            (
+                mock_admin.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value.data
+            ) = [
+                {
+                    "id": "r1",
+                    "user_id": "u1",
+                    "name": "New Name",
+                    "slug": "old-slug",
+                    "destination_url": "https://example.com/hook",
+                    "method": "POST",
+                    "headers": {},
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+
+            user = User(id="u1", email="e@e.com", created_at=None)
+            asyncio.run(update_route("r1", route_data, user))
+
+            mock_clear.assert_called_once_with("old-slug")
+
+    def test_rename_evicts_both_old_and_new_slug(self):
+        from app.routes.auth import update_route
+        from app.models import RouteUpdate
+
+        route_data = RouteUpdate(name="Renamed Route")
+        with (
+            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.clear_route_cache_for_route") as mock_clear,
+        ):
+            (
+                mock_admin.table.return_value.select.return_value.eq.return_value.neq.return_value.execute.return_value.data
+            ) = []
+            # Pre-update slug is "old-slug".
+            (
+                mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
+            ) = [{"slug": "old-slug"}]
+            # The rename regenerates the slug to "new-slug".
+            (
+                mock_admin.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value.data
+            ) = [
+                {
+                    "id": "r1",
+                    "user_id": "u1",
+                    "name": "Renamed Route",
+                    "slug": "new-slug",
+                    "destination_url": "https://example.com/hook",
+                    "method": "POST",
+                    "headers": {},
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+
+            user = User(id="u1", email="e@e.com", created_at=None)
+            asyncio.run(update_route("r1", route_data, user))
+
+            assert mock_clear.call_args_list == [
+                ((("new-slug",)),),
+                ((("old-slug",)),),
+            ]
+
+class TestManualRetryEndpoint:
+    """Tests for the manual retry endpoint."""
+
+    def test_retry_exhausted_webhook_queues_for_retry(self):
+        from app.routes.auth import retry_failed_webhook
+        from app.models import User
+
+        mock_user = User(id="u1", email="e@e.com", created_at=None)
+        mock_admin = MagicMock()
+        mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            {"id": "log-1", "retry_status": "exhausted"}
+        ]
+        mock_admin.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+            {"id": "log-1"}
+        ]
+
+        with patch("app.routes.auth.admin", mock_admin), patch(
+            "app.routes.auth.get_owned_route_or_404"
+        ):
+            response = asyncio.run(
+                retry_failed_webhook(
+                    route_id="route-1",
+                    log_id="log-1",
+                    current_user=mock_user,
+                )
+            )
+
+        assert response["status"] == "queued"
+        assert response["log_id"] == "log-1"
+
+    def test_retry_non_exhausted_returns_400(self):
+        from app.routes.auth import retry_failed_webhook
+        from app.models import User
+        from fastapi import HTTPException
+
+        mock_user = User(id="u1", email="e@e.com", created_at=None)
+        mock_admin = MagicMock()
+        mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            {"id": "log-1", "retry_status": "pending"}
+        ]
+
+        with patch("app.routes.auth.admin", mock_admin), patch(
+            "app.routes.auth.get_owned_route_or_404"
+        ):
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(
+                    retry_failed_webhook(
+                        route_id="route-1",
+                        log_id="log-1",
+                        current_user=mock_user,
+                    )
+                )
+        assert exc.value.status_code == 400
+

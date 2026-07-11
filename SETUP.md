@@ -45,15 +45,21 @@ API_KEY_SALT=dev-salt-change-in-production
 RETRY_ENDPOINT_SECRET=dev-retry-secret-change-in-production
 ENCRYPTION_KEY=dev-encryption-key-change-outside-development
 FRONTEND_URL=http://localhost:8000
+ALLOWED_HOSTS=localhost:8000
+TRUSTED_PROXIES=
 ENVIRONMENT=development
+RETENTION_DAYS=30
 ```
 
 - `SUPABASE_URL` and `SUPABASE_KEY` from Project Settings → API
 - `SUPABASE_SERVICE_ROLE_KEY` from the same page
 - `API_KEY_SALT` — any random string, used to hash API keys
 - `RETRY_ENDPOINT_SECRET` — shared secret for `/internal/process-retries`
-- `ENCRYPTION_KEY` — required outside local development for webhook-secret encryption
+- `ENCRYPTION_KEY` — required outside local development for webhook-secret encryption. Encryption is performed **in the application** by `app/crypto.py` using Fernet (prefix `v1:`), falling back to the `safe_plain:` prefix when no key is configured. (The older, DB-side `pgcrypto` scheme was removed.)
 - `FRONTEND_URL` — where Supabase redirects after OAuth (e.g. `http://localhost:8000` for dev, `https://your-app.vercel.app` for production)
+- `ALLOWED_HOSTS` — **required in production** (comma-separated). On Vercel set to your app domain(s); empty (or missing) makes the app refuse to start.
+- `TRUSTED_PROXIES` — comma-separated edge/CDN IPs whose `X-Forwarded-For` is trusted for per-IP rate limiting. **Required when deployed behind a CDN/Vercel** so clients aren't all grouped into one rate-limit bucket.
+- `RETENTION_DAYS` — how many days of webhook delivery history to retain (1-365). Defaults to 30.
 
 ## 4. Run locally
 
@@ -71,6 +77,20 @@ curl http://localhost:8000/auth/oauth/google
 ```
 
 Open the `auth_url` in a browser, sign in, and you'll get a JWT token back.
+
+## 6. Key Rotation
+
+### Encryption Key
+
+1. Set the new `ENCRYPTION_KEY` in your environment
+2. Restart the application
+3. Re-encrypt existing webhook secrets by reading each route and updating the `webhook_secret` field with the newly encrypted value
+
+**Note:** The application caches the Fernet instance. After rotation, call `clear_fernet_cache()` or restart to use the new key.
+
+### API Key
+
+Use `POST /auth/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again.
 
 ## Deploying
 

@@ -26,10 +26,10 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Ruff lint check
-        run: ruff check app/
+        run: ruff check app/ tests/
 
       - name: Ruff format check
-        run: ruff format --check app/
+        run: ruff format --check app/ tests/
 
   # ── Type-check ──────────────────────────────
   typecheck:

@@ -6,6 +6,7 @@ and input constraints consistent with the Supabase tables defined in
 ``schema.sql``.
 """
 
+from __future__ import annotations
 from typing import Optional, Annotated
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -14,17 +15,17 @@ from pydantic import BaseModel, Field, ConfigDict
 # ---------------------------------------------------------------------------
 # Shared constrained types
 # ---------------------------------------------------------------------------
-Slug = Annotated[str, Field(pattern="^[a-z0-9-]+$", min_length=1, max_length=50)]
+Slug = Annotated[str, Field(pattern="^[a-z0-9-]+$", min_length=1, max_length=64)]
 """Public route identifier. Lowercase alphanumeric and hyphens only."""
 
 HttpsUrl = Annotated[
     str,
     Field(
-        pattern="^https://",
+        pattern="^https://[^/]",
         examples=["https://hooks.zapier.com/hooks/catch/..."],
     ),
 ]
-"""URL constrained to HTTPS to prevent MITM forwarding."""
+"""URL constrained to HTTPS with a non-empty hostname."""
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,7 @@ class RouteUpdate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_active: Optional[bool] = None
     webhook_secret: Optional[str] = Field(None, min_length=8, max_length=256)
+    clear_webhook_secret: Optional[bool] = None
     rate_limit: Optional[int] = Field(None, ge=1, le=1000)
     transform_headers: Optional[dict[str, str]] = None
     transform_body_template: Optional[str] = Field(None, max_length=10000)

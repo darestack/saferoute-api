@@ -7,25 +7,41 @@ python_version = "3.12"
 ignore_missing_imports = true
 strict = true
 
+# The four modules below sit directly on the (untyped) Supabase client, whose
+# query/execute results are inferred as arbitrary JSON (`Mapping[str, JSON]`).
+# That boundary produces a flood of false-positive errors that we cannot fix
+# without losing the dynamic query API. We therefore silence ONLY the codes
+# that originate at that boundary, and keep all other strict checks enabled so
+# genuine mistakes (e.g. undefined names, dead `# type: ignore`s) still fail
+# the build. Prefer narrowing these further (typed wrappers around Supabase
+# calls) over expanding this list.
 [[tool.mypy.overrides]]
 module = [
     "app.database",
     "app.routes.auth",
     "app.routes.oauth",
-    "app.routes.proxy"
+    "app.routes.proxy",
 ]
-ignore_errors = true
+disable_error_code = [
+    "union-attr",
+    "arg-type",
+    "index",
+    "operator",
+    "call-overload",
+    "type-arg",
+    "return-value",
+    "assignment",
+    "no-untyped-def",
+]
 
-[[tool.mypy.overrides]]
-module = [
-    "conftest",
-    "test_auth",
-    "test_crypto",
-    "test_database",
-    "test_logging_config",
-    "test_models",
-    "test_proxy",
-    "test_proxy_integration",
-    "test_sql_migrations",
+[tool.pytest.ini_options]
+# Tests drive coroutines via ``asyncio.run`` inside synchronous test functions,
+# so the default fixture loop scope is set explicitly to silence the
+# pytest-asyncio default-scope warning and avoid surprising scope behaviour.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+markers = [
+    'integration: marks tests as integration tests (deselect with "-m not integration")',
 ]
-ignore_errors = true
