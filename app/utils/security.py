@@ -107,8 +107,18 @@ async def validate_destination_url_async(
     url: str,
     resolve_dns: bool = True,
 ) -> None:
-    """Run destination URL validation without blocking the event loop."""
-    await asyncio.to_thread(validate_destination_url, url, resolve_dns)
+    """Run destination URL validation without blocking the event loop.
+
+    When ``resolve_dns`` is ``False`` the validation is pure CPU work
+    (urlparse, scheme check, literal IP classification), so it runs
+    synchronously without dispatching to a thread pool. DNS resolution
+    is the only part that needs ``asyncio.to_thread`` to avoid blocking
+    the event loop.
+    """
+    if resolve_dns:
+        await asyncio.to_thread(validate_destination_url, url, True)
+    else:
+        validate_destination_url(url, False)
 
 
 def verify_webhook_signature(
@@ -174,14 +184,33 @@ def generate_slug(name: str) -> str:
 def safe_error_detail(exc: Exception) -> str:
     """Return a safe error detail — verbose in dev, generic in prod.
 
+    In development, sensitive patterns (database URLs, internal IPs, stack
+    traces with file paths) are redacted to prevent accidental disclosure if
+    a dev/staging environment is exposed to the internet.
+
     Args:
         exc: The exception that occurred.
 
     Returns:
         The exception string in development, or a generic message in production.
     """
-    if settings.ENVIRONMENT == "development":
-        return str(exc)
+    if settings.is_development:
+        msg = str(exc)
+        # Redact connection strings (postgres://, postgresql://, mysql://, etc.)
+        msg = re.sub(
+            r"[a-zA-Z][a-zA-Z0-9+.-]*://[^@]+@[^/]+",
+            lambda m: m.group(0).split("@")[0] + "@<redacted>",
+            msg,
+        )
+        # Redact IPv4 addresses that look like internal/private IPs.
+        # Use lookaround assertions instead of word boundaries because dots are
+        # non-word characters and \b would match between an octet and the following dot.
+        msg = re.sub(
+            r"(?<![\d.])(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|127\.\d+\.\d+\.\d+)(?![\d.])",
+            "<internal-ip>",
+            msg,
+        )
+        return msg
     return "An internal error occurred"
 
 

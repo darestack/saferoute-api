@@ -149,6 +149,7 @@ class WebhookLogResponse(BaseModel):
         retry_count: Number of retry attempts made.
         retry_status: Current retry state (none/pending/retrying/exhausted/succeeded).
         created_at: ISO 8601 timestamp of the delivery attempt.
+        updated_at: ISO 8601 timestamp of the last modification.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -161,6 +162,7 @@ class WebhookLogResponse(BaseModel):
     retry_count: int = 0
     retry_status: str = "none"
     created_at: str
+    updated_at: str
 
 
 class WebhookFailureResponse(BaseModel):
@@ -175,6 +177,7 @@ class WebhookFailureResponse(BaseModel):
     retry_count: int = 0
     max_retries: int = 3
     created_at: str
+    updated_at: str
 
 
 class WebhookFailuresResponse(BaseModel):

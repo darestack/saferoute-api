@@ -67,6 +67,9 @@ _MAX_LOG_BODY_BYTES = 10_000
 _MAX_RETRIES = 3
 """Maximum number of retry attempts for failed deliveries."""
 
+_RETRY_BATCH_SIZE = 100
+"""Maximum number of retry entries to process in a single /internal/process-retries call."""
+
 # How long a row may stay claimed ("retrying") before the reaper considers the
 # worker dead and returns it to the "pending" pool for another attempt.
 _RETRY_CLAIM_STALE_SECONDS = 300
@@ -91,6 +94,7 @@ _route_cache_fills_lock = asyncio.Lock()
 # ---------------------------------------------------------------------------
 _CIRCUIT_BREAKER_THRESHOLD = 5
 _CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
+_CIRCUIT_BREAKER_MAX_ENTRIES = 1_000
 
 _circuit_breaker_state: dict[str, dict] = {}
 _circuit_breaker_lock = asyncio.Lock()
@@ -129,6 +133,16 @@ async def _record_circuit_breaker_failure(url: str) -> None:
         state["failures"] += 1
         if state["failures"] >= _CIRCUIT_BREAKER_THRESHOLD:
             state["opened_at"] = time.monotonic()
+
+        # Bounded eviction: drop oldest quarter when over the limit.
+        if len(_circuit_breaker_state) > _CIRCUIT_BREAKER_MAX_ENTRIES:
+            sorted_urls = sorted(
+                _circuit_breaker_state.items(),
+                key=lambda kv: kv[1].get("opened_at") or 0,
+            )
+            evict_count = max(1, _CIRCUIT_BREAKER_MAX_ENTRIES // 4)
+            for url_key, _ in sorted_urls[:evict_count]:
+                _circuit_breaker_state.pop(url_key, None)
 
 
 async def clear_route_circuit_breaker(url: str) -> None:
@@ -200,18 +214,19 @@ async def _fill_route_cache(slug: str) -> dict:
         _route_cache_fills.pop(slug, None)
 
 
-def clear_route_cache() -> None:
+async def clear_route_cache() -> None:
     """Clear the entire in-memory route cache.
 
-    Primarily intended for test isolation; safe to call from synchronous
-    test code without entering an async context.
+    Must be called from an async context because it acquires
+    ``_route_cache_lock`` to stay consistent with concurrent readers.
     """
-    _route_cache.clear()
-    _route_cache_expiry.clear()
-    _route_cache_order.clear()
+    async with _route_cache_lock:
+        _route_cache.clear()
+        _route_cache_expiry.clear()
+        _route_cache_order.clear()
 
 
-def clear_route_cache_for_route(slug: str) -> None:
+async def clear_route_cache_for_route(slug: str) -> None:
     """Evict a single route from the in-memory cache.
 
     Call this whenever a route's proxy-relevant columns change (destination,
@@ -219,11 +234,15 @@ def clear_route_cache_for_route(slug: str) -> None:
     serving a stale cached copy. Without this, such changes would take up to
     ``_ROUTE_CACHE_TTL_SECONDS`` (30s) to take effect — a security-relevant
     window for ``is_active`` toggles and secret rotations.
+
+    Acquires ``_route_cache_lock`` to stay consistent with concurrent
+    ``_get_cached_route`` / ``_cache_route`` access.
     """
-    _route_cache.pop(slug, None)
-    _route_cache_expiry.pop(slug, None)
-    if slug in _route_cache_order:
-        _route_cache_order.remove(slug)
+    async with _route_cache_lock:
+        _route_cache.pop(slug, None)
+        _route_cache_expiry.pop(slug, None)
+        if slug in _route_cache_order:
+            _route_cache_order.remove(slug)
 
 
 async def clear_circuit_breaker_for_url(url: str) -> None:
@@ -803,7 +822,7 @@ async def process_retries(
         .lte("next_retry_at", now)
         .lt("retry_count", _MAX_RETRIES)
         .gte("created_at", get_retry_window_cutoff())
-        .limit(10)
+        .limit(_RETRY_BATCH_SIZE)
         .execute()
     )
 

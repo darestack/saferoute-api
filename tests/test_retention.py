@@ -169,7 +169,7 @@ class TestProxyDestinationValidation:
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
             assert "unique-test-route-xyz" not in _route_cache
 
             request = MagicMock()

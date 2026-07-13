@@ -208,7 +208,8 @@ create table public.webhook_failures (
     user_agent text,
     retry_count integer default 0,
     max_retries integer default 3,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 create index idx_webhook_failures_route_id on public.webhook_failures(route_id);
@@ -220,6 +221,11 @@ create policy "Service role full access webhook_failures"
     on public.webhook_failures for all
     to service_role
     using (true);
+
+create trigger update_webhook_failures_updated_at
+    before update on public.webhook_failures
+    for each row
+    execute function public.update_updated_at();
 
 -- ========================================
 -- Triggers

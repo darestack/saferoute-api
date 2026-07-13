@@ -39,31 +39,49 @@ __all__ = [
 # ---------------------------------------------------------------------------
 _OAUTH_CALLBACK_RATE_LIMIT = 10
 _OAUTH_CALLBACK_RATE_WINDOW = 60
+_OAUTH_CACHE_MAX_ENTRIES = 10_000
 
 _oauth_callback_cache: dict[str, list[float]] = {}
 _oauth_callback_lock = asyncio.Lock()
 
 
-def _check_oauth_rate_limit(client_ip: str) -> None:
-    """Raise 429 if the client has exceeded the OAuth callback rate limit."""
-    now = time.monotonic()
-    window_start = now - _OAUTH_CALLBACK_RATE_WINDOW
+async def _check_oauth_rate_limit(client_ip: str) -> None:
+    """Raise 429 if the client has exceeded the OAuth callback rate limit.
 
-    timestamps = _oauth_callback_cache.get(client_ip, [])
-    timestamps = [ts for ts in timestamps if ts > window_start]
+    The cache is bounded to ``_OAUTH_CACHE_MAX_ENTRIES`` entries to prevent
+    memory leaks under sustained scanning. When the bound is exceeded, the
+    oldest entries (by earliest timestamp) are evicted first.
+    """
+    async with _oauth_callback_lock:
+        now = time.monotonic()
+        window_start = now - _OAUTH_CALLBACK_RATE_WINDOW
 
-    if len(timestamps) >= _OAUTH_CALLBACK_RATE_LIMIT:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many OAuth callback attempts",
-            headers={"Retry-After": str(_OAUTH_CALLBACK_RATE_WINDOW)},
-        )
+        timestamps = _oauth_callback_cache.get(client_ip, [])
+        timestamps = [ts for ts in timestamps if ts > window_start]
 
-    timestamps.append(now)
-    if timestamps:
-        _oauth_callback_cache[client_ip] = timestamps
-    else:
-        _oauth_callback_cache.pop(client_ip, None)
+        if len(timestamps) >= _OAUTH_CALLBACK_RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many OAuth callback attempts",
+                headers={"Retry-After": str(_OAUTH_CALLBACK_RATE_WINDOW)},
+            )
+
+        timestamps.append(now)
+        if timestamps:
+            _oauth_callback_cache[client_ip] = timestamps
+        else:
+            _oauth_callback_cache.pop(client_ip, None)
+
+        # Bounded eviction: drop the quarter with the oldest timestamps when
+        # the cache exceeds ``_OAUTH_CACHE_MAX_ENTRIES``.
+        if len(_oauth_callback_cache) > _OAUTH_CACHE_MAX_ENTRIES:
+            sorted_ips = sorted(
+                _oauth_callback_cache.items(),
+                key=lambda kv: min(kv[1]) if kv[1] else 0,
+            )
+            evict_count = max(1, _OAUTH_CACHE_MAX_ENTRIES // 4)
+            for ip, _ in sorted_ips[:evict_count]:
+                _oauth_callback_cache.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +219,7 @@ async def oauth_callback_post(
 
     client_ip = get_client_ip(request)
     async with _oauth_callback_lock:
-        _check_oauth_rate_limit(client_ip)
+        await _check_oauth_rate_limit(client_ip)
 
     return await _exchange_code(code, code_challenge)
 

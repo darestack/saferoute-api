@@ -503,9 +503,9 @@ async def update_route(
         # public URL keeps working (serving the renamed route) for up to the
         # 30s cache TTL.
         new_slug = result.data[0]["slug"]
-        clear_route_cache_for_route(new_slug)
+        await clear_route_cache_for_route(new_slug)
         if old_slug and old_slug != new_slug:
-            clear_route_cache_for_route(old_slug)
+            await clear_route_cache_for_route(old_slug)
 
         # Reset circuit breakers for old and new destinations so a previously
         # open circuit does not block traffic after a destination change.
@@ -560,7 +560,7 @@ async def delete_route(
 
     # Evict the deleted route from the proxy cache so it stops accepting
     # traffic immediately rather than serving the stale cached row.
-    clear_route_cache_for_route(result.data[0]["slug"])
+    await clear_route_cache_for_route(result.data[0]["slug"])
     await clear_circuit_breaker_for_url(result.data[0]["destination_url"])
 
     return None
@@ -597,7 +597,7 @@ async def rotate_api_key(
         await clear_api_key_cache_for_route(route_id)
         # The route's API key changed; also drop the cached proxy row so the
         # new key is reflected on the next request.
-        clear_route_cache_for_route(result.data[0]["slug"])
+        await clear_route_cache_for_route(result.data[0]["slug"])
         route = result.data[0]
         return RouteCreateResponse(**route_to_response(route, api_key=full_key))
     except HTTPException:
@@ -767,6 +767,7 @@ async def list_route_failures(
                 retry_count=f.get("retry_count", 0),
                 max_retries=f.get("max_retries", 3),
                 created_at=f["created_at"],
+                updated_at=f["updated_at"],
             )
             for f in failures
         ],

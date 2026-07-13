@@ -1,5 +1,6 @@
 """Integration tests for the proxy webhook endpoints using FastAPI TestClient."""
 
+import asyncio
 import pytest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -219,7 +220,7 @@ class TestProxyWebhookIntegration:
 
             from app.routes.proxy import clear_route_cache
 
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
 
             response = client.post(
                 "/v1/route/test-route",

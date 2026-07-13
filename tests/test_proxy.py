@@ -506,7 +506,7 @@ class TestProxyContentTypePreservation:
 
             from app.routes.proxy import clear_route_cache
 
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -561,7 +561,7 @@ class TestProxyContentTypePreservation:
 
             from app.routes.proxy import clear_route_cache
 
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -753,7 +753,7 @@ class TestRouteCache:
         route = {"id": "route-1", "slug": "test"}
         asyncio.run(_cache_route("test-route", route))
         assert asyncio.run(_get_cached_route("test-route")) == route
-        clear_route_cache()
+        asyncio.run(clear_route_cache())
 
 
 class TestApiKeyCache:
@@ -896,7 +896,7 @@ class TestDecryptFailure:
 
             from app.routes.proxy import clear_route_cache
 
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -1079,7 +1079,7 @@ class TestApiKeyAuth:
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -1131,7 +1131,7 @@ class TestOAuthCallbackRateLimit:
 
         client_ip = "1.2.3.4"
         for _ in range(5):
-            _check_oauth_rate_limit(client_ip)  # Should not raise
+            asyncio.run(_check_oauth_rate_limit(client_ip))  # Should not raise
 
     def test_denies_requests_over_limit(self):
         from app.routes.oauth import _check_oauth_rate_limit, _OAUTH_CALLBACK_RATE_LIMIT
@@ -1139,10 +1139,10 @@ class TestOAuthCallbackRateLimit:
         client_ip = "1.2.3.4"
         # Allow up to the limit.
         for _ in range(_OAUTH_CALLBACK_RATE_LIMIT):
-            _check_oauth_rate_limit(client_ip)
+            asyncio.run(_check_oauth_rate_limit(client_ip))
 
         with pytest.raises(HTTPException) as exc:
-            _check_oauth_rate_limit(client_ip)
+            asyncio.run(_check_oauth_rate_limit(client_ip))
         assert exc.value.status_code == 429
 
     def test_different_ips_have_separate_limits(self):
@@ -1152,10 +1152,10 @@ class TestOAuthCallbackRateLimit:
         ip2 = "5.6.7.8"
 
         for _ in range(_OAUTH_CALLBACK_RATE_LIMIT):
-            _check_oauth_rate_limit(ip1)
+            asyncio.run(_check_oauth_rate_limit(ip1))
 
         # ip2 should still be allowed
-        _check_oauth_rate_limit(ip2)  # Should not raise
+        asyncio.run(_check_oauth_rate_limit(ip2))  # Should not raise
 
     def test_window_expires_allows_requests(self):
         from app.routes.oauth import _check_oauth_rate_limit, _OAUTH_CALLBACK_RATE_LIMIT, _OAUTH_CALLBACK_RATE_WINDOW
@@ -1163,11 +1163,11 @@ class TestOAuthCallbackRateLimit:
         client_ip = "1.2.3.4"
 
         for _ in range(_OAUTH_CALLBACK_RATE_LIMIT):
-            _check_oauth_rate_limit(client_ip)
+            asyncio.run(_check_oauth_rate_limit(client_ip))
 
         # Simulate time passing beyond the window
         with patch("app.routes.oauth.time.monotonic", return_value=time.monotonic() + _OAUTH_CALLBACK_RATE_WINDOW + 1):
-            _check_oauth_rate_limit(client_ip)  # Should not raise
+            asyncio.run(_check_oauth_rate_limit(client_ip))  # Should not raise
 
 
 class TestRouteCacheInvalidation:
@@ -1181,15 +1181,15 @@ class TestRouteCacheInvalidation:
             clear_route_cache_for_route,
         )
 
-        clear_route_cache()
+        asyncio.run(clear_route_cache())
         asyncio.run(_cache_route("keep-me", {"id": "r1"}))
         asyncio.run(_cache_route("drop-me", {"id": "r2"}))
 
-        clear_route_cache_for_route("drop-me")
+        asyncio.run(clear_route_cache_for_route("drop-me"))
 
         assert asyncio.run(_get_cached_route("drop-me")) is None
         assert asyncio.run(_get_cached_route("keep-me")) is not None
-        clear_route_cache()
+        asyncio.run(clear_route_cache())
 
 
 class TestCircuitBreaker:
@@ -1314,7 +1314,7 @@ class TestFillRouteCacheSingleFlight:
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute = mock_query
 
             from app.routes.proxy import clear_route_cache
-            clear_route_cache()
+            asyncio.run(clear_route_cache())
 
             async def scenario():
                 # Manually inject a completed future into the fills dict to
@@ -1365,3 +1365,114 @@ class TestFillRouteCacheSingleFlight:
             headers={"X-Retry-Secret": "wrong-secret"},
         )
         assert response.status_code == 401
+
+
+class TestOAuthRateLimitBoundedEviction:
+    """OAuth rate-limit cache must not grow unbounded."""
+
+    def test_eviction_when_cache_exceeds_limit(self):
+        """When the cache exceeds _OAUTH_CACHE_MAX_ENTRIES, oldest entries are evicted."""
+        from app.routes.oauth import _check_oauth_rate_limit, _oauth_callback_cache, _OAUTH_CACHE_MAX_ENTRIES
+
+        # Fill the cache to the limit with unique IPs (one request each).
+        for i in range(_OAUTH_CACHE_MAX_ENTRIES):
+            ip = f"10.0.{i // 256}.{i % 256}"
+            asyncio.run(_check_oauth_rate_limit(ip))
+
+        assert len(_oauth_callback_cache) <= _OAUTH_CACHE_MAX_ENTRIES
+
+        # One more unique IP should trigger eviction.
+        asyncio.run(_check_oauth_rate_limit("192.168.1.1"))
+        assert len(_oauth_callback_cache) <= _OAUTH_CACHE_MAX_ENTRIES
+
+
+class TestCircuitBreakerBoundedEviction:
+    """Circuit breaker state must not grow unbounded."""
+
+    def test_eviction_when_state_exceeds_limit(self):
+        """When circuit breaker state exceeds _CIRCUIT_BREAKER_MAX_ENTRIES, oldest are evicted."""
+        from app.routes.proxy import (
+            _record_circuit_breaker_failure,
+            _circuit_breaker_state,
+            _CIRCUIT_BREAKER_MAX_ENTRIES,
+        )
+
+        # Fill the circuit breaker state to the limit.
+        for i in range(_CIRCUIT_BREAKER_MAX_ENTRIES):
+            url = f"https://example{i}.com/webhook"
+            asyncio.run(_record_circuit_breaker_failure(url))
+
+        assert len(_circuit_breaker_state) <= _CIRCUIT_BREAKER_MAX_ENTRIES
+
+        # One more URL should trigger eviction.
+        asyncio.run(_record_circuit_breaker_failure("https://newsite.com/webhook"))
+        assert len(_circuit_breaker_state) <= _CIRCUIT_BREAKER_MAX_ENTRIES
+
+
+class TestValidateDestinationUrlAsync:
+    """Tests for validate_destination_url_async behavior."""
+
+    def test_no_dns_resolution_skips_thread(self):
+        """When resolve_dns=False, validate_destination_url_async should not dispatch to a thread."""
+        from app.utils.security import validate_destination_url_async
+
+        with patch("asyncio.to_thread") as mock_to_thread:
+            asyncio.run(validate_destination_url_async("https://example.com", resolve_dns=False))
+            mock_to_thread.assert_not_called()
+
+    def test_dns_resolution_uses_thread(self):
+        """When resolve_dns=True, validate_destination_url_async should dispatch to a thread."""
+        from app.utils.security import validate_destination_url_async
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+            mock_to_thread.return_value = None
+            asyncio.run(validate_destination_url_async("https://example.com", resolve_dns=True))
+            mock_to_thread.assert_called_once()
+
+
+class TestSafeErrorDetail:
+    """Tests for safe_error_detail sanitization."""
+
+    def test_redacts_connection_strings(self):
+        """Development errors should redact host portion of connection strings."""
+        from app.utils.security import safe_error_detail
+
+        with patch("app.utils.security.settings") as mock_settings:
+            mock_settings.is_development = True
+            exc = Exception("Failed to connect to postgres://user:pass@db.example.com:5432/mydb")
+            detail = safe_error_detail(exc)
+            # The host+port after @ is redacted, but scheme and user:pass are kept.
+            assert "db.example.com:5432" not in detail
+            assert "<redacted>" in detail
+
+    def test_redacts_internal_ips(self):
+        """Development errors should redact private/internal IP addresses."""
+        from app.utils.security import safe_error_detail
+
+        with patch("app.utils.security.settings") as mock_settings:
+            mock_settings.is_development = True
+            exc = Exception("Connection refused to 192.168.1.100:8080")
+            detail = safe_error_detail(exc)
+            assert "192.168.1.100" not in detail
+            assert "<internal-ip>" in detail
+
+    def test_production_returns_generic_message(self):
+        """Production errors should return a generic message."""
+        from app.utils.security import safe_error_detail
+
+        with patch("app.utils.security.settings") as mock_settings:
+            mock_settings.is_development = False
+            exc = Exception("postgres://user:pass@db.example.com/mydb")
+            detail = safe_error_detail(exc)
+            assert detail == "An internal error occurred"
+
+
+class TestProcessRetriesBatchSize:
+    """Tests for process_retries batch size configuration."""
+
+    def test_batch_size_is_configurable(self):
+        """The retry batch size should be a module-level constant."""
+        from app.routes.proxy import _RETRY_BATCH_SIZE
+
+        assert isinstance(_RETRY_BATCH_SIZE, int)
+        assert _RETRY_BATCH_SIZE > 0

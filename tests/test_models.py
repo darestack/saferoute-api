@@ -205,6 +205,7 @@ class TestWebhookLogResponse:
             id=1,
             route_id="route-uuid",
             created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
         )
         assert log.retry_count == 0
         assert log.retry_status == "none"
