@@ -46,6 +46,18 @@ async def lifespan(app: FastAPI) -> Any:
     except Exception as exc:
         logger.warning("Startup RLS bypass check failed: %s", exc)
 
+    # Warn if the deployment appears to use multiple workers with in-process
+    # caches, which can cause stale configs and inconsistent rate limiting.
+    import os
+    workers = os.getenv("WORKERS", os.getenv("UVICORN_WORKERS", "1"))
+    if workers != "1":
+        logger.warning(
+            "Multiple workers detected (WORKERS=%s). In-memory caches are not "
+            "shared across workers. For consistent behavior, deploy with a "
+            "single worker or move caches to Redis.",
+            workers,
+        )
+
     yield
     await shutdown_event()
 

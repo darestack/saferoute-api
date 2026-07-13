@@ -8,7 +8,6 @@ This module creates and exports two Supabase clients:
 """
 
 from __future__ import annotations
-import hashlib
 import hmac
 import logging
 import secrets
@@ -69,7 +68,7 @@ def _hash_api_key(full_key: str) -> str:
     return hmac.new(
         settings.API_KEY_SALT.encode(),
         full_key.encode(),
-        hashlib.sha256,
+        digestmod="sha256",
     ).hexdigest()
 
 
@@ -242,11 +241,13 @@ async def clear_api_key_cache_for_route(route_id: str) -> None:
                 _api_key_cache_order.remove(key_hash)
 
 
-def clear_api_key_cache() -> None:
+async def clear_api_key_cache() -> None:
     """Clear the entire API key verification cache.
 
-    Intended for test isolation. Safe to call from synchronous test code.
+    Must be called from an async context because it acquires
+    ``_api_key_cache_lock`` to stay consistent with concurrent readers.
     """
-    _api_key_cache.clear()
-    _api_key_cache_expiry.clear()
-    _api_key_cache_order.clear()
+    async with _api_key_cache_lock:
+        _api_key_cache.clear()
+        _api_key_cache_expiry.clear()
+        _api_key_cache_order.clear()

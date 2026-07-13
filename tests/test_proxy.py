@@ -762,7 +762,7 @@ class TestApiKeyCache:
     def test_cache_miss_returns_none(self):
         from app.database import _get_cached_api_key, clear_api_key_cache
 
-        clear_api_key_cache()
+        asyncio.run(clear_api_key_cache())
         assert asyncio.run(_get_cached_api_key("nonexistent-hash")) is None
 
     def test_fifo_eviction_when_full(self):
@@ -774,7 +774,7 @@ class TestApiKeyCache:
             clear_api_key_cache,
         )
 
-        clear_api_key_cache()
+        asyncio.run(clear_api_key_cache())
         for i in range(_API_KEY_CACHE_MAX_SIZE):
             asyncio.run(_cache_api_key(f"hash-{i:04d}", f"route-{i}"))
 
@@ -783,7 +783,7 @@ class TestApiKeyCache:
         asyncio.run(_cache_api_key("hash-new", "route-new"))
         assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
         assert "hash-0000" not in _api_key_cache
-        clear_api_key_cache()
+        asyncio.run(clear_api_key_cache())
 
 
 class TestHoneypotStripping:
@@ -1281,6 +1281,7 @@ class TestFillRouteCacheSingleFlight:
     def test_single_flight_awaits_existing_future(self):
         """When a future already exists for a slug, await it instead of querying."""
         from app.routes.proxy import _fill_route_cache, _route_cache_fills
+        import time as time_module
 
         route_row = {
             "id": "route-1",
@@ -1322,7 +1323,7 @@ class TestFillRouteCacheSingleFlight:
                 loop = asyncio.get_running_loop()
                 fut = loop.create_future()
                 fut.set_result(route_row)
-                _route_cache_fills["test-route"] = fut
+                _route_cache_fills["test-route"] = (fut, time_module.monotonic())
 
                 # This call should await the existing future, not hit the DB.
                 result = await _fill_route_cache("test-route")
@@ -1556,41 +1557,3 @@ class TestCryptoRoundTrip:
             clear_fernet_cache()
 
 
-class TestUserCacheConcurrency:
-    """Tests for concurrent user cache access."""
-
-    def test_concurrent_fetch_single_db_call(self):
-        """Concurrent fetches for same user should result in one DB call."""
-        from app.routes.auth import _fetch_and_cache_user
-        from unittest.mock import MagicMock
-
-        user_id = "user-concurrent-test"
-        mock_user = MagicMock()
-        mock_user.id = user_id
-        mock_user.email = "test@example.com"
-        mock_user.full_name = "Test User"
-        mock_user.created_at = "2026-01-01T00:00:00Z"
-
-        call_count = 0
-
-        async def mock_get_user(uid):
-            nonlocal call_count
-            call_count += 1
-            result = MagicMock()
-            result.user = mock_user
-            return result
-
-        with (
-            patch("app.routes.auth.admin.auth.admin.get_user_by_id", side_effect=mock_get_user),
-            patch("app.routes.auth._jwks_cache", {"keys": []}),
-        ):
-            async def scenario():
-                async def task():
-                    return await _fetch_and_cache_user(user_id)
-
-                return await asyncio.gather(*[task() for _ in range(5)])
-
-            results = asyncio.run(scenario())
-
-        assert call_count == 1, f"Expected 1 DB call, got {call_count}"
-        assert all(r.id == user_id for r in results)

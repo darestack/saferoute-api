@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import secrets
 import time
 from typing import Optional
 from urllib.parse import urlencode, urljoin
@@ -44,6 +45,12 @@ _OAUTH_CACHE_MAX_ENTRIES = 10_000
 _oauth_callback_cache: dict[str, list[float]] = {}
 _oauth_callback_lock = asyncio.Lock()
 
+# OAuth state cache for CSRF protection.
+# Stores (state, code_challenge) tuples with a short TTL.
+_OAUTH_STATE_TTL_SECONDS = 600
+_oauth_state_cache: dict[str, tuple[str, float]] = {}
+_oauth_state_lock = asyncio.Lock()
+
 
 async def _check_oauth_rate_limit(client_ip: str) -> None:
     """Raise 429 if the client has exceeded the OAuth callback rate limit.
@@ -73,15 +80,25 @@ async def _check_oauth_rate_limit(client_ip: str) -> None:
             _oauth_callback_cache.pop(client_ip, None)
 
         # Bounded eviction: drop the quarter with the oldest timestamps when
-        # the cache exceeds ``_OAUTH_CACHE_MAX_ENTRIES``.
+        # the cache exceeds ``_OAUTH_CACHE_MAX_ENTRIES``. Prune stale timestamps
+        # first so active IPs are not penalized by old accumulated entries.
         if len(_oauth_callback_cache) > _OAUTH_CACHE_MAX_ENTRIES:
-            sorted_ips = sorted(
-                _oauth_callback_cache.items(),
-                key=lambda kv: min(kv[1]) if kv[1] else 0,
-            )
-            evict_count = max(1, _OAUTH_CACHE_MAX_ENTRIES // 4)
-            for ip, _ in sorted_ips[:evict_count]:
-                _oauth_callback_cache.pop(ip, None)
+            pruned: dict[str, list[float]] = {}
+            for ip, timestamps in _oauth_callback_cache.items():
+                active = [ts for ts in timestamps if ts > window_start]
+                if active:
+                    pruned[ip] = active
+            _oauth_callback_cache.clear()
+            _oauth_callback_cache.update(pruned)
+
+            if len(_oauth_callback_cache) > _OAUTH_CACHE_MAX_ENTRIES:
+                sorted_ips = sorted(
+                    _oauth_callback_cache.items(),
+                    key=lambda kv: min(kv[1]) if kv[1] else 0,
+                )
+                evict_count = max(1, _OAUTH_CACHE_MAX_ENTRIES // 4)
+                for ip, _ in sorted_ips[:evict_count]:
+                    _oauth_callback_cache.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +113,14 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return generate_pkce_pair()
 
 
-async def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
+async def _store_pkce_verifier(code_challenge: str, code_verifier: str, state: Optional[str] = None) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
     await store_pkce_verifier(admin, code_challenge, code_verifier)
+
+    # Store state for CSRF validation if provided.
+    if state:
+        async with _oauth_state_lock:
+            _oauth_state_cache[state] = (code_challenge, time.monotonic() + _OAUTH_STATE_TTL_SECONDS)
 
 
 async def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
@@ -119,6 +141,7 @@ class OAuthRedirectResponse(BaseModel):
     """Response containing the URL to redirect the user to for OAuth."""
 
     auth_url: str
+    state: str
 
 
 class CallbackResponse(BaseModel):
@@ -159,9 +182,10 @@ async def oauth_redirect(provider: str):
         )
 
     code_verifier, code_challenge = _generate_pkce_pair()
+    state = secrets.token_urlsafe(32)
 
     try:
-        await _store_pkce_verifier(code_challenge, code_verifier)
+        await _store_pkce_verifier(code_challenge, code_verifier, state=state)
     except Exception:
         raise HTTPException(
             status_code=500,
@@ -175,16 +199,18 @@ async def oauth_redirect(provider: str):
         "redirect_to": redirect_uri,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
+        "state": state,
     }
     auth_url = f"{settings.SUPABASE_URL}/auth/v1/authorize?" + urlencode(params)
 
-    return OAuthRedirectResponse(auth_url=auth_url)
+    return OAuthRedirectResponse(auth_url=auth_url, state=state)
 
 
 @router.post("/callback", response_model=CallbackResponse)
 async def oauth_callback_post(
     request: Request,
     code: str = Query(...),
+    state: Optional[str] = Query(None),
     code_challenge: Optional[str] = Query(None),
 ):
     """Handle the OAuth callback from Supabase.
@@ -196,23 +222,21 @@ async def oauth_callback_post(
     Security notes:
         * The PKCE ``code_verifier`` is consumed (deleted) on first use by
           ``consume_pkce_verifier``, preventing replay of a captured code.
-        * The frontend is responsible for binding this flow to the initiating
-          session (e.g. via a same-site ``state`` cookie / session value). PKCE
-          proves possession of the verifier but does not itself bind the flow to
-          a specific browser session, so a frontend-side ``state`` check is the
-          recommended defense against login-CSRF.
+        * The ``state`` parameter is validated to prevent login CSRF. The state
+          is generated in the authorize request and must be returned by the
+          callback.
 
     Args:
         request: The incoming request (used for IP-based rate limiting).
         code: The authorization code from the OAuth provider.
+        state: The OAuth state parameter for CSRF validation.
         code_challenge: The PKCE challenge from the authorize request.
 
     Returns:
         Access token and user info on success.
 
     Raises:
-        HTTPException: 400 if the code exchange fails or the challenge is
-            missing/invalid.
+        HTTPException: 400 if the code exchange fails or state is invalid.
         HTTPException: 429 if the client has exceeded the rate limit.
     """
     from app.utils.security import get_client_ip
@@ -220,6 +244,22 @@ async def oauth_callback_post(
     client_ip = get_client_ip(request)
     async with _oauth_callback_lock:
         await _check_oauth_rate_limit(client_ip)
+
+    # Validate state parameter to prevent CSRF.
+    if not state:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing state parameter",
+        )
+
+    async with _oauth_state_lock:
+        stored = _oauth_state_cache.pop(state, None)
+        if stored is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or expired state parameter",
+            )
+        code_challenge = stored[0]
 
     return await _exchange_code(code, code_challenge)
 

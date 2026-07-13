@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from app.config import settings
 from app.crypto import encrypt_webhook_secret
 from app.database import admin, clear_api_key_cache_for_route, execute_query, generate_api_key
+from app.repositories import route_repository
 from app.routes.proxy import (
     clear_route_cache_for_route,
     clear_circuit_breaker_for_url,
@@ -107,6 +108,11 @@ _user_cache_expiry: dict[str, float] = {}
 _user_cache_order: list[str] = []
 _user_cache_lock = asyncio.Lock()
 
+# In-flight user fetches: prevents duplicate DB calls when many concurrent
+# requests miss the cache for the same user_id.
+_user_cache_fills: dict[str, asyncio.Future] = {}
+_user_cache_fills_lock = asyncio.Lock()
+
 
 async def _get_cached_user(user_id: str) -> Optional[User]:
     """Return a cached User if available and fresh."""
@@ -134,18 +140,26 @@ async def _cache_user(user: User) -> None:
 
 
 async def _fetch_and_cache_user(user_id: str) -> User:
-    """Fetch a user from Supabase Auth and cache the result."""
+    """Fetch a user from Supabase Auth and cache the result.
+
+    Uses single-flight semantics to avoid duplicate DB calls when many
+    concurrent requests miss the cache for the same user_id.
+    """
     cached = await _get_cached_user(user_id)
     if cached:
         return cached
 
-    async with _user_cache_lock:
-        # Double-check after acquiring lock.
-        now = time.monotonic()
-        expiry = _user_cache_expiry.get(user_id, 0.0)
-        if user_id in _user_cache and now < expiry:
-            return _user_cache[user_id]
+    async with _user_cache_fills_lock:
+        existing = _user_cache_fills.get(user_id)
+        if existing is not None:
+            return await existing[0]  # type: ignore[no-any-return]
 
+        fut = asyncio.get_running_loop().create_future()
+        _user_cache_fills[user_id] = (fut, time.monotonic())
+
+    try:
+        # Perform the blocking DB call outside the lock to avoid stalling
+        # concurrent cache readers/writers.
         result = await asyncio.to_thread(admin.auth.admin.get_user_by_id, user_id)
         if inspect.isawaitable(result):
             result = await result
@@ -163,17 +177,31 @@ async def _fetch_and_cache_user(user_id: str) -> User:
             created_at=result.user.created_at,
         )
 
-        # Inline cache write (already holding the lock).
-        _user_cache[user.id] = user
-        _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
-        if user.id not in _user_cache_order:
-            _user_cache_order.append(user.id)
-        while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
-            oldest = _user_cache_order.pop(0)
-            _user_cache.pop(oldest, None)
-            _user_cache_expiry.pop(oldest, None)
+        # Cache the user under the lock after the DB call completes.
+        async with _user_cache_lock:
+            # Double-check in case another coroutine cached the same user.
+            now = time.monotonic()
+            expiry = _user_cache_expiry.get(user_id, 0.0)
+            if user_id in _user_cache and now < expiry:
+                return _user_cache[user_id]
 
-        return user
+            _user_cache[user.id] = user
+            _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
+            if user.id not in _user_cache_order:
+                _user_cache_order.append(user.id)
+            while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
+                oldest = _user_cache_order.pop(0)
+                _user_cache.pop(oldest, None)
+                _user_cache_expiry.pop(oldest, None)
+
+            fut.set_result(user)
+            return user
+    except Exception as exc:
+        if not fut.done():
+            fut.set_exception(exc)
+        raise
+    finally:
+        _user_cache_fills.pop(user_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -349,15 +377,7 @@ async def create_route(
         insert_data["transform_body_template"] = route_data.transform_body_template
 
     try:
-        result = await execute_query(admin.table("routes").insert(insert_data))
-
-        if not result.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create route",
-            )
-
-        route = result.data[0]
+        route = await route_repository.create(insert_data)
         return RouteCreateResponse(**route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
@@ -385,15 +405,8 @@ async def list_routes(
     offset: int = Query(default=0, ge=0),
 ):
     """List all routes owned by the authenticated user (paginated)."""
-    result = await execute_query(
-        admin.table("routes")
-        .select("*")
-        .eq("user_id", current_user.id)
-        .order("created_at", desc=False)
-        .range(offset, offset + limit - 1)
-    )
-
-    return [RouteResponse(**route_to_response(row)) for row in result.data]
+    routes = await route_repository.list_by_user(current_user.id, limit, offset)
+    return [RouteResponse(**route_to_response(row)) for row in routes]
 
 
 @router.get("/routes/{route_id}", response_model=RouteResponse)
@@ -402,20 +415,14 @@ async def get_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID."""
-    result = await execute_query(
-        admin.table("routes")
-        .select("*")
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
-    )
-
-    if not result.data:
+    route = await route_repository.find_by_id(route_id, current_user.id)
+    if not route:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Route not found",
         )
 
-    return RouteResponse(**route_to_response(result.data[0]))
+    return RouteResponse(**route_to_response(route))
 
 
 @router.put("/routes/{route_id}", response_model=RouteResponse)
@@ -452,13 +459,7 @@ async def update_route(
         updates["slug"] = generate_slug(updates["name"])
 
     if "slug" in updates:
-        existing = await execute_query(
-            admin.table("routes")
-            .select("id")
-            .eq("slug", updates["slug"])
-            .neq("id", route_id)
-        )
-        if existing.data:
+        if await route_repository.slug_exists_for_other_route(updates["slug"], route_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Slug already in use",
@@ -470,23 +471,18 @@ async def update_route(
     # Fetch the current slug and destination up front so a rename or
     # destination change can evict both old and new cache entries and reset
     # circuit breakers (see cache invalidation below).
-    old_route = await execute_query(
-        admin.table("routes")
-        .select("slug, destination_url")
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
-    )
-    old_slug = old_route.data[0]["slug"] if old_route.data else None
+    old_route_row = await route_repository.find_by_id(route_id, current_user.id)
+    if not old_route_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
+    old_slug = old_route_row.get("slug")
 
     try:
-        result = await execute_query(
-            admin.table("routes")
-            .update(updates)
-            .eq("id", route_id)
-            .eq("user_id", current_user.id)
-        )
+        result = await route_repository.update(route_id, current_user.id, updates)
 
-        if not result.data:
+        if not result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Route not found",
@@ -497,23 +493,21 @@ async def update_route(
         # rename the OLD slug must also be evicted, otherwise the previous
         # public URL keeps working (serving the renamed route) for up to the
         # 30s cache TTL.
-        new_slug = result.data[0]["slug"]
+        new_slug = result["slug"]
         await clear_route_cache_for_route(new_slug)
         if old_slug and old_slug != new_slug:
             await clear_route_cache_for_route(old_slug)
 
         # Reset circuit breakers for old and new destinations so a previously
         # open circuit does not block traffic after a destination change.
-        old_destination = (
-            old_route.data[0].get("destination_url") if old_route.data else None
-        )
-        new_destination = result.data[0].get("destination_url")
+        old_destination = old_route_row.get("destination_url")
+        new_destination = result.get("destination_url")
         if old_destination and old_destination != new_destination:
             await clear_circuit_breaker_for_url(old_destination)
         if new_destination:
             await clear_circuit_breaker_for_url(new_destination)
 
-        return RouteResponse(**route_to_response(result.data[0]))
+        return RouteResponse(**route_to_response(result))
     except HTTPException:
         raise
     except Exception as exc:

@@ -88,7 +88,7 @@ _route_cache_lock = asyncio.Lock()
 # requests miss the cache for the same slug.
 # Bounded to prevent memory leaks under sustained traffic.
 _ROUTE_CACHE_FILLS_MAX_ENTRIES = 1_000
-_route_cache_fills: dict[str, asyncio.Future] = {}
+_route_cache_fills: dict[str, tuple[asyncio.Future, float]] = {}
 _route_cache_fills_lock = asyncio.Lock()
 
 
@@ -186,10 +186,10 @@ async def _fill_route_cache(slug: str) -> dict:
     async with _route_cache_fills_lock:
         existing = _route_cache_fills.get(slug)
         if existing is not None:
-            return await existing  # type: ignore[no-any-return]
+            return await existing[0]  # type: ignore[no-any-return]
 
         fut = asyncio.get_running_loop().create_future()
-        _route_cache_fills[slug] = fut
+        _route_cache_fills[slug] = (fut, time.monotonic())
 
     try:
         result = await execute_query(
@@ -218,7 +218,7 @@ async def _fill_route_cache(slug: str) -> dict:
         if len(_route_cache_fills) > _ROUTE_CACHE_FILLS_MAX_ENTRIES:
             sorted_slugs = sorted(
                 _route_cache_fills.items(),
-                key=lambda kv: kv[1].get_name() if hasattr(kv[1], "get_name") else 0,
+                key=lambda kv: kv[1][1],
             )
             evict_count = max(1, _ROUTE_CACHE_FILLS_MAX_ENTRIES // 4)
             for slug_key, _ in sorted_slugs[:evict_count]:

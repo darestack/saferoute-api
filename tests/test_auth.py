@@ -1,7 +1,7 @@
 """Tests for authentication helpers and user caching."""
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -175,10 +175,8 @@ class TestStructuralErrorMatching:
         class FakeExc(Exception):
             code = "23505"
 
-        with patch.object(auth_module, "admin") as mock_admin:
-            mock_admin.table.return_value.insert.return_value.execute.side_effect = (
-                FakeExc("duplicate key")
-            )
+        with patch.object(auth_module.route_repository, "create") as mock_create:
+            mock_create.side_effect = FakeExc("duplicate key")
 
             from app.models import User
 
@@ -246,13 +244,16 @@ class TestRouteFailuresPagination:
     def test_cursor_uses_lt_not_lte(self):
         from app.routes.auth import list_route_failures
 
-        with patch("app.routes.auth.admin") as mock_admin:
-            # get_owned_route_or_404 and the failures query share the mock
-            # chain. ``e1`` is the first ``.eq()`` of either query.
+        with (
+            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.route_repository") as mock_repo,
+        ):
+            # get_owned_route_or_404 uses route_repository.
+            mock_repo.find_by_id.return_value = {"id": "r1", "user_id": "u1"}
+            # The failures query still uses admin directly.
             s = mock_admin.table.return_value.select.return_value
             e1 = s.eq.return_value
-            # get_owned_route_or_404 ends with e1.eq("user_id").execute().
-            e1.eq.return_value.execute.return_value.data = [{"id": "x"}]
+            e1.order.return_value.limit.return_value.execute.return_value.data = []
 
             user = User(id="u1", email="e@e.com", created_at=None)
             asyncio.run(
@@ -279,35 +280,32 @@ class TestRouteCacheInvalidationOnUpdate:
 
         route_data = RouteUpdate(name="New Name")
         with (
-            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.route_repository") as mock_repo,
             patch("app.routes.auth.clear_route_cache_for_route") as mock_clear,
         ):
+            # find_by_id returns old route for cache invalidation.
+            mock_repo.find_by_id = AsyncMock(return_value={
+                "id": "r1",
+                "user_id": "u1",
+                "slug": "old-slug",
+                "destination_url": "https://example.com/hook",
+            })
             # Slug-uniqueness pre-check must find no collision.
-            (
-                mock_admin.table.return_value.select.return_value.eq.return_value.neq.return_value.execute.return_value.data
-            ) = []
-            # Pre-update slug lookup (for rename eviction).
-            (
-                mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
-            ) = [{"slug": "old-slug"}]
-            # The actual UPDATE returns the updated row (with its slug).
-            (
-                mock_admin.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value.data
-            ) = [
-                {
-                    "id": "r1",
-                    "user_id": "u1",
-                    "name": "New Name",
-                    "slug": "old-slug",
-                    "destination_url": "https://example.com/hook",
-                    "method": "POST",
-                    "headers": {},
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_repo.slug_exists_for_other_route = AsyncMock(return_value=False)
+            # The actual UPDATE returns the updated row.
+            mock_repo.update = AsyncMock(return_value={
+                "id": "r1",
+                "user_id": "u1",
+                "name": "New Name",
+                "slug": "old-slug",
+                "destination_url": "https://example.com/hook",
+                "method": "POST",
+                "headers": {},
+                "is_active": True,
+                "requests_count": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            })
 
             user = User(id="u1", email="e@e.com", created_at=None)
             asyncio.run(update_route("r1", route_data, user))
@@ -320,34 +318,32 @@ class TestRouteCacheInvalidationOnUpdate:
 
         route_data = RouteUpdate(name="Renamed Route")
         with (
-            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.route_repository") as mock_repo,
             patch("app.routes.auth.clear_route_cache_for_route") as mock_clear,
         ):
-            (
-                mock_admin.table.return_value.select.return_value.eq.return_value.neq.return_value.execute.return_value.data
-            ) = []
-            # Pre-update slug is "old-slug".
-            (
-                mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
-            ) = [{"slug": "old-slug"}]
+            # find_by_id returns old route for cache invalidation.
+            mock_repo.find_by_id = AsyncMock(return_value={
+                "id": "r1",
+                "user_id": "u1",
+                "slug": "old-slug",
+                "destination_url": "https://example.com/hook",
+            })
+            # Slug-uniqueness pre-check must find no collision.
+            mock_repo.slug_exists_for_other_route = AsyncMock(return_value=False)
             # The rename regenerates the slug to "new-slug".
-            (
-                mock_admin.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value.data
-            ) = [
-                {
-                    "id": "r1",
-                    "user_id": "u1",
-                    "name": "Renamed Route",
-                    "slug": "new-slug",
-                    "destination_url": "https://example.com/hook",
-                    "method": "POST",
-                    "headers": {},
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_repo.update = AsyncMock(return_value={
+                "id": "r1",
+                "user_id": "u1",
+                "name": "Renamed Route",
+                "slug": "new-slug",
+                "destination_url": "https://example.com/hook",
+                "method": "POST",
+                "headers": {},
+                "is_active": True,
+                "requests_count": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            })
 
             user = User(id="u1", email="e@e.com", created_at=None)
             asyncio.run(update_route("r1", route_data, user))

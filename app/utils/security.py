@@ -8,7 +8,6 @@ Provides reusable security functions including:
 """
 
 from __future__ import annotations
-import hashlib
 import hmac
 import ipaddress
 import asyncio
@@ -160,7 +159,7 @@ def verify_webhook_signature(
     expected = hmac.new(
         secret.encode("utf-8"),
         raw_body,
-        hashlib.sha256,
+        digestmod="sha256",
     ).hexdigest()
 
     # Support both "sha256=<hex>" and raw hex formats.
@@ -219,6 +218,13 @@ def safe_error_detail(exc: Exception) -> str:
         msg = re.sub(
             r"(?<![\d.])(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|127\.\d+\.\d+\.\d+)(?![\d.])",
             "<internal-ip>",
+            msg,
+        )
+        # Redact file paths from stack traces to avoid disclosing internal
+        # code structure if a dev/staging environment is exposed.
+        msg = re.sub(
+            r"(?:/[a-zA-Z0-9_.-]+)+\.py:\d+",
+            "/<redacted>.py:<redacted>",
             msg,
         )
         return msg
