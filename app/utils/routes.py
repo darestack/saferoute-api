@@ -44,19 +44,20 @@ def route_to_response(
     return response
 
 
-def get_owned_route_or_404(
+async def get_owned_route_or_404(
     admin_client: Any,
     route_id: str,
     user_id: str,
     columns: str = "*",
 ) -> dict[str, Any]:
     """Return a route owned by a user or raise a standard 404 response."""
-    result = (
+    from app.database import execute_query
+
+    result = await execute_query(
         admin_client.table("routes")
         .select(columns)
         .eq("id", route_id)
         .eq("user_id", user_id)
-        .execute()
     )
 
     if not result.data:
@@ -68,6 +69,6 @@ def get_owned_route_or_404(
     return cast(dict[str, Any], result.data[0])
 
 
-def assert_owned_route_exists(admin_client: Any, route_id: str, user_id: str) -> None:
+async def assert_owned_route_exists(admin_client: Any, route_id: str, user_id: str) -> None:
     """Raise 404 unless a route exists and belongs to the user."""
-    get_owned_route_or_404(admin_client, route_id, user_id, columns="id")
+    await get_owned_route_or_404(admin_client, route_id, user_id, columns="id")

@@ -145,11 +145,17 @@ def decrypt_webhook_secret(ciphertext: Optional[str]) -> Optional[str]:
     if ciphertext.startswith(_FALLBACK_PREFIX):
         return ciphertext[len(_FALLBACK_PREFIX) :]
 
-    if ciphertext.startswith(_VERSION_PREFIX):
+    had_version_prefix = ciphertext.startswith(_VERSION_PREFIX)
+    if had_version_prefix:
         ciphertext = ciphertext[len(_VERSION_PREFIX) :]
 
     fernet = _get_fernet()
     if fernet is None:
+        if had_version_prefix:
+            raise ValueError(
+                "Cannot decrypt webhook secret: encryption is not configured "
+                "(missing ENCRYPTION_KEY) but the stored value is encrypted"
+            )
         return ciphertext
 
     try:

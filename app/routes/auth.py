@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.config import settings
 from app.crypto import encrypt_webhook_secret
-from app.database import admin, clear_api_key_cache_for_route, generate_api_key
+from app.database import admin, clear_api_key_cache_for_route, execute_query, generate_api_key
 from app.routes.proxy import (
     clear_route_cache_for_route,
     clear_circuit_breaker_for_url,
@@ -349,7 +349,7 @@ async def create_route(
         insert_data["transform_body_template"] = route_data.transform_body_template
 
     try:
-        result = admin.table("routes").insert(insert_data).execute()
+        result = await execute_query(admin.table("routes").insert(insert_data))
 
         if not result.data:
             raise HTTPException(
@@ -385,13 +385,12 @@ async def list_routes(
     offset: int = Query(default=0, ge=0),
 ):
     """List all routes owned by the authenticated user (paginated)."""
-    result = (
+    result = await execute_query(
         admin.table("routes")
         .select("*")
         .eq("user_id", current_user.id)
         .order("created_at", desc=False)
         .range(offset, offset + limit - 1)
-        .execute()
     )
 
     return [RouteResponse(**route_to_response(row)) for row in result.data]
@@ -403,12 +402,11 @@ async def get_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Retrieve a single route by its internal UUID."""
-    result = (
+    result = await execute_query(
         admin.table("routes")
         .select("*")
         .eq("id", route_id)
         .eq("user_id", current_user.id)
-        .execute()
     )
 
     if not result.data:
@@ -454,12 +452,11 @@ async def update_route(
         updates["slug"] = generate_slug(updates["name"])
 
     if "slug" in updates:
-        existing = (
+        existing = await execute_query(
             admin.table("routes")
             .select("id")
             .eq("slug", updates["slug"])
             .neq("id", route_id)
-            .execute()
         )
         if existing.data:
             raise HTTPException(
@@ -473,22 +470,20 @@ async def update_route(
     # Fetch the current slug and destination up front so a rename or
     # destination change can evict both old and new cache entries and reset
     # circuit breakers (see cache invalidation below).
-    old_route = (
+    old_route = await execute_query(
         admin.table("routes")
         .select("slug, destination_url")
         .eq("id", route_id)
         .eq("user_id", current_user.id)
-        .execute()
     )
     old_slug = old_route.data[0]["slug"] if old_route.data else None
 
     try:
-        result = (
+        result = await execute_query(
             admin.table("routes")
             .update(updates)
             .eq("id", route_id)
             .eq("user_id", current_user.id)
-            .execute()
         )
 
         if not result.data:
@@ -544,12 +539,11 @@ async def delete_route(
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Delete a route owned by the authenticated user."""
-    result = (
+    result = await execute_query(
         admin.table("routes")
         .delete()
         .eq("id", route_id)
         .eq("user_id", current_user.id)
-        .execute()
     )
 
     if not result.data:
@@ -575,7 +569,7 @@ async def rotate_api_key(
     full_key, key_prefix, key_hash = generate_api_key()
 
     try:
-        result = (
+        result = await execute_query(
             admin.table("routes")
             .update(
                 {
@@ -585,7 +579,6 @@ async def rotate_api_key(
             )
             .eq("id", route_id)
             .eq("user_id", current_user.id)
-            .execute()
         )
 
         if not result.data:
@@ -624,15 +617,14 @@ async def list_route_logs(
     offset: int = Query(default=0, ge=0),
 ):
     """List webhook delivery logs for a route (newest first, paginated)."""
-    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
-    result = (
+    result = await execute_query(
         admin.table("webhook_logs")
         .select("*")
         .eq("route_id", route_id)
         .order("created_at", desc=True)
         .range(offset, offset + limit - 1)
-        .execute()
     )
 
     return [WebhookLogResponse(**row) for row in result.data]
@@ -654,9 +646,9 @@ async def get_route_stats(
     Uses a single SQL aggregation query for performance, avoiding loading
     all log rows into application memory.
     """
-    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
-    stats = admin.rpc("get_route_stats", {"p_route_id": route_id}).execute().data
+    stats = (await execute_query(admin.rpc("get_route_stats", {"p_route_id": route_id}))).data
 
     if not stats:
         return RouteStatsResponse(route_id=route_id)
@@ -690,7 +682,7 @@ async def health_check():
     db_ok = False
     try:
         # Read-only connectivity probe — no side effects.
-        admin.table("routes").select("id").limit(1).execute()
+        await execute_query(admin.table("routes").select("id").limit(1))
         db_ok = True
     except Exception:
         db_ok = False
@@ -730,7 +722,7 @@ async def list_route_failures(
     Raises:
         HTTPException: 404 if the route does not exist or belongs to another user.
     """
-    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
     query = (
         admin.table("webhook_failures")
@@ -747,7 +739,7 @@ async def list_route_failures(
         # ``<=`` would re-include (and duplicate) that boundary row.
         query = query.lt("created_at", cursor)
 
-    result = query.execute()
+    result = await execute_query(query)
 
     failures = result.data or []
     has_next = len(failures) > limit
@@ -798,14 +790,13 @@ async def retry_failed_webhook(
     Raises:
         HTTPException: 404 if the route or log entry does not exist.
     """
-    get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
-    result = (
+    result = await execute_query(
         admin.table("webhook_logs")
         .select("id, retry_status")
         .eq("id", log_id)
         .eq("route_id", route_id)
-        .execute()
     )
 
     if not result.data:
@@ -821,12 +812,14 @@ async def retry_failed_webhook(
             detail="Only exhausted deliveries can be manually retried",
         )
 
-    admin.table("webhook_logs").update(
-        {
-            "retry_status": "pending",
-            "next_retry_at": datetime.now(timezone.utc).isoformat(),
-            "retry_count": 0,
-        }
-    ).eq("id", log_id).execute()
+    await execute_query(
+        admin.table("webhook_logs").update(
+            {
+                "retry_status": "pending",
+                "next_retry_at": datetime.now(timezone.utc).isoformat(),
+                "retry_count": 0,
+            }
+        ).eq("id", log_id)
+    )
 
     return {"status": "queued", "log_id": log_id}

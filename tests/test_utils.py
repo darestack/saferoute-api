@@ -1,5 +1,6 @@
 """Tests for shared utility modules."""
 
+import asyncio
 from unittest.mock import MagicMock
 from typing import Any
 
@@ -47,12 +48,12 @@ class TestRouteUtilities:
         query.eq.return_value = query
         query.execute.return_value.data = [sample_route]
 
-        route = get_owned_route_or_404(
+        route = asyncio.run(get_owned_route_or_404(
             admin_client,
             route_id="route-1",
             user_id="user-1",
             columns="id,slug",
-        )
+        ))
 
         assert route is sample_route
         admin_client.table.assert_called_once_with("routes")
@@ -66,7 +67,7 @@ class TestRouteUtilities:
         query.execute.return_value.data = []
 
         with pytest.raises(HTTPException) as exc_info:
-            get_owned_route_or_404(admin_client, "missing", "user-1")
+            asyncio.run(get_owned_route_or_404(admin_client, "missing", "user-1"))
 
         assert exc_info.value.status_code == 404
 
@@ -78,6 +79,6 @@ class TestRouteUtilities:
         query.eq.return_value = query
         query.execute.return_value.data = [{"id": sample_route["id"]}]
 
-        assert_owned_route_exists(admin_client, "route-1", "user-1")
+        asyncio.run(assert_owned_route_exists(admin_client, "route-1", "user-1"))
 
         admin_client.table.return_value.select.assert_called_once_with("id")

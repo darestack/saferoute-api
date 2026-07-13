@@ -8,7 +8,7 @@ import base64
 import hashlib
 import logging
 import secrets
-from typing import Optional
+from typing import Optional, cast
 
 from supabase import Client
 
@@ -29,7 +29,7 @@ def generate_pkce_pair() -> tuple[str, str]:
     return code_verifier, code_challenge
 
 
-def store_pkce_verifier(
+async def store_pkce_verifier(
     admin_client: "Client", code_challenge: str, code_verifier: str
 ) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table.
@@ -42,19 +42,23 @@ def store_pkce_verifier(
         code_challenge: The S256 challenge sent to the OAuth provider.
         code_verifier: The corresponding verifier to store.
     """
+    from app.database import execute_query
+
     try:
-        admin_client.table("pkce_verifiers").insert(
-            {
-                "code_challenge": code_challenge,
-                "code_verifier": code_verifier,
-            }
-        ).execute()
+        await execute_query(
+            admin_client.table("pkce_verifiers").insert(
+                {
+                    "code_challenge": code_challenge,
+                    "code_verifier": code_verifier,
+                }
+            )
+        )
     except Exception:
         logger.exception("Failed to store PKCE verifier")
         raise
 
 
-def retrieve_and_delete_pkce_verifier(
+async def retrieve_and_delete_pkce_verifier(
     admin_client: "Client", code_challenge: str
 ) -> Optional[str]:
     """Atomically retrieve and delete a PKCE verifier from the database.
@@ -68,13 +72,17 @@ def retrieve_and_delete_pkce_verifier(
     Returns:
         The code verifier string, or ``None`` if not found.
     """
+    from app.database import execute_query
+
     try:
-        result = admin_client.rpc(
-            "consume_pkce_verifier", {"p_code_challenge": code_challenge}
-        ).execute()
+        result = await execute_query(
+            admin_client.rpc(
+                "consume_pkce_verifier", {"p_code_challenge": code_challenge}
+            )
+        )
 
         if result.data:
-            return result.data[0]["code_verifier"]  # type: ignore[return-value, index, call-overload]
+            return cast(str, result.data[0]["code_verifier"])
     except Exception:
         logger.exception("Failed to retrieve PKCE verifier")
 

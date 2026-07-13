@@ -33,14 +33,18 @@ _ALLOWED_DESTINATION_SCHEMES = {"https"}
 
 
 def _is_public_ip(address: str) -> bool:
-    """Return True only for globally routable IP addresses."""
+    """Return True only for globally routable IP addresses.
+
+    Raises:
+        ValueError: If the address is not a valid IP address at all.
+    """
     # Strip IPv6 zone ID (e.g. "%eth0") before parsing.
     if "%" in address:
         address = address.split("%")[0]
     try:
         ip = ipaddress.ip_address(address)
-    except ValueError:
-        return False
+    except ValueError as exc:
+        raise ValueError(f"Invalid IP address: {address}") from exc
 
     return ip.is_global
 
@@ -78,8 +82,14 @@ def validate_destination_url(url: str, resolve_dns: bool = True) -> None:
         if not resolve_dns:
             return
     else:
-        if not _is_public_ip(hostname):
-            raise ValueError("Destination URL must resolve to a public IP")
+        try:
+            if not _is_public_ip(hostname):
+                raise ValueError("Destination URL must resolve to a public IP")
+        except ValueError as exc:
+            # Re-raise malformed IP errors with a clearer message.
+            if "Invalid IP address" in str(exc):
+                raise ValueError(f"Destination URL contains invalid IP address: {hostname}") from exc
+            raise
         return
 
     if not resolve_dns:
@@ -196,10 +206,11 @@ def safe_error_detail(exc: Exception) -> str:
     """
     if settings.is_development:
         msg = str(exc)
-        # Redact connection strings (postgres://, postgresql://, mysql://, etc.)
+        # Redact connection strings (postgres://, postgresql://, mysql://, etc.).
+        # Redact everything after the scheme including credentials and host.
         msg = re.sub(
-            r"[a-zA-Z][a-zA-Z0-9+.-]*://[^@]+@[^/]+",
-            lambda m: m.group(0).split("@")[0] + "@<redacted>",
+            r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s]+",
+            lambda m: m.group(0).split("://")[0] + "://<redacted>",
             msg,
         )
         # Redact IPv4 addresses that look like internal/private IPs.

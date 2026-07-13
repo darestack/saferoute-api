@@ -96,12 +96,12 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return generate_pkce_pair()
 
 
-def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
+async def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
-    store_pkce_verifier(admin, code_challenge, code_verifier)
+    await store_pkce_verifier(admin, code_challenge, code_verifier)
 
 
-def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
+async def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
     """Atomically retrieve and delete a PKCE verifier from the database.
 
     Uses the ``consume_pkce_verifier`` SQL function to prevent reuse races.
@@ -109,7 +109,7 @@ def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
     Returns:
         The code verifier string, or ``None`` if not found.
     """
-    return retrieve_and_delete_pkce_verifier(admin, code_challenge)
+    return await retrieve_and_delete_pkce_verifier(admin, code_challenge)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ async def oauth_redirect(provider: str):
     code_verifier, code_challenge = _generate_pkce_pair()
 
     try:
-        _store_pkce_verifier(code_challenge, code_verifier)
+        await _store_pkce_verifier(code_challenge, code_verifier)
     except Exception:
         raise HTTPException(
             status_code=500,
@@ -243,7 +243,7 @@ async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackRe
             detail="Missing code_challenge parameter.",
         )
 
-    code_verifier = _retrieve_and_delete_pkce_verifier(code_challenge)
+    code_verifier = await _retrieve_and_delete_pkce_verifier(code_challenge)
     if not code_verifier:
         raise HTTPException(
             status_code=400,

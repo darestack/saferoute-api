@@ -16,7 +16,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
-from typing import Optional
+from typing import Any, Optional, cast
 
 import asyncio
 import math
@@ -29,6 +29,7 @@ from app.crypto import decrypt_webhook_secret
 from app.database import (
     admin,
     bump_route_metrics_atomic,
+    execute_query,
     get_http_client,
     verify_api_key,
 )
@@ -85,6 +86,8 @@ _route_cache_lock = asyncio.Lock()
 
 # In-flight cache fills: prevents cache stampedes when many concurrent
 # requests miss the cache for the same slug.
+# Bounded to prevent memory leaks under sustained traffic.
+_ROUTE_CACHE_FILLS_MAX_ENTRIES = 1_000
 _route_cache_fills: dict[str, asyncio.Future] = {}
 _route_cache_fills_lock = asyncio.Lock()
 
@@ -189,12 +192,11 @@ async def _fill_route_cache(slug: str) -> dict:
         _route_cache_fills[slug] = fut
 
     try:
-        result = (
+        result = await execute_query(
             admin.table("routes")
             .select("*")
             .eq("slug", slug)
             .eq("is_active", True)
-            .execute()
         )
 
         if not result.data:
@@ -202,7 +204,7 @@ async def _fill_route_cache(slug: str) -> dict:
                 status_code=404, detail="Active routing link not found."
             )
 
-        route = result.data[0]
+        route = cast(dict[str, Any], result.data[0])
         await _cache_route(slug, route)
         fut.set_result(route)
         return route
@@ -212,6 +214,15 @@ async def _fill_route_cache(slug: str) -> dict:
         raise
     finally:
         _route_cache_fills.pop(slug, None)
+        # Bounded eviction: drop oldest quarter when over the limit.
+        if len(_route_cache_fills) > _ROUTE_CACHE_FILLS_MAX_ENTRIES:
+            sorted_slugs = sorted(
+                _route_cache_fills.items(),
+                key=lambda kv: kv[1].get_name() if hasattr(kv[1], "get_name") else 0,
+            )
+            evict_count = max(1, _ROUTE_CACHE_FILLS_MAX_ENTRIES // 4)
+            for slug_key, _ in sorted_slugs[:evict_count]:
+                _route_cache_fills.pop(slug_key, None)
 
 
 async def clear_route_cache() -> None:
@@ -254,7 +265,7 @@ async def clear_circuit_breaker_for_url(url: str) -> None:
     await clear_route_circuit_breaker(url)
 
 
-def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> int:
+async def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> int:
     """Check and increment the per-IP rate limit for a route.
 
     Delegates to the atomic ``increment_rate_limit`` Postgres function, which
@@ -278,14 +289,16 @@ def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> int:
             the limit.
     """
     try:
-        result = admin.rpc(
-            "increment_rate_limit",
-            {
-                "p_route_id": route_id,
-                "p_ip": client_ip,
-                "p_max_requests": max_requests,
-            },
-        ).execute()
+        result = await execute_query(
+            admin.rpc(
+                "increment_rate_limit",
+                {
+                    "p_route_id": route_id,
+                    "p_ip": client_ip,
+                    "p_max_requests": max_requests,
+                },
+            )
+        )
 
         if result.data:
             row = result.data[0]
@@ -295,9 +308,7 @@ def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> int:
                     detail="Too many requests",
                     headers={"Retry-After": str(_RATE_LIMIT_WINDOW_SECONDS)},
                 )
-            new_count = row.get("new_count")
-            if new_count is None:
-                new_count = max_requests
+            new_count = cast(int, row.get("new_count", max_requests))
             return max(0, max_requests - new_count)
     except HTTPException:
         raise
@@ -311,7 +322,7 @@ def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -> int:
     )
 
 
-def check_idempotency(route_id: str, idempotency_key: str) -> Optional[dict]:
+async def check_idempotency(route_id: str, idempotency_key: str) -> Optional[dict]:
     """Check if a request with this idempotency key was already processed.
 
     Args:
@@ -323,29 +334,31 @@ def check_idempotency(route_id: str, idempotency_key: str) -> Optional[dict]:
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
-    result = (
+    result = await execute_query(
         admin.table("idempotency_cache")
         .select("*")
         .eq("route_id", route_id)
         .eq("idempotency_key", idempotency_key)
         .gte("created_at", cutoff)
-        .execute()
     )
 
     if result.data:
-        cached = result.data[0]
-        return {
-            "status": "idempotent",
-            "destination_status": cached["response_status"],
-            "response_body": cached.get("response_body"),
-            "response_headers": cached.get("response_headers") or {},
-            "idempotent": True,
-        }
+        cached = cast(dict[str, Any], result.data[0])
+        return cast(
+            Optional[dict[str, Any]],
+            {
+                "status": "idempotent",
+                "destination_status": cached["response_status"],
+                "response_body": cached.get("response_body"),
+                "response_headers": cached.get("response_headers") or {},
+                "idempotent": True,
+            },
+        )
 
     return None
 
 
-def store_idempotency(
+async def store_idempotency(
     route_id: str,
     idempotency_key: str,
     status_code: int,
@@ -362,18 +375,20 @@ def store_idempotency(
         response_headers: The response headers from the destination.
     """
     try:
-        admin.table("idempotency_cache").upsert(
-            {
-                "route_id": route_id,
-                "idempotency_key": idempotency_key,
-                "response_status": status_code,
-                "response_body": response_body[:_MAX_LOG_BODY_BYTES]
-                if response_body
-                else None,
-                "response_headers": response_headers,
-            },
-            on_conflict="route_id,idempotency_key",
-        ).execute()
+        await execute_query(
+            admin.table("idempotency_cache").upsert(
+                {
+                    "route_id": route_id,
+                    "idempotency_key": idempotency_key,
+                    "response_status": status_code,
+                    "response_body": response_body[:_MAX_LOG_BODY_BYTES]
+                    if response_body
+                    else None,
+                    "response_headers": response_headers,
+                },
+                on_conflict="route_id,idempotency_key",
+            )
+        )
     except Exception:
         logger.exception(
             "Failed to store idempotency cache entry for route_id=%s, idempotency_key=%s, status_code=%s",
@@ -432,7 +447,7 @@ async def forward_payload(
         return 502, "Destination unreachable", {}
 
 
-def log_delivery(
+async def log_delivery(
     route_id: str,
     status_code: int,
     payload: dict,
@@ -473,7 +488,7 @@ def log_delivery(
         error_message = response_body[:500] if response_body else f"HTTP {status_code}"
 
     try:
-        result = (
+        result = await execute_query(
             admin.table("webhook_logs")
             .insert(
                 {
@@ -494,11 +509,10 @@ def log_delivery(
                     "next_retry_at": next_retry_at,
                 }
             )
-            .execute()
         )
 
         if result.data:
-            return result.data[0].get("id")
+            return cast(int, result.data[0].get("id"))
     except Exception:
         logger.exception("Failed to log delivery for route_id=%s", route_id)
 
@@ -508,6 +522,101 @@ def log_delivery(
 # ---------------------------------------------------------------------------
 # Public proxy endpoint
 # ---------------------------------------------------------------------------
+
+
+async def _authenticate_route(
+    route: dict,
+    x_api_key: Optional[str],
+    body: bytes,
+    x_hub_signature_256: Optional[str],
+    x_webhook_signature: Optional[str],
+) -> None:
+    """Verify API key and webhook signature for the route.
+
+    Raises:
+        HTTPException: 401 if API key or signature verification fails.
+    """
+    if x_api_key:
+        if await verify_api_key(x_api_key) is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
+            )
+
+    raw_webhook_secret = route.get("webhook_secret")
+    webhook_secret = None
+    if raw_webhook_secret:
+        try:
+            webhook_secret = decrypt_webhook_secret(raw_webhook_secret)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Webhook secret decryption failed",
+            ) from exc
+
+    if webhook_secret:
+        signature = x_hub_signature_256 or x_webhook_signature
+        if not signature:
+            raise HTTPException(
+                status_code=401,
+                detail="Missing webhook signature header",
+            )
+        if not verify_webhook_signature(body, signature, webhook_secret):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid webhook signature",
+            )
+
+
+def _apply_payload_transform(
+    route: dict,
+    payload: dict[str, Any],
+    body: bytes,
+    content_type: str,
+) -> bytes:
+    """Apply route-level payload transformation and return forward body.
+
+    Reconstructs the forwarded body from the cleaned payload so that
+    honeypot fields stripped earlier are never forwarded.
+    """
+    transform_template = route.get("transform_body_template")
+    if transform_template:
+        rendered = render_template(transform_template, payload)
+        return rendered.encode("utf-8")
+
+    if "application/json" in content_type or isinstance(payload, (dict, list)):
+        try:
+            return json.dumps(payload).encode("utf-8")
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid JSON payload",
+            )
+
+    if "application/x-www-form-urlencoded" in content_type:
+        try:
+            from urllib.parse import urlencode
+            return urlencode(payload).encode("utf-8")
+        except (TypeError, ValueError):
+            return body
+
+    return body
+
+
+def _build_outbound_headers(route: dict, content_type: str) -> dict[str, str]:
+    """Merge route headers with transform headers and preserve Content-Type."""
+    outbound_headers = dict(route.get("headers", {}))
+    transform_headers = route.get("transform_headers", {})
+    if transform_headers:
+        outbound_headers.update(transform_headers)
+
+    if content_type and not any(
+        key.lower() == "content-type" for key in outbound_headers
+    ):
+        outbound_headers["Content-Type"] = content_type
+
+    return outbound_headers
+
 @router.post("/v1/route/{slug}")
 async def proxy_webhook(
     slug: str,
@@ -592,47 +701,12 @@ async def proxy_webhook(
             detail=str(exc),
         ) from exc
 
-    # --- API key authentication (optional, defense-in-depth) ---
-    # The random slug is the primary secret protecting a route's proxy URL. If
-    # the caller also presents an ``X-API-Key``, it must be valid for *this*
-    # route; an invalid key is rejected. A missing key is allowed (slug-only
-    # auth), preserving compatibility with webhook senders that only know the
-    # slug.
-    if x_api_key:
-        if await verify_api_key(x_api_key) is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid API key",
-            )
-
-    # --- Signature verification ---
-    raw_webhook_secret = route.get("webhook_secret")
-    webhook_secret = None
-    if raw_webhook_secret:
-        try:
-            webhook_secret = decrypt_webhook_secret(raw_webhook_secret)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail="Webhook secret decryption failed",
-            ) from exc
-
-    if webhook_secret:
-        signature = x_hub_signature_256 or x_webhook_signature
-        if not signature:
-            raise HTTPException(
-                status_code=401,
-                detail="Missing webhook signature header",
-            )
-        if not verify_webhook_signature(body, signature, webhook_secret):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid webhook signature",
-            )
+    # --- Authentication ---
+    await _authenticate_route(route, x_api_key, body, x_hub_signature_256, x_webhook_signature)
 
     # --- Rate limiting (per-route config) ---
     route_rate_limit = route.get("rate_limit", _DEFAULT_RATE_LIMIT)
-    rate_limit_remaining = enforce_rate_limit(route["id"], client_ip, route_rate_limit)
+    rate_limit_remaining = await enforce_rate_limit(route["id"], client_ip, route_rate_limit)
 
     # --- Idempotency check ---
     # NOTE: the cache is written *after* a successful forward (see
@@ -643,7 +717,7 @@ async def proxy_webhook(
     # a placeholder before forwarding. The cache still fully de-duplicates
     # retries and any request that arrives after the first response is stored.
     if idempotency_key:
-        cached = check_idempotency(route["id"], idempotency_key)
+        cached = await check_idempotency(route["id"], idempotency_key)
         if cached:
             return JSONResponse(
                 content={
@@ -657,45 +731,10 @@ async def proxy_webhook(
             )
 
     # --- Payload transformation ---
-    # Always reconstruct the forwarded body from the cleaned `payload` so that
-    # honeypot fields stripped above are never forwarded. Only fall back to
-    # the raw bytes for content types we cannot safely re-encode (binary, etc.).
-    transform_template = route.get("transform_body_template")
-    if transform_template:
-        rendered = render_template(transform_template, payload)
-        forward_body = rendered.encode("utf-8")
-    elif "application/json" in content_type or isinstance(payload, (dict, list)):
-        try:
-            forward_body = json.dumps(payload).encode("utf-8")
-        except (TypeError, ValueError):
-            # Cannot safely re-serialize the cleaned payload; rejecting
-            # rather than falling back to the raw body prevents honeypot
-            # fields from leaking through to the destination.
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid JSON payload",
-            )
-    elif "application/x-www-form-urlencoded" in content_type:
-        try:
-            from urllib.parse import urlencode
+    forward_body = _apply_payload_transform(route, payload, body, content_type)
 
-            forward_body = urlencode(payload).encode("utf-8")
-        except (TypeError, ValueError):
-            forward_body = body
-    else:
-        forward_body = body
-
-    # Merge route-level transform headers with configured headers.
-    outbound_headers = dict(route.get("headers", {}))
-    transform_headers = route.get("transform_headers", {})
-    if transform_headers:
-        outbound_headers.update(transform_headers)
-
-    # Preserve the inbound Content-Type unless the route explicitly overrides it.
-    if content_type and not any(
-        key.lower() == "content-type" for key in outbound_headers
-    ):
-        outbound_headers["Content-Type"] = content_type
+    # --- Outbound headers ---
+    outbound_headers = _build_outbound_headers(route, content_type)
 
     # --- Forward ---
     method = route.get("method", "POST")
@@ -726,7 +765,7 @@ async def proxy_webhook(
         next_retry_at = calculate_next_retry(0)
 
     # --- Log delivery ---
-    log_delivery(
+    await log_delivery(
         route_id=route["id"],
         status_code=status_code,
         payload=payload,
@@ -743,7 +782,7 @@ async def proxy_webhook(
 
     # --- Store idempotency result ---
     if idempotency_key and status_code < 400:
-        store_idempotency(
+        await store_idempotency(
             route["id"],
             idempotency_key,
             status_code,
@@ -752,7 +791,7 @@ async def proxy_webhook(
         )
 
     # --- Update route metrics ---
-    bump_route_metrics_atomic(route["id"])
+    await bump_route_metrics_atomic(route["id"])
 
     # Compute rate-limit metadata for response headers.
     # Align reset with the fixed 60s bucket boundary used by the
@@ -772,6 +811,105 @@ async def proxy_webhook(
         },
     )
 
+
+
+
+async def _reap_stuck_retries() -> None:
+    """Reset entries stranded in 'retrying' back to 'pending'."""
+    reaper_cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=_RETRY_CLAIM_STALE_SECONDS)
+    ).isoformat()
+    try:
+        await execute_query(
+            admin.table("webhook_logs").update({"retry_status": "pending"}).eq(
+                "retry_status", "retrying"
+            ).lt("updated_at", reaper_cutoff)
+        )
+    except Exception:
+        logger.warning("Retry reaper failed")
+
+
+def _rebuild_retry_body(log_entry: dict[str, Any]) -> bytes:
+    """Rebuild the request body from a stored webhook log entry."""
+    stored_body = log_entry.get("request_body", {})
+    content_type = log_entry.get("content_type", "")
+
+    if not stored_body:
+        return b""
+
+    if "application/json" in content_type or isinstance(stored_body, (dict, list)):
+        return json.dumps(stored_body).encode("utf-8")
+
+    if "application/x-www-form-urlencoded" in content_type:
+        from urllib.parse import urlencode
+        return urlencode(stored_body).encode("utf-8")
+
+    if content_type in (
+        "application/xml",
+        "text/xml",
+        "application/protobuf",
+        "application/octet-stream",
+    ):
+        raise ValueError(f"Cannot reconstruct body for content type: {content_type}")
+
+    return str(stored_body).encode("utf-8")
+
+
+async def _update_retry_outcome(
+    log_id: int,
+    retry_count: int,
+    new_status: str,
+    status_code: int,
+    next_retry: Optional[str],
+    log_entry: dict[str, Any],
+    response_body: str,
+    response_headers: dict[str, str],
+) -> dict[str, Any]:
+    """Update the webhook log with the retry outcome and return a result dict."""
+    result = await execute_query(
+        admin.table("webhook_logs")
+        .update(
+            {
+                "retry_count": retry_count,
+                "retry_status": new_status,
+                "status_code": status_code,
+                "next_retry_at": next_retry,
+            }
+        )
+        .eq("id", log_id)
+    )
+    if not result.data:
+        logger.warning("Retry status update failed for log_id=%s", log_id)
+
+    outcome: dict[str, Any] = {
+        "log_id": log_id,
+        "retry_count": retry_count,
+        "status_code": status_code,
+        "outcome": new_status,
+    }
+
+    if new_status == "exhausted":
+        failure_result = await execute_query(
+            admin.table("webhook_failures")
+            .insert(
+                {
+                    "route_id": log_entry["route_id"],
+                    "webhook_log_id": log_id,
+                    "status_code": status_code,
+                    "response_body": response_body[:_MAX_LOG_BODY_BYTES]
+                    if response_body
+                    else None,
+                    "ip_address": log_entry.get("ip_address"),
+                    "user_agent": log_entry.get("user_agent"),
+                    "retry_count": retry_count,
+                    "max_retries": _MAX_RETRIES,
+                }
+            )
+        )
+        if not failure_result.data:
+            logger.warning("Dead-letter insert failed for log_id=%s", log_id)
+
+    return outcome
 
 @router.post("/internal/process-retries")
 async def process_retries(
@@ -806,14 +944,16 @@ async def process_retries(
         datetime.now(timezone.utc) - timedelta(seconds=_RETRY_CLAIM_STALE_SECONDS)
     ).isoformat()
     try:
-        admin.table("webhook_logs").update({"retry_status": "pending"}).eq(
-            "retry_status", "retrying"
-        ).lt("updated_at", reaper_cutoff).execute()
+        await execute_query(
+            admin.table("webhook_logs").update({"retry_status": "pending"}).eq(
+                "retry_status", "retrying"
+            ).lt("updated_at", reaper_cutoff)
+        )
     except Exception:
         logger.warning("Retry reaper failed")
 
     # Fetch pending retries that are due.
-    pending = (
+    pending = await execute_query(
         admin.table("webhook_logs")
         .select(
             "*, routes!inner(destination_url, method, headers, transform_headers, transform_body_template)"
@@ -823,7 +963,6 @@ async def process_retries(
         .lt("retry_count", _MAX_RETRIES)
         .gte("created_at", get_retry_window_cutoff())
         .limit(_RETRY_BATCH_SIZE)
-        .execute()
     )
 
     results = []
@@ -837,7 +976,7 @@ async def process_retries(
         if not destination_url:
             new_status = "exhausted"
             next_retry = None
-            result = (
+            result = await execute_query(
                 admin.table("webhook_logs")
                 .update(
                     {
@@ -847,7 +986,6 @@ async def process_retries(
                     }
                 )
                 .eq("id", log_id)
-                .execute()
             )
             if not result.data:
                 logger.warning(
@@ -868,12 +1006,11 @@ async def process_retries(
         # wins; late claimers see no row and skip, preventing duplicate
         # deliveries. "retrying" is a valid value in the retry_status CHECK
         # constraint; "processing" is NOT and would cause the UPDATE to fail.
-        claim_result = (
+        claim_result = await execute_query(
             admin.table("webhook_logs")
             .update({"retry_status": "retrying"})
             .eq("id", log_id)
             .eq("retry_status", "pending")
-            .execute()
         )
         if not claim_result.data:
             logger.warning("Retry already claimed for log_id=%s, skipping", log_id)
@@ -904,7 +1041,7 @@ async def process_retries(
             # Cannot reliably reconstruct these from jsonb; skip retry.
             new_status = "exhausted"
             next_retry = None
-            result = (
+            result = await execute_query(
                 admin.table("webhook_logs")
                 .update(
                     {
@@ -914,7 +1051,6 @@ async def process_retries(
                     }
                 )
                 .eq("id", log_id)
-                .execute()
             )
             if not result.data:
                 logger.warning("Retry exhaust update failed for log_id=%s", log_id)
@@ -963,7 +1099,7 @@ async def process_retries(
             new_status = "exhausted"
             next_retry = None
 
-        result = (
+        result = await execute_query(
             admin.table("webhook_logs")
             .update(
                 {
@@ -974,14 +1110,13 @@ async def process_retries(
                 }
             )
             .eq("id", log_id)
-            .execute()
         )
         if not result.data:
             logger.warning("Retry status update failed for log_id=%s", log_id)
 
         # Insert into dead-letter queue if exhausted.
         if new_status == "exhausted":
-            failure_result = (
+            failure_result = await execute_query(
                 admin.table("webhook_failures")
                 .insert(
                     {
@@ -997,7 +1132,6 @@ async def process_retries(
                         "max_retries": _MAX_RETRIES,
                     }
                 )
-                .execute()
             )
             if not failure_result.data:
                 logger.warning("Dead-letter insert failed for log_id=%s", log_id)
@@ -1005,7 +1139,7 @@ async def process_retries(
         # Update idempotency cache if key exists and response is successful.
         idempotency_key = log_entry.get("idempotency_key")
         if idempotency_key and status_code < 400:
-            store_idempotency(
+            await store_idempotency(
                 log_entry["route_id"],
                 idempotency_key,
                 status_code,
@@ -1061,10 +1195,10 @@ async def cleanup(
     # Fail safe on retention: never delete everything, never keep forever.
     keep_days = max(1, min(int(keep_days or settings.RETENTION_DAYS), 365))
 
-    def _safe_count_rpc(fn_name: str, params: Optional[dict] = None) -> int:
+    async def _safe_count_rpc(fn_name: str, params: Optional[dict] = None) -> int:
         """Invoke a SQL cleanup function that returns a row count, tolerating missing functions."""
         try:
-            result = admin.rpc(fn_name, params or {}).execute()
+            result = await execute_query(admin.rpc(fn_name, params or {}))
             if isinstance(result.data, list) and result.data:
                 value = result.data[0]
                 if isinstance(value, dict):
@@ -1075,21 +1209,21 @@ async def cleanup(
             logger.warning("Cleanup step %s failed", fn_name)
             return 0
 
-    def _safe_void_rpc(fn_name: str, params: Optional[dict] = None) -> bool:
+    async def _safe_void_rpc(fn_name: str, params: Optional[dict] = None) -> bool:
         """Invoke a SQL cleanup function that returns void, tolerating missing functions."""
         try:
-            admin.rpc(fn_name, params or {}).execute()
+            await execute_query(admin.rpc(fn_name, params or {}))
             return True
         except Exception:
             logger.warning("Cleanup step %s failed", fn_name)
             return False
 
-    webhook_logs_removed = _safe_count_rpc(
+    webhook_logs_removed = await _safe_count_rpc(
         "cleanup_webhook_logs", {"p_keep_days": keep_days}
     )
-    rate_limits_cleaned_count = _safe_void_rpc("cleanup_rate_limits")
-    pkce_verifiers_cleaned_count = _safe_void_rpc("cleanup_pkce_verifiers")
-    idempotency_cache_cleaned_count = _safe_void_rpc("cleanup_idempotency_cache")
+    rate_limits_cleaned_count = await _safe_void_rpc("cleanup_rate_limits")
+    pkce_verifiers_cleaned_count = await _safe_void_rpc("cleanup_pkce_verifiers")
+    idempotency_cache_cleaned_count = await _safe_void_rpc("cleanup_idempotency_cache")
 
     return {
         "webhook_logs_removed": webhook_logs_removed,
@@ -1104,42 +1238,42 @@ async def cleanup(
     }
 
 
-def cleanup_rate_limits() -> bool:
+async def cleanup_rate_limits() -> bool:
     """Invoke the ``cleanup_rate_limits`` SQL function.
 
     Returns:
         ``True`` if the function executed without error, ``False`` otherwise.
     """
     try:
-        admin.rpc("cleanup_rate_limits").execute()
+        await execute_query(admin.rpc("cleanup_rate_limits"))
         return True
     except Exception:
         logger.warning("cleanup_rate_limits failed")
         return False
 
 
-def cleanup_pkce_verifiers() -> bool:
+async def cleanup_pkce_verifiers() -> bool:
     """Invoke the ``cleanup_pkce_verifiers`` SQL function.
 
     Returns:
         ``True`` if the function executed without error, ``False`` otherwise.
     """
     try:
-        admin.rpc("cleanup_pkce_verifiers").execute()
+        await execute_query(admin.rpc("cleanup_pkce_verifiers"))
         return True
     except Exception:
         logger.warning("cleanup_pkce_verifiers failed")
         return False
 
 
-def cleanup_idempotency_cache() -> bool:
+async def cleanup_idempotency_cache() -> bool:
     """Invoke the ``cleanup_idempotency_cache`` SQL function.
 
     Returns:
         ``True`` if the function executed without error, ``False`` otherwise.
     """
     try:
-        admin.rpc("cleanup_idempotency_cache").execute()
+        await execute_query(admin.rpc("cleanup_idempotency_cache"))
         return True
     except Exception:
         logger.warning("cleanup_idempotency_cache failed")

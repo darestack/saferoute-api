@@ -13,7 +13,7 @@ import hmac
 import logging
 import secrets
 import time
-from typing import Optional
+from typing import Any, Optional, cast
 
 import asyncio
 import httpx
@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 # Shared HTTP client for connection pooling across the application.
 _http_client: Optional[httpx.AsyncClient] = None
+
+
+async def execute_query(query: Any) -> Any:
+    """Execute a Supabase query synchronously in a thread pool.
+
+    ``supabase-py``'s ``.execute()`` is blocking. This helper wraps it in
+    ``asyncio.to_thread`` so async route handlers do not stall the event loop.
+    """
+    return await asyncio.to_thread(query.execute)
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -53,38 +62,6 @@ def get_http_client() -> httpx.AsyncClient:
 def has_http_client() -> bool:
     """Return whether the shared HTTP client has been created and is usable."""
     return _http_client is not None and not _http_client.is_closed
-
-
-def get_supabase_client(use_service_role: bool = False) -> Client:
-    """Create a Supabase client configured for the current environment.
-
-    Args:
-        use_service_role: If ``True``, use the service-role key to bypass
-            Row Level Security. Should only be used in trusted server-side
-            code such as the proxy engine.
-
-    Returns:
-        A configured :class:`supabase.Client` instance.
-
-    Raises:
-        RuntimeError: If the required environment variables are missing or
-            empty.
-    """
-    url = settings.SUPABASE_URL
-    key = (
-        settings.SUPABASE_SERVICE_ROLE_KEY
-        if use_service_role
-        else settings.SUPABASE_KEY
-    )
-
-    if not url or not key:
-        logger.error("Database configuration error: SUPABASE_URL or key is empty")
-        raise RuntimeError("Database configuration error")
-
-    # Note: The underlying httpx client uses a default 30s timeout.
-    # If a custom timeout is needed, set it on the underlying client after
-    # creation or use the per-call timeout mechanisms provided by supabase-py.
-    return create_client(url, key)
 
 
 def _hash_api_key(full_key: str) -> str:
@@ -134,16 +111,15 @@ async def verify_api_key(full_key: Optional[str]) -> Optional[str]:
         return cached
 
     try:
-        result = (
+        result = await execute_query(
             admin.table("routes")
             .select("id")
             .eq("api_key_hash", key_hash)
             .limit(1)
-            .execute()
         )
 
         if result.data:
-            route_id = result.data[0]["id"]
+            route_id = cast(str, result.data[0]["id"])
             await _cache_api_key(key_hash, route_id)
             return route_id
     except Exception:
@@ -155,7 +131,7 @@ async def verify_api_key(full_key: Optional[str]) -> Optional[str]:
     return None
 
 
-def bump_route_metrics_atomic(route_id: str) -> None:
+async def bump_route_metrics_atomic(route_id: str) -> None:
     """Atomically increment the request count for a route.
 
     Uses the ``increment_route_count`` SQL function defined in
@@ -165,15 +141,56 @@ def bump_route_metrics_atomic(route_id: str) -> None:
         route_id: The UUID of the route to update.
     """
     try:
-        admin.rpc("increment_route_count", {"p_route_id": route_id}).execute()
+        await execute_query(
+            admin.rpc("increment_route_count", {"p_route_id": route_id})
+        )
     except Exception:
         logger.exception("Failed to increment route metrics for route_id=%s", route_id)
 
 
 # Shared module-level clients. Import these elsewhere rather than calling
 # ``get_supabase_client()`` repeatedly.
-supabase_client: Client = get_supabase_client()
-admin: Client = get_supabase_client(use_service_role=True)
+#
+# These are lazily initialized to avoid crashing the process at import time
+# if environment variables are missing. The first call to either function
+# creates the client and caches it for subsequent calls.
+_supabase_client: Optional[Client] = None
+_admin_client: Optional[Client] = None
+
+
+def get_supabase_client(use_service_role: bool = False) -> Client:
+    """Return a cached Supabase client, creating it on first call."""
+    global _supabase_client, _admin_client
+
+    if use_service_role:
+        if _admin_client is None:
+            _admin_client = _create_supabase_client(use_service_role=True)
+        return _admin_client
+
+    if _supabase_client is None:
+        _supabase_client = _create_supabase_client(use_service_role=False)
+    return _supabase_client
+
+
+def _create_supabase_client(use_service_role: bool = False) -> Client:
+    """Create a new Supabase client instance."""
+    url = settings.SUPABASE_URL
+    key = (
+        settings.SUPABASE_SERVICE_ROLE_KEY
+        if use_service_role
+        else settings.SUPABASE_KEY
+    )
+
+    if not url or not key:
+        logger.error("Database configuration error: SUPABASE_URL or key is empty")
+        raise RuntimeError("Database configuration error")
+
+    return create_client(url, key)
+
+
+# Convenience aliases for backward compatibility.
+supabase_client = get_supabase_client(use_service_role=False)
+admin = get_supabase_client(use_service_role=True)
 
 
 # ---------------------------------------------------------------------------

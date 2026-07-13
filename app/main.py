@@ -39,9 +39,9 @@ async def lifespan(app: FastAPI) -> Any:
     # Verify the admin client can bypass RLS by checking a known table.
     # This catches misconfigured service-role keys early.
     try:
-        from app.database import admin
+        from app.database import admin, execute_query
 
-        admin.table("routes").select("id").limit(1).execute()
+        await execute_query(admin.table("routes").select("id").limit(1))
         logger.info("Startup RLS bypass check passed")
     except Exception as exc:
         logger.warning("Startup RLS bypass check failed: %s", exc)
@@ -251,10 +251,17 @@ class RequestSizeLimitMiddleware:
 
         async def limited_receive() -> ASGIMessage:
             nonlocal received
-            if time.perf_counter() - start_time > self.max_seconds:
+            elapsed = time.perf_counter() - start_time
+            if elapsed > self.max_seconds:
                 raise RequestTimeoutError
 
-            message = await receive()
+            try:
+                message = await asyncio.wait_for(
+                    receive(), timeout=max(0.001, self.max_seconds - elapsed)
+                )
+            except asyncio.TimeoutError:
+                raise RequestTimeoutError
+
             if message.get("type") == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.max_size:
