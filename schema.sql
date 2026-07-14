@@ -26,6 +26,11 @@ create table public.routes (
     rate_limit integer default 30,
     transform_headers jsonb default '{}'::jsonb,
     transform_body_template text,
+    form_schema jsonb default '{}'::jsonb,
+    spam_honeypot_field text,
+    spam_blocked_ua text[] default '{}',
+    spam_allowed_countries text[] default '{}',
+    email_notifications jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );

@@ -5,12 +5,13 @@
 [![Supabase](https://img.shields.io/badge/Supabase-Ready-3ECF8E)](https://supabase.com/)
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors/darestack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/darestack/saferoute-api)
+[![Status: Beta](https://img.shields.io/badge/status-beta-blue)](https://github.com/darestack/saferoute-api)
 
-A lightweight, secure webhook proxy. Point your static forms or public webhooks at a SafeRoute URL and SafeRoute forwards them to an HTTPS destination with per-route rate limiting, optional HMAC verification, retry handling, and webhook logging.
+**Add a secure backend to any static website in under 60 seconds.**
 
-**Live demo:** https://saferoute-api.vercel.app  
-**Status:** Alpha — not production-ready. Use at your own risk.
+SafeRoute is a form backend for static sites. Point your HTML form at a SafeRoute endpoint, and we handle validation, spam filtering, email notifications, and secure delivery to your inbox or webhook.
+
+**Live demo:** https://saferoute-api.vercel.app
 
 ## Quick start
 
@@ -26,17 +27,19 @@ uvicorn app.main:app --reload
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
 
-## Documentation
+## Why SafeRoute?
 
-| Topic | Guide |
-|-------|-------|
-| Detailed setup (Supabase, OAuth, env vars) | [docs/guides/setup.md](docs/guides/setup.md) |
-| API endpoint reference | [docs/reference/api.md](docs/reference/api.md) |
-| Architecture and data flow | [docs/reference/architecture.md](docs/reference/architecture.md) |
-| Operations and incident response | [docs/runbook.md](docs/runbook.md) |
-| Database migrations | [docs/migrations.md](docs/migrations.md) |
-| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Security policy | [SECURITY.md](SECURITY.md) |
+Static sites are fast, secure, and cheap to host. But they can't process form submissions. You need a backend.
+
+SafeRoute gives you a backend without the backend:
+
+| Problem | SafeRoute Solution |
+|---------|-------------------|
+| Exposing your real email/webhook | Secret endpoint masking (`/v1/r/contact-form`) |
+| Spam and bots | Honeypot + rate limiting + User-Agent filtering |
+| Invalid submissions | Server-side form validation before delivery |
+| No visibility | Simple request logs with replay |
+| Platform lock-in | Works with GitHub Pages, Vercel, Netlify, or plain HTML |
 
 ## Stack
 
@@ -44,7 +47,8 @@ uvicorn app.main:app --reload
 |-----------|--------|
 | API | FastAPI + Uvicorn |
 | Database | Supabase (PostgreSQL + Auth) |
-| Deployment | Docker or ASGI hosting |
+| Deployment | Vercel / Docker / ASGI hosting |
+| Email | Resend (optional) |
 
 ## Project layout
 
@@ -78,11 +82,32 @@ uvicorn app.main:app --reload
 - [x] Basic SSRF guardrails for outbound destinations
 - [x] Supabase schema with RLS, rate-limit table, webhook logs
 - [x] Webhook secret rotation support
+- [x] Form validation schema support
+- [x] Spam shield (honeypot + rate limiting + User-Agent filtering)
+- [x] Manual replay queue for failed deliveries
+- [x] Bulk log cleanup endpoint
+- [x] Standardized API responses with Pydantic models
 
 ## What's missing
 
 - [ ] Dashboard UI
-- [ ] Managed network egress controls. Current SSRF protection is implemented in application code with standard-library URL/IP/DNS checks to keep operating cost at $0.
+- [ ] Country blocking
+- [ ] Cloudflare Turnstile support
+- [ ] Disposable email detection
+- [ ] Email notifications via Resend
+- [ ] Managed network egress controls
+
+## Documentation
+
+| Topic | Guide |
+|-------|-------|
+| Detailed setup (Supabase, OAuth, env vars) | [docs/guides/setup.md](docs/guides/setup.md) |
+| API endpoint reference | [docs/reference/api.md](docs/reference/api.md) |
+| Architecture and data flow | [docs/reference/architecture.md](docs/reference/architecture.md) |
+| Operations and incident response | [docs/runbook.md](docs/runbook.md) |
+| Database migrations | [docs/migrations.md](docs/migrations.md) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Security policy | [SECURITY.md](SECURITY.md) |
 
 ## Contributing
 

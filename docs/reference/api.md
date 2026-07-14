@@ -29,6 +29,14 @@ X-Retry-Secret: <RETRY_ENDPOINT_SECRET>
 
 Receives incoming webhooks, validates signatures and rate limits, and forwards the payload to the configured destination URL.
 
+**Form Validation:**
+If the route has a `form_schema` configured, the proxy validates required fields, types (string/email/number), and constraints (max_length, min, max) before forwarding. Invalid requests return `400 Bad Request` and are not delivered.
+
+**Spam Shield:**
+- **Honeypot**: If `spam_honeypot_field` is set and that field is non-empty, the request is silently dropped with `400`.
+- **User-Agent blocking**: If `spam_blocked_ua` contains substrings that match the `User-Agent`, the request is rejected with `403`.
+- **Country blocking**: If `spam_allowed_countries` is set, only requests from those countries are allowed (requires IP geolocation).
+
 **Headers:**
 - `X-API-Key` (optional): API Key for authentication.
 - `X-Hub-Signature-256` (optional): HMAC SHA-256 signature for payload verification.
@@ -37,8 +45,9 @@ Receives incoming webhooks, validates signatures and rate limits, and forwards t
 
 **Responses:**
 - `200 OK`: Returns the status of the forwarding action and the destination's response status code.
-- `400 Bad Request`: Invalid payload, invalid destination, etc.
+- `400 Bad Request`: Invalid payload, invalid destination, form validation failure, or spam detected.
 - `401 Unauthorized`: Missing or invalid signatures/API keys.
+- `403 Forbidden`: User-Agent or country blocked.
 - `429 Too Many Requests`: Client exceeded rate limit.
 - `500 Internal Server Error`: Application errors.
 
@@ -65,7 +74,17 @@ Create a new proxy route for the authenticated user.
 {
   "name": "Contact Form",
   "destination_url": "https://hooks.zapier.com/hooks/catch/...",
-  "method": "POST"
+  "method": "POST",
+  "form_schema": {
+    "fields": {
+      "name": {"type": "string", "required": true, "max_length": 100},
+      "email": {"type": "email", "required": true},
+      "message": {"type": "string", "required": true, "max_length": 500}
+    }
+  },
+  "spam_honeypot_field": "honeypot",
+  "spam_blocked_ua": ["bot", "scraper"],
+  "spam_allowed_countries": ["US", "GB", "CA"]
 }
 ```
 

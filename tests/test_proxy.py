@@ -371,6 +371,11 @@ class TestProcessRetriesEmptyDestination:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
                     },
                 }
             ]
@@ -485,6 +490,11 @@ class TestProxyContentTypePreservation:
             "rate_limit": 30,
             "webhook_secret": None,
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
             "name": "Test",
@@ -542,6 +552,11 @@ class TestProxyContentTypePreservation:
             "rate_limit": 30,
             "webhook_secret": None,
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
             "name": "Test",
@@ -652,6 +667,11 @@ class TestIdempotencyStoresOnlySuccess:
             "rate_limit": 30,
             "webhook_secret": None,
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
             "name": "Test",
@@ -738,6 +758,11 @@ class TestRetryBodyReconstruction:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
                     },
                 }
             ]
@@ -817,6 +842,11 @@ class TestHoneypotStripping:
             "rate_limit": 30,
             "webhook_secret": None,
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
             "name": "Test",
@@ -868,6 +898,116 @@ class TestHoneypotStripping:
             assert b"Jane" in sent_body
 
 
+class TestFormValidation:
+    """Form schema validation before forwarding."""
+
+    def test_missing_required_field_returns_400(self):
+        from app.routes.proxy import _validate_form_schema
+        from fastapi import HTTPException
+
+        form_schema = {
+            "fields": {
+                "name": {"type": "string", "required": True},
+                "email": {"type": "email", "required": True},
+            }
+        }
+        payload = {"name": "Jane"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_form_schema(payload, form_schema)
+        assert exc_info.value.status_code == 400
+        assert "email" in str(exc_info.value.detail)
+
+    def test_invalid_email_returns_400(self):
+        from app.routes.proxy import _validate_form_schema
+        from fastapi import HTTPException
+
+        form_schema = {
+            "fields": {
+                "email": {"type": "email", "required": True},
+            }
+        }
+        payload = {"email": "not-an-email"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_form_schema(payload, form_schema)
+        assert exc_info.value.status_code == 400
+
+    def test_max_length_exceeded_returns_400(self):
+        from app.routes.proxy import _validate_form_schema
+        from fastapi import HTTPException
+
+        form_schema = {
+            "fields": {
+                "message": {"type": "string", "required": True, "max_length": 10},
+            }
+        }
+        payload = {"message": "a" * 20}
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_form_schema(payload, form_schema)
+        assert exc_info.value.status_code == 400
+
+    def test_valid_payload_passes(self):
+        from app.routes.proxy import _validate_form_schema
+
+        form_schema = {
+            "fields": {
+                "name": {"type": "string", "required": True},
+                "age": {"type": "number", "min": 0, "max": 150},
+            }
+        }
+        payload = {"name": "Jane", "age": 30}
+        _validate_form_schema(payload, form_schema)  # should not raise
+
+
+class TestSpamShield:
+    """Spam protection: honeypot and User-Agent blocking."""
+
+    def test_honeypot_field_triggered_returns_400(self):
+        from app.routes.proxy import _check_spam_shield
+        from fastapi import HTTPException
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": "honeypot",
+            "spam_blocked_ua": [],
+        }
+        payload = {"honeypot": "filled"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            _check_spam_shield(payload, route, "1.2.3.4", "curl")
+        assert exc_info.value.status_code == 400
+
+    def test_blocked_user_agent_returns_403(self):
+        from app.routes.proxy import _check_spam_shield
+        from fastapi import HTTPException
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": ["bot", "scraper"],
+        }
+        payload = {}
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "MyBot/1.0")
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_clean_user_agent_passes(self):
+        from app.routes.proxy import _check_spam_shield
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": ["bot"],
+        }
+        payload = {}
+        _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")  # should not raise
+
+
 class TestDecryptFailure:
     """Tests that decryption failures are handled safely."""
 
@@ -883,6 +1023,11 @@ class TestDecryptFailure:
             "rate_limit": 30,
             "webhook_secret": "v1:some-secret",
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
             "name": "Test",
@@ -959,6 +1104,11 @@ class TestRetryClaimStatus:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
                     },
                 }
             ]
@@ -1010,6 +1160,11 @@ class TestRetry429Handling:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
                     },
                 }
             ]
@@ -1061,6 +1216,11 @@ class TestApiKeyAuth:
             "rate_limit": 30,
             "webhook_secret": None,
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
             "name": "Test",
@@ -1324,6 +1484,11 @@ class TestFillRouteCacheSingleFlight:
             "rate_limit": 30,
             "webhook_secret": None,
             "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
             "transform_headers": {},
             "is_active": True,
             "user_id": "user-1",

@@ -536,6 +536,123 @@ def _build_outbound_headers(route: dict, content_type: str) -> dict[str, str]:
     return outbound_headers
 
 
+def _validate_form_schema(payload: dict, form_schema: dict) -> None:
+    """Validate payload fields against a form schema.
+
+    Supported field constraints:
+    - ``type``: ``string``, ``email``, ``number``
+    - ``required``: boolean
+    - ``max_length``: integer
+    - ``min`` / ``max``: numeric bounds
+
+    Args:
+        payload: Parsed request body.
+        form_schema: Route configuration from ``routes.form_schema``.
+
+    Raises:
+        HTTPException: 400 if validation fails.
+    """
+    if not form_schema or not isinstance(payload, dict):
+        return
+
+    fields = form_schema.get("fields", {})
+    for field_name, rules in fields.items():
+        if not isinstance(rules, dict):
+            continue
+
+        value = payload.get(field_name)
+        required = rules.get("required", False)
+
+        if required and (value is None or value == ""):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing required field: {field_name}",
+            )
+
+        if value is None or value == "":
+            continue
+
+        field_type = rules.get("type", "string")
+        if field_type == "email":
+            import re
+
+            email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+            if not isinstance(value, str) or not email_re.match(value):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid email: {field_name}",
+                )
+        elif field_type == "number":
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid number: {field_name}",
+                )
+        elif field_type == "string":
+            if not isinstance(value, str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid string: {field_name}",
+                )
+
+        max_length = rules.get("max_length")
+        if max_length is not None and len(str(value)) > max_length:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Field too long: {field_name}",
+            )
+
+        if field_type == "number" and isinstance(value, (int, float)):
+            min_val = rules.get("min")
+            max_val = rules.get("max")
+            if min_val is not None and value < min_val:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Value too small: {field_name}",
+                )
+            if max_val is not None and value > max_val:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Value too large: {field_name}",
+                )
+
+
+def _check_spam_shield(
+    payload: dict,
+    route: dict,
+    client_ip: str,
+    user_agent: Optional[str],
+) -> None:
+    """Apply spam checks: honeypot, User-Agent blocklist.
+
+    Args:
+        payload: Parsed request body.
+        route: Route configuration from database/cache.
+        client_ip: Client IP address.
+        user_agent: User-Agent header value.
+
+    Raises:
+        HTTPException: 400 if honeypot is triggered.
+        HTTPException: 403 if User-Agent is blocked.
+    """
+    honeypot_field = route.get("spam_honeypot_field")
+    if honeypot_field and payload.get(honeypot_field):
+        logger.info("Honeypot triggered for slug=%s", route.get("slug"))
+        raise HTTPException(status_code=400, detail="Invalid submission")
+
+    blocked_ua = route.get("spam_blocked_ua") or []
+    if user_agent and isinstance(user_agent, str):
+        ua_lower = user_agent.lower()
+        for blocked in blocked_ua:
+            if blocked.lower() in ua_lower:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied",
+                )
+
+
 @router.post("/v1/route/{slug}")
 async def proxy_webhook(
     slug: str,
@@ -604,6 +721,9 @@ async def proxy_webhook(
     route = await get_cached_route(slug)
     if not route:
         route = await fill_route_cache(slug)
+
+    _validate_form_schema(payload, route.get("form_schema") or {})
+    _check_spam_shield(payload, route, client_ip, user_agent)
 
     destination = route["destination_url"]
     try:

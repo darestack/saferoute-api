@@ -110,6 +110,11 @@ class RouteResponse(BaseModel):
     has_transform: bool = False
     transform_headers: dict[str, str] = Field(default_factory=dict)
     transform_body_template: Optional[str] = None
+    form_schema: dict[str, Any] = Field(default_factory=dict)
+    spam_honeypot_field: Optional[str] = None
+    spam_blocked_ua: list[str] = Field(default_factory=list)
+    spam_allowed_countries: list[str] = Field(default_factory=list)
+    email_notifications: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -140,6 +145,11 @@ class RouteUpdate(BaseModel):
     rate_limit: Optional[int] = Field(None, ge=1, le=1000)
     transform_headers: Optional[dict[str, str]] = None
     transform_body_template: Optional[str] = Field(None, max_length=10000)
+    form_schema: Optional[dict[str, Any]] = None
+    spam_honeypot_field: Optional[str] = None
+    spam_blocked_ua: Optional[list[str]] = None
+    spam_allowed_countries: Optional[list[str]] = None
+    email_notifications: Optional[dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
