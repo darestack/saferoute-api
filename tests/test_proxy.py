@@ -1831,3 +1831,208 @@ class TestClaimIdempotency:
                 )
             )
             assert result is None
+
+
+class TestEmailNotifications:
+    """Tests for email notification delivery."""
+
+    def test_sends_email_on_success_when_enabled(self):
+        """When email_notifications.enabled is true and delivery succeeds, send_submission_email should be called."""
+        from app.routes.proxy import proxy_webhook
+
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {
+                "enabled": True,
+                "to": "admin@example.com",
+                "subject": "New submission",
+            },
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test Route",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
+            patch(
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(200, "ok", {})),
+            ),
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+            patch("app.routes.proxy.send_submission_email") as mock_send_email,
+        ):
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("test-route", route))
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
+
+            asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    idempotency_key=None,
+                    x_api_key=None,
+                )
+            )
+
+            mock_send_email.assert_called_once()
+            call_kwargs = mock_send_email.call_args[1]
+            assert call_kwargs["to"] == "admin@example.com"
+            assert call_kwargs["subject"] == "New submission"
+            assert call_kwargs["route_name"] == "Test Route"
+
+    def test_skips_email_when_disabled(self):
+        """When email_notifications is empty, send_submission_email should not be called."""
+        from app.routes.proxy import proxy_webhook
+
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {},
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
+            patch(
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(200, "ok", {})),
+            ),
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+            patch("app.routes.proxy.send_submission_email") as mock_send_email,
+        ):
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("test-route", route))
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
+
+            asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    idempotency_key=None,
+                    x_api_key=None,
+                )
+            )
+
+            mock_send_email.assert_not_called()
+
+    def test_skips_email_on_failed_delivery(self):
+        """When delivery fails (status >= 400), send_submission_email should not be called."""
+        from app.routes.proxy import proxy_webhook
+
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "email_notifications": {
+                "enabled": True,
+                "to": "admin@example.com",
+                "subject": "New submission",
+            },
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
+            patch(
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(500, "error", {})),
+            ),
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+            patch("app.routes.proxy.send_submission_email") as mock_send_email,
+        ):
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("test-route", route))
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(return_value=b'{"name": "Jane"}')
+
+            asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    idempotency_key=None,
+                    x_api_key=None,
+                )
+            )
+
+            mock_send_email.assert_not_called()

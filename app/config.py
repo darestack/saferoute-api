@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
     RETRY_BATCH_SIZE: int = 100
     RETRY_CLAIM_STALE_SECONDS: int = 300
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM: str = "noreply@saferoute.dev"
+    EMAIL_REPLY_TO: str = ""
 
     @property
     def is_production(self) -> bool:

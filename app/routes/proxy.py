@@ -41,6 +41,7 @@ from app.utils.security import (
     validate_destination_url_async,
 )
 from app.utils.transform import parse_payload, render_template
+from app.utils.email import send_submission_email  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -832,6 +833,21 @@ async def proxy_webhook(
         retry_status=retry_status,
         next_retry_at=next_retry_at,
     )
+
+    # --- Email notification ---
+    email_config = route.get("email_notifications") or {}
+    if (
+        status_code < 400
+        and email_config.get("enabled")
+        and email_config.get("to")
+    ):
+        await send_submission_email(
+            to=email_config["to"],
+            subject=email_config.get("subject") or f"New submission: {route.get('name', route.get('slug', ''))}",
+            payload=payload if isinstance(payload, dict) else {"raw": str(payload)},
+            route_name=route.get("name") or route.get("slug", ""),
+            reply_to=email_config.get("reply_to") or "",
+        )
 
     # --- Store idempotency result ---
     if idempotency_key and status_code < 400:
