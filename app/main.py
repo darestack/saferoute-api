@@ -181,8 +181,8 @@ def _apply_security_headers(response: Response, path: str) -> None:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "img-src 'self' data: https:; "
-            "script-src 'self' https://unpkg.com; "
-            "style-src 'self' https://unpkg.com 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; "
+            "style-src 'self' https://unpkg.com https://cdn.jsdelivr.net 'unsafe-inline'; "
             "connect-src 'self'"
         )
     else:

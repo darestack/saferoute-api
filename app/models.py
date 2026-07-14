@@ -7,6 +7,7 @@ and input constraints consistent with the Supabase tables defined in
 """
 
 from __future__ import annotations
+from datetime import datetime
 from typing import Optional, Annotated
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -102,15 +103,15 @@ class RouteResponse(BaseModel):
     headers: dict[str, str]
     is_active: bool
     requests_count: int
-    last_used_at: Optional[str] = None
+    last_used_at: Optional[datetime] = None
     api_key_prefix: Optional[str] = None
     rate_limit: int = 30
     has_webhook_secret: bool = False
     has_transform: bool = False
     transform_headers: dict[str, str] = Field(default_factory=dict)
     transform_body_template: Optional[str] = None
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class RouteCreateResponse(RouteResponse):
@@ -168,8 +169,8 @@ class WebhookLogResponse(BaseModel):
     error_message: Optional[str] = None
     retry_count: int = 0
     retry_status: str = "none"
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class WebhookFailureResponse(BaseModel):
@@ -183,8 +184,8 @@ class WebhookFailureResponse(BaseModel):
     error_message: Optional[str] = None
     retry_count: int = 0
     max_retries: int = 3
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class WebhookFailuresResponse(BaseModel):
@@ -251,7 +252,7 @@ class User(BaseModel):
     id: str
     email: str
     full_name: Optional[str] = None
-    created_at: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 class UserCreate(BaseModel):

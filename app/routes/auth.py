@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx
 import jwt
-from jwt.algorithms import RSAAlgorithm
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
@@ -88,9 +88,12 @@ async def _get_cached_jwks() -> dict:
         if _jwks_cache is not None and now < _jwks_cache_expiry:
             return _jwks_cache
 
-        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/jwks"
+        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
         try:
-            response = await _jwks_client.get(jwks_url)
+            response = await _jwks_client.get(
+                jwks_url,
+                headers={"apikey": settings.SUPABASE_KEY},
+            )
             response.raise_for_status()
             _jwks_cache = response.json()
             _jwks_cache_expiry = now + _JWKS_CACHE_TTL_SECONDS
@@ -239,7 +242,10 @@ async def get_current_user_from_jwt(
         public_key = None
         for key in jwks.get("keys", []):
             if key.get("kid") == key_id:
-                public_key = RSAAlgorithm.from_jwk(key)
+                try:
+                    public_key = RSAAlgorithm.from_jwk(key)
+                except Exception:
+                    public_key = ECAlgorithm.from_jwk(key)
                 break
 
         if not public_key:
@@ -251,7 +257,7 @@ async def get_current_user_from_jwt(
         payload = jwt.decode(
             token_str,
             public_key,
-            algorithms=["RS256"],
+            algorithms=["RS256", "ES256"],
             audience="authenticated",
             issuer=f"{settings.SUPABASE_URL}/auth/v1",
         )
