@@ -114,6 +114,7 @@ class RouteResponse(BaseModel):
     spam_honeypot_field: Optional[str] = None
     spam_blocked_ua: list[str] = Field(default_factory=list)
     spam_allowed_countries: list[str] = Field(default_factory=list)
+    spam_blocked_ips: list[str] = Field(default_factory=list)
     email_notifications: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -149,6 +150,7 @@ class RouteUpdate(BaseModel):
     spam_honeypot_field: Optional[str] = None
     spam_blocked_ua: Optional[list[str]] = None
     spam_allowed_countries: Optional[list[str]] = None
+    spam_blocked_ips: Optional[list[str]] = None
     email_notifications: Optional[dict[str, Any]] = None
 
 

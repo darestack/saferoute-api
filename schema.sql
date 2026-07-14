@@ -30,6 +30,7 @@ create table public.routes (
     spam_honeypot_field text,
     spam_blocked_ua text[] default '{}',
     spam_allowed_countries text[] default '{}',
+    spam_blocked_ips text[] default '{}',
     email_notifications jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null

@@ -720,6 +720,18 @@ async def _check_spam_shield(
                 detail="Access denied",
             )
 
+    blocked_ips = route.get("spam_blocked_ips") or []
+    if blocked_ips and client_ip in blocked_ips:
+        logger.info(
+            "IP blocked for slug=%s, ip=%s",
+            route.get("slug"),
+            client_ip,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
 
 @router.post("/v1/route/{slug}")
 async def proxy_webhook(

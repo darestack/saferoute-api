@@ -375,6 +375,7 @@ class TestProcessRetriesEmptyDestination:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
                     },
                 }
@@ -494,6 +495,7 @@ class TestProxyContentTypePreservation:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -556,6 +558,7 @@ class TestProxyContentTypePreservation:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -671,6 +674,7 @@ class TestIdempotencyStoresOnlySuccess:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -762,6 +766,7 @@ class TestRetryBodyReconstruction:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
                     },
                 }
@@ -846,6 +851,7 @@ class TestHoneypotStripping:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -1011,6 +1017,7 @@ class TestSpamShield:
             "spam_honeypot_field": "honeypot",
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
         }
         payload = {"honeypot": "filled"}
 
@@ -1029,6 +1036,7 @@ class TestSpamShield:
             "spam_honeypot_field": None,
             "spam_blocked_ua": ["bot", "scraper"],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
         }
         payload = {}
 
@@ -1046,6 +1054,7 @@ class TestSpamShield:
             "spam_honeypot_field": None,
             "spam_blocked_ua": ["bot"],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
         }
         payload = {}
         asyncio.run(
@@ -1060,6 +1069,7 @@ class TestSpamShield:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": ["US", "GB"],
+            "spam_blocked_ips": [],
         }
         payload = {}
         with patch(
@@ -1079,6 +1089,7 @@ class TestSpamShield:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": ["US", "GB"],
+            "spam_blocked_ips": [],
         }
         payload = {}
         with patch(
@@ -1099,6 +1110,7 @@ class TestSpamShield:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": ["US", "GB"],
+            "spam_blocked_ips": [],
         }
         payload = {}
         with patch(
@@ -1108,6 +1120,39 @@ class TestSpamShield:
             asyncio.run(
                 _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
             )  # should not raise, fails open
+
+    def test_blocked_ip_returns_403(self):
+        from app.routes.proxy import _check_spam_shield
+        from fastapi import HTTPException
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": ["1.2.3.4", "5.6.7.8"],
+        }
+        payload = {}
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_allowed_ip_passes(self):
+        from app.routes.proxy import _check_spam_shield
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": ["1.2.3.4"],
+        }
+        payload = {}
+        asyncio.run(
+            _check_spam_shield(payload, route, "9.9.9.9", "Mozilla/5.0")
+        )  # should not raise
 
 
 class TestDecryptFailure:
@@ -1129,6 +1174,7 @@ class TestDecryptFailure:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -1210,6 +1256,7 @@ class TestRetryClaimStatus:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
                     },
                 }
@@ -1266,6 +1313,7 @@ class TestRetry429Handling:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
                     },
                 }
@@ -1322,6 +1370,7 @@ class TestApiKeyAuth:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -1590,6 +1639,7 @@ class TestFillRouteCacheSingleFlight:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "is_active": True,
@@ -1954,6 +2004,7 @@ class TestEmailNotifications:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {
                 "enabled": True,
                 "to": "admin@example.com",
@@ -2025,6 +2076,7 @@ class TestEmailNotifications:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {},
             "transform_headers": {},
             "slug": "test-route",
@@ -2088,6 +2140,7 @@ class TestEmailNotifications:
             "spam_honeypot_field": None,
             "spam_blocked_ua": [],
             "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
             "email_notifications": {
                 "enabled": True,
                 "to": "admin@example.com",
