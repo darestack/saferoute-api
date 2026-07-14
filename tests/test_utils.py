@@ -16,6 +16,7 @@ from app.utils.routes import (
 
 class TestRouteUtilities:
     """Tests for reusable route row helpers."""
+
     def test_route_to_response_strips_sensitive_fields(
         self, sample_route: dict[str, Any]
     ) -> None:
@@ -48,12 +49,14 @@ class TestRouteUtilities:
         query.eq.return_value = query
         query.execute.return_value.data = [sample_route]
 
-        route = asyncio.run(get_owned_route_or_404(
-            admin_client,
-            route_id="route-1",
-            user_id="user-1",
-            columns="id,slug",
-        ))
+        route = asyncio.run(
+            get_owned_route_or_404(
+                admin_client,
+                route_id="route-1",
+                user_id="user-1",
+                columns="id,slug",
+            )
+        )
 
         assert route is sample_route
         admin_client.table.assert_called_once_with("routes")

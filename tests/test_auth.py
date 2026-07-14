@@ -17,6 +17,7 @@ from app.routes.auth import (
 
 class TestUserCache:
     """Tests for user lookup caching."""
+
     def test_cache_hit_returns_user(self):
         user = User(
             id="user-1",
@@ -152,13 +153,15 @@ class TestHealthEndpoint:
     """Tests for health check endpoint."""
 
     def test_health_returns_200(self):
-        with patch("app.routes.auth.admin") as mock_admin:
-            mock_admin.table.return_value.select.return_value.limit.return_value.execute.return_value.data = []
+        with (
+            patch("app.database.admin") as mock_admin,
+            patch("app.database.execute_query", return_value=MagicMock(data=[{"id": "1"}])),
+        ):
             from fastapi.testclient import TestClient
             from app.main import app
 
             client = TestClient(app)
-            response = client.get("/auth/health")
+            response = client.get("/health")
             assert response.status_code == 200
             data = response.json()
             assert "status" in data
@@ -211,6 +214,7 @@ class TestOAuthRedirectUrl:
             patch("app.routes.oauth._store_pkce_verifier"),
         ):
             with patch("app.routes.oauth.settings") as mock_settings:
+                mock_settings.ENCRYPTION_KEY = ""
                 mock_settings.FRONTEND_URL = "http://localhost:3000/app/"
                 mock_settings.SUPABASE_URL = "https://supabase.example.com"
                 result = asyncio.run(oauth_redirect("google"))
@@ -284,28 +288,32 @@ class TestRouteCacheInvalidationOnUpdate:
             patch("app.routes.auth.clear_route_cache_for_route") as mock_clear,
         ):
             # find_by_id returns old route for cache invalidation.
-            mock_repo.find_by_id = AsyncMock(return_value={
-                "id": "r1",
-                "user_id": "u1",
-                "slug": "old-slug",
-                "destination_url": "https://example.com/hook",
-            })
+            mock_repo.find_by_id = AsyncMock(
+                return_value={
+                    "id": "r1",
+                    "user_id": "u1",
+                    "slug": "old-slug",
+                    "destination_url": "https://example.com/hook",
+                }
+            )
             # Slug-uniqueness pre-check must find no collision.
             mock_repo.slug_exists_for_other_route = AsyncMock(return_value=False)
             # The actual UPDATE returns the updated row.
-            mock_repo.update = AsyncMock(return_value={
-                "id": "r1",
-                "user_id": "u1",
-                "name": "New Name",
-                "slug": "old-slug",
-                "destination_url": "https://example.com/hook",
-                "method": "POST",
-                "headers": {},
-                "is_active": True,
-                "requests_count": 0,
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
-            })
+            mock_repo.update = AsyncMock(
+                return_value={
+                    "id": "r1",
+                    "user_id": "u1",
+                    "name": "New Name",
+                    "slug": "old-slug",
+                    "destination_url": "https://example.com/hook",
+                    "method": "POST",
+                    "headers": {},
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            )
 
             user = User(id="u1", email="e@e.com", created_at=None)
             asyncio.run(update_route("r1", route_data, user))
@@ -322,28 +330,32 @@ class TestRouteCacheInvalidationOnUpdate:
             patch("app.routes.auth.clear_route_cache_for_route") as mock_clear,
         ):
             # find_by_id returns old route for cache invalidation.
-            mock_repo.find_by_id = AsyncMock(return_value={
-                "id": "r1",
-                "user_id": "u1",
-                "slug": "old-slug",
-                "destination_url": "https://example.com/hook",
-            })
+            mock_repo.find_by_id = AsyncMock(
+                return_value={
+                    "id": "r1",
+                    "user_id": "u1",
+                    "slug": "old-slug",
+                    "destination_url": "https://example.com/hook",
+                }
+            )
             # Slug-uniqueness pre-check must find no collision.
             mock_repo.slug_exists_for_other_route = AsyncMock(return_value=False)
             # The rename regenerates the slug to "new-slug".
-            mock_repo.update = AsyncMock(return_value={
-                "id": "r1",
-                "user_id": "u1",
-                "name": "Renamed Route",
-                "slug": "new-slug",
-                "destination_url": "https://example.com/hook",
-                "method": "POST",
-                "headers": {},
-                "is_active": True,
-                "requests_count": 0,
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
-            })
+            mock_repo.update = AsyncMock(
+                return_value={
+                    "id": "r1",
+                    "user_id": "u1",
+                    "name": "Renamed Route",
+                    "slug": "new-slug",
+                    "destination_url": "https://example.com/hook",
+                    "method": "POST",
+                    "headers": {},
+                    "is_active": True,
+                    "requests_count": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            )
 
             user = User(id="u1", email="e@e.com", created_at=None)
             asyncio.run(update_route("r1", route_data, user))
@@ -352,6 +364,7 @@ class TestRouteCacheInvalidationOnUpdate:
                 ((("new-slug",)),),
                 ((("old-slug",)),),
             ]
+
 
 class TestManualRetryEndpoint:
     """Tests for the manual retry endpoint."""
@@ -369,8 +382,9 @@ class TestManualRetryEndpoint:
             {"id": "log-1"}
         ]
 
-        with patch("app.routes.auth.admin", mock_admin), patch(
-            "app.routes.auth.get_owned_route_or_404"
+        with (
+            patch("app.routes.auth.admin", mock_admin),
+            patch("app.routes.auth.get_owned_route_or_404"),
         ):
             response = asyncio.run(
                 retry_failed_webhook(
@@ -394,8 +408,9 @@ class TestManualRetryEndpoint:
             {"id": "log-1", "retry_status": "pending"}
         ]
 
-        with patch("app.routes.auth.admin", mock_admin), patch(
-            "app.routes.auth.get_owned_route_or_404"
+        with (
+            patch("app.routes.auth.admin", mock_admin),
+            patch("app.routes.auth.get_owned_route_or_404"),
         ):
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(
@@ -406,4 +421,3 @@ class TestManualRetryEndpoint:
                     )
                 )
         assert exc.value.status_code == 400
-

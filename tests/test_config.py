@@ -20,7 +20,7 @@ def _base_env(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_KEY", "anon-key")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
-    monkeypatch.setenv("API_KEY_SALT", "salt")
+    monkeypatch.setenv("API_KEY_SALT", "this-is-a-very-strong-salt-key-that-is-at-least-16-chars")
 
 
 def test_default_environment_is_production(monkeypatch):
@@ -33,7 +33,7 @@ def test_default_environment_is_production(monkeypatch):
         Settings(_env_file=None)
 
     monkeypatch.setenv("ALLOWED_HOSTS", "api.example.com")
-    monkeypatch.setenv("ENCRYPTION_KEY", "strong-secret")
+    monkeypatch.setenv("ENCRYPTION_KEY", "this-is-a-very-strong-secret-key-that-is-at-least-32-chars")
     settings = Settings(_env_file=None)
     assert settings.ENVIRONMENT == "production"
 
@@ -47,10 +47,10 @@ def test_production_requires_encryption_key_and_allowed_hosts(monkeypatch):
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
-    monkeypatch.setenv("ENCRYPTION_KEY", "strong-secret")
+    monkeypatch.setenv("ENCRYPTION_KEY", "this-is-a-very-strong-secret-key-that-is-at-least-32-chars")
     settings = Settings(_env_file=None)
     assert settings.ENVIRONMENT == "production"
-    assert settings.ENCRYPTION_KEY == "strong-secret"
+    assert settings.ENCRYPTION_KEY == "this-is-a-very-strong-secret-key-that-is-at-least-32-chars"
 
 
 def test_non_production_allows_missing_encryption_key(monkeypatch):

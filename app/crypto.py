@@ -13,6 +13,7 @@ are being rotated.
 from __future__ import annotations
 import base64
 import hashlib
+import json
 import logging
 from typing import Optional
 
@@ -167,3 +168,40 @@ def decrypt_webhook_secret(ciphertext: Optional[str]) -> Optional[str]:
     except Exception:
         logger.exception("Unexpected error decrypting webhook secret")
         raise
+
+
+def decrypt_webhook_secrets(raw: Optional[str | list[str]]) -> list[str]:
+    """Decrypt stored webhook secrets into a list of plaintext values.
+
+    Supports both the legacy single-secret format (a single encrypted
+    string) and the new multi-secret format (a JSON array of encrypted
+    strings). This enables zero-downtime secret rotation: a route can
+    hold both the current and previous secrets simultaneously.
+
+    Args:
+        raw: The raw database value. May be ``None``, a single encrypted
+            string, or a list of encrypted strings.
+
+    Returns:
+        A list of decrypted plaintext secrets. Returns an empty list
+        if ``raw`` is ``None`` or empty.
+    """
+    if not raw:
+        return []
+
+    if isinstance(raw, list):
+        candidates = raw
+    elif isinstance(raw, str):
+        candidates = [raw]
+    else:
+        return []
+
+    secrets: list[str] = []
+    for ciphertext in candidates:
+        try:
+            secret = decrypt_webhook_secret(ciphertext)
+            if secret:
+                secrets.append(secret)
+        except Exception:
+            logger.exception("Failed to decrypt webhook secret during rotation")
+    return secrets

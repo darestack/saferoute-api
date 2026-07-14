@@ -96,20 +96,31 @@ def parse_payload(body: bytes, content_type: str) -> Any:
     if not body:
         return {}
 
-    try:
-        if "application/json" in content_type:
-            return json.loads(body)
-
-        # If content-type is missing, try JSON first, then fall back to form data.
+    if "application/json" in content_type:
         try:
             return json.loads(body)
-        except Exception:
-            try:
-                decoded = body.decode("utf-8", errors="replace")
-            except Exception as decode_exc:
-                logger.warning("Failed to decode request body: %s", decode_exc)
-                return {}
-            return {k: v[0] for k, v in parse_qs(decoded).items()}
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse JSON payload: %s", exc)
+            return {}
+
+    if "application/x-www-form-urlencoded" in content_type:
+        try:
+            decoded = body.decode("utf-8", errors="replace")
+            return {k: v[0] for k, v in parse_qs(decoded, keep_blank_values=True).items()}
+        except Exception as exc:
+            logger.warning("Failed to decode form payload: %s", exc)
+            return {}
+
+    # If content-type is missing, try JSON first
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback to form data for unknown content types
+    try:
+        decoded = body.decode("utf-8", errors="replace")
+        return {k: v[0] for k, v in parse_qs(decoded, keep_blank_values=True).items()}
     except Exception as exc:
-        logger.warning("Failed to parse payload: %s", exc)
+        logger.warning("Failed to decode fallback payload: %s", exc)
         return {}

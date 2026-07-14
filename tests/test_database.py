@@ -7,6 +7,7 @@ from app.database import generate_api_key, verify_api_key
 
 class TestGenerateApiKey:
     """Tests for API key generation."""
+
     def test_returns_three_parts(self):
         full_key, prefix, key_hash = generate_api_key()
         assert isinstance(full_key, str)

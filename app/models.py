@@ -18,14 +18,19 @@ from pydantic import BaseModel, Field, ConfigDict
 Slug = Annotated[str, Field(pattern="^[a-z0-9-]+$", min_length=1, max_length=64)]
 """Public route identifier. Lowercase alphanumeric and hyphens only."""
 
+from pydantic import HttpUrl
+from pydantic.functional_validators import AfterValidator
+
+def _require_https(v: HttpUrl) -> str:
+    if v.scheme != "https":
+        raise ValueError("URL scheme must be https")
+    return str(v)
+
 HttpsUrl = Annotated[
-    str,
-    Field(
-        pattern="^https://[^/]",
-        examples=["https://hooks.zapier.com/hooks/catch/..."],
-    ),
+    HttpUrl,
+    AfterValidator(_require_https),
 ]
-"""URL constrained to HTTPS with a non-empty hostname."""
+"""URL constrained to HTTPS using robust Pydantic parsing."""
 
 
 # ---------------------------------------------------------------------------

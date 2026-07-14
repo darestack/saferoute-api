@@ -23,16 +23,18 @@ class RouteRepository:
     async def create(self, data: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def update(self, route_id: str, user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    async def update(
+        self, route_id: str, user_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     async def delete(self, route_id: str, user_id: str) -> bool:
         raise NotImplementedError
 
-    async def list_by_user(self, user_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
+    async def list_by_user(
+        self, user_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
         raise NotImplementedError
-
-
 
     async def slug_exists_for_other_route(self, slug: str, route_id: str) -> bool:
         """Check if a slug is already used by a different route."""
@@ -44,10 +46,7 @@ class SupabaseRouteRepository(RouteRepository):
 
     async def find_active_by_slug(self, slug: str) -> Optional[dict[str, Any]]:
         result = await execute_query(
-            admin.table("routes")
-            .select("*")
-            .eq("slug", slug)
-            .eq("is_active", True)
+            admin.table("routes").select("*").eq("slug", slug).eq("is_active", True)
         )
         if result.data:
             return cast(dict[str, Any], result.data[0])
@@ -55,10 +54,7 @@ class SupabaseRouteRepository(RouteRepository):
 
     async def find_by_id(self, route_id: str, user_id: str) -> Optional[dict[str, Any]]:
         result = await execute_query(
-            admin.table("routes")
-            .select("*")
-            .eq("id", route_id)
-            .eq("user_id", user_id)
+            admin.table("routes").select("*").eq("id", route_id).eq("user_id", user_id)
         )
         if result.data:
             return cast(dict[str, Any], result.data[0])
@@ -70,7 +66,9 @@ class SupabaseRouteRepository(RouteRepository):
             raise RuntimeError("Failed to create route")
         return cast(dict[str, Any], result.data[0])
 
-    async def update(self, route_id: str, user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    async def update(
+        self, route_id: str, user_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
         result = await execute_query(
             admin.table("routes")
             .update(updates)
@@ -83,32 +81,26 @@ class SupabaseRouteRepository(RouteRepository):
 
     async def delete(self, route_id: str, user_id: str) -> bool:
         result = await execute_query(
-            admin.table("routes")
-            .delete()
-            .eq("id", route_id)
-            .eq("user_id", user_id)
+            admin.table("routes").delete().eq("id", route_id).eq("user_id", user_id)
         )
         return bool(result.data)
 
-    async def list_by_user(self, user_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
+    async def list_by_user(
+        self, user_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
         result = await execute_query(
             admin.table("routes")
             .select("*")
             .eq("user_id", user_id)
-            .order("created_at", desc=False)
+            .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
         )
         return result.data or []
 
-
-
     async def slug_exists_for_other_route(self, slug: str, route_id: str) -> bool:
         """Check if a slug is already used by a different route."""
         result = await execute_query(
-            admin.table("routes")
-            .select("id")
-            .eq("slug", slug)
-            .neq("id", route_id)
+            admin.table("routes").select("id").eq("slug", slug).neq("id", route_id)
         )
         return bool(result.data)
 

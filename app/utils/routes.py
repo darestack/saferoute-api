@@ -69,6 +69,8 @@ async def get_owned_route_or_404(
     return cast(dict[str, Any], result.data[0])
 
 
-async def assert_owned_route_exists(admin_client: Any, route_id: str, user_id: str) -> None:
+async def assert_owned_route_exists(
+    admin_client: Any, route_id: str, user_id: str
+) -> None:
     """Raise 404 unless a route exists and belongs to the user."""
     await get_owned_route_or_404(admin_client, route_id, user_id, columns="id")

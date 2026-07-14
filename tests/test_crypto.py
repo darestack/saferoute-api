@@ -16,6 +16,7 @@ from app.crypto import (
 
 class TestEncryptDecryptWebhookSecret:
     """Tests for webhook secret encryption/decryption."""
+
     def test_encrypt_returns_string(self):
         with patch("app.crypto._get_fernet") as mock_get:
             mock_fernet = type("MockFernet", (), {})()
@@ -134,3 +135,58 @@ class TestClearFernetCache:
             second = _get_fernet()
             assert second is not None
             assert first is not second
+
+
+class TestDecryptWebhookSecrets:
+    """Tests for multi-secret rotation support."""
+
+    def test_none_returns_empty_list(self):
+        from app.crypto import decrypt_webhook_secrets
+
+        assert decrypt_webhook_secrets(None) == []
+
+    def test_empty_string_returns_empty_list(self):
+        from app.crypto import decrypt_webhook_secrets
+
+        assert decrypt_webhook_secrets("") == []
+
+    def test_single_encrypted_string_returns_list(self):
+        from app.crypto import decrypt_webhook_secrets, encrypt_webhook_secret
+
+        plaintext = "current-secret"
+        with patch("app.crypto.settings") as mock_settings:
+            mock_settings.ENCRYPTION_KEY = "test-key"
+            mock_settings.ENVIRONMENT = "development"
+            mock_settings.is_production = False
+            encrypted = encrypt_webhook_secret(plaintext)
+            result = decrypt_webhook_secrets(encrypted)
+            assert result == [plaintext]
+
+    def test_jsonb_array_returns_all_secrets(self):
+        from app.crypto import decrypt_webhook_secrets, encrypt_webhook_secret
+
+        plaintexts = ["old-secret", "current-secret"]
+        with patch("app.crypto.settings") as mock_settings:
+            mock_settings.ENCRYPTION_KEY = "test-key"
+            mock_settings.ENVIRONMENT = "development"
+            mock_settings.is_production = False
+            encrypted = [encrypt_webhook_secret(p) for p in plaintexts]
+            result = decrypt_webhook_secrets(encrypted)
+            assert result == plaintexts
+
+    def test_mixed_valid_invalid_skips_invalid(self):
+        from app.crypto import decrypt_webhook_secrets, encrypt_webhook_secret
+
+        with patch("app.crypto.settings") as mock_settings:
+            mock_settings.ENCRYPTION_KEY = "test-key"
+            mock_settings.ENVIRONMENT = "development"
+            mock_settings.is_production = False
+            valid = encrypt_webhook_secret("valid-secret")
+            result = decrypt_webhook_secrets([valid, "not-encrypted"])
+            assert result == ["valid-secret"]
+
+    def test_plaintext_fallback_in_list(self):
+        from app.crypto import decrypt_webhook_secrets
+
+        result = decrypt_webhook_secrets(["safe_plain:legacy-secret"])
+        assert result == ["legacy-secret"]

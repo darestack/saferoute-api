@@ -87,7 +87,9 @@ def validate_destination_url(url: str, resolve_dns: bool = True) -> None:
         except ValueError as exc:
             # Re-raise malformed IP errors with a clearer message.
             if "Invalid IP address" in str(exc):
-                raise ValueError(f"Destination URL contains invalid IP address: {hostname}") from exc
+                raise ValueError(
+                    f"Destination URL contains invalid IP address: {hostname}"
+                ) from exc
             raise
         return
 
@@ -252,7 +254,9 @@ def get_client_ip(request: Request) -> str:
         ]
 
         if trusted_proxies and client_host in trusted_proxies:
-            return forwarded.split(",")[0].strip()
+            # The right-most IP is the one appended by the trusted proxy,
+            # representing the actual client IP connecting to that proxy.
+            return forwarded.split(",")[-1].strip()
 
     if request.client:
         return request.client.host

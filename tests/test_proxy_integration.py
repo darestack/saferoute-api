@@ -61,6 +61,7 @@ class TestOutboundHealthCheck:
             assert data["status"] == "unhealthy"
             assert "error" in data
 
+
 class TestOutboundHealthCheckReal:
     """Real integration tests for outbound connectivity (requires network)."""
 
@@ -83,18 +84,25 @@ class TestProxyWebhookIntegration:
 
     def test_health_check(self):
         """Test that root health check endpoint returns 200."""
-        response = client.get("/")
-        assert response.status_code == 200
-        assert response.json() == {
-            "status": "healthy",
-            "service": "SafeRoute API",
-        }
+        with (
+            patch("app.database.admin") as mock_admin,
+            patch("app.database.execute_query", return_value=MagicMock(data=[{"id": "1"}])),
+        ):
+            response = client.get("/health")
+            assert response.status_code == 200
+            assert response.json() == {
+                "status": "healthy",
+                "database": "connected",
+                "service": "SafeRoute API",
+            }
 
     def test_missing_route_returns_404(self):
         """Test that routing to a non-existent slug returns 404."""
-        with patch("app.routes.proxy.admin") as mock_admin:
-            # Simulate no route found in the database.
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
+        ):
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
 
             response = client.post("/v1/route/does-not-exist", json={"hello": "world"})
             assert response.status_code == 404
@@ -112,7 +120,7 @@ class TestProxyWebhookIntegration:
         assert "Content-Security-Policy" in response.headers
 
     def test_stats_endpoint_returns_correct_shape(self):
-        """Test that /auth/routes/{route_id}/stats returns aggregated stats."""
+        """Test that /v1/routes/{route_id}/stats returns aggregated stats."""
         from app.models import User
 
         fake_user = User(
@@ -146,7 +154,7 @@ class TestProxyWebhookIntegration:
 
             try:
                 response = client.get(
-                    "/auth/routes/route-1/stats",
+                    "/v1/routes/route-1/stats",
                     headers={"Authorization": "Bearer fake-token"},
                 )
                 assert response.status_code == 200
@@ -187,40 +195,40 @@ class TestProxyWebhookIntegration:
 
     def test_content_type_header_is_preserved_on_forward(self):
         """Test that inbound Content-Type is forwarded when not overridden."""
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "test-user-id",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
         with (
             _mock_jwt(),
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
                 "app.routes.proxy.forward_payload", return_value=(200, "ok", {})
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                {
-                    "id": "route-1",
-                    "destination_url": "https://example.com",
-                    "method": "POST",
-                    "headers": {},
-                    "rate_limit": 30,
-                    "webhook_secret": None,
-                    "transform_body_template": None,
-                    "transform_headers": {},
-                    "slug": "test-route",
-                    "name": "Test",
-                    "user_id": "test-user-id",
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
 
-            from app.routes.proxy import clear_route_cache
+            from app.services.route_cache import _cache_route
 
-            asyncio.run(clear_route_cache())
+            asyncio.run(_cache_route("test-route", route))
 
             response = client.post(
                 "/v1/route/test-route",

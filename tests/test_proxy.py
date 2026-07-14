@@ -21,6 +21,7 @@ client = TestClient(app)
 
 class TestGetClientIp:
     """Tests for client IP extraction."""
+
     def test_x_forwarded_for_single(self):
         class FakeRequest:
             headers = {"X-Forwarded-For": "1.2.3.4"}
@@ -37,12 +38,13 @@ class TestGetClientIp:
 
     def test_x_forwarded_for_trusted_when_behind_private_ip(self):
         class FakeRequest:
-            headers = {"X-Forwarded-For": "1.2.3.4"}
+            headers = {"X-Forwarded-For": "1.2.3.4, 5.6.7.8, 9.10.11.12"}
             client = type("c", (), {"host": "10.0.0.1"})()
 
         with patch("app.utils.security.settings") as mock_settings:
             mock_settings.TRUSTED_PROXIES = "10.0.0.1"
-            assert get_client_ip(FakeRequest()) == "1.2.3.4"
+            # Now we extract the right-most IP (9.10.11.12)
+            assert get_client_ip(FakeRequest()) == "9.10.11.12"
 
     def test_x_forwarded_for_ignored_when_not_in_trusted_proxies(self):
         class FakeRequest:
@@ -326,17 +328,19 @@ class TestLogDeliveryContentType:
         from app.routes.proxy import log_delivery
 
         with patch("app.routes.proxy.admin") as mock_admin:
-            asyncio.run(log_delivery(
-                route_id="route-1",
-                status_code=200,
-                payload={},
-                response_body="ok",
-                response_headers={},
-                client_ip="1.2.3.4",
-                user_agent="test",
-                duration_ms=10,
-                content_type="application/json",
-            ))
+            asyncio.run(
+                log_delivery(
+                    route_id="route-1",
+                    status_code=200,
+                    payload={},
+                    response_body="ok",
+                    response_headers={},
+                    client_ip="1.2.3.4",
+                    user_agent="test",
+                    duration_ms=10,
+                    content_type="application/json",
+                )
+            )
             call_args = mock_admin.table.return_value.insert.call_args
             record = call_args[0][0] if call_args[0] else call_args[1]["record"]
             assert record["content_type"] == "application/json"
@@ -349,7 +353,7 @@ class TestProcessRetriesEmptyDestination:
         from app.routes.proxy import process_retries
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
             patch(
                 "app.utils.retry.get_retry_window_cutoff",
@@ -473,40 +477,40 @@ class TestProxyContentTypePreservation:
     def test_json_content_type_preserved(self):
         from app.routes.proxy import proxy_webhook
 
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
                 "app.routes.proxy.forward_payload",
                 new=AsyncMock(return_value=(200, "ok", {})),
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                {
-                    "id": "route-1",
-                    "destination_url": "https://example.com",
-                    "method": "POST",
-                    "headers": {},
-                    "rate_limit": 30,
-                    "webhook_secret": None,
-                    "transform_body_template": None,
-                    "transform_headers": {},
-                    "slug": "test-route",
-                    "name": "Test",
-                    "user_id": "user-1",
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
 
-            from app.routes.proxy import clear_route_cache
+            from app.services.route_cache import _cache_route
 
-            asyncio.run(clear_route_cache())
+            asyncio.run(_cache_route("test-route", route))
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -528,40 +532,40 @@ class TestProxyContentTypePreservation:
     def test_route_headers_override_content_type(self):
         from app.routes.proxy import proxy_webhook
 
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {"Content-Type": "application/xml"},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
                 "app.routes.proxy.forward_payload",
                 new=AsyncMock(return_value=(200, "ok", {})),
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                {
-                    "id": "route-1",
-                    "destination_url": "https://example.com",
-                    "method": "POST",
-                    "headers": {"Content-Type": "application/xml"},
-                    "rate_limit": 30,
-                    "webhook_secret": None,
-                    "transform_body_template": None,
-                    "transform_headers": {},
-                    "slug": "test-route",
-                    "name": "Test",
-                    "user_id": "user-1",
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
 
-            from app.routes.proxy import clear_route_cache
+            from app.services.route_cache import _cache_route
 
-            asyncio.run(clear_route_cache())
+            asyncio.run(_cache_route("test-route", route))
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -636,37 +640,40 @@ class TestIdempotencyStoresOnlySuccess:
         from app.routes.proxy import proxy_webhook
         from unittest.mock import MagicMock
 
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch("app.routes.proxy.forward_payload") as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic") as mock_bump,
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                {
-                    "id": "route-1",
-                    "destination_url": "https://example.com",
-                    "method": "POST",
-                    "headers": {},
-                    "rate_limit": 30,
-                    "webhook_secret": None,
-                    "transform_body_template": None,
-                    "transform_headers": {},
-                    "slug": "test-route",
-                    "name": "Test",
-                    "user_id": "user-1",
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
             mock_forward.return_value = (500, "error", {})
 
-            # Ensure idempotency cache check returns empty (no cached response).
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.gte.return_value.execute.return_value.data = []
+
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("test-route", route))
 
             request = MagicMock()
             request.headers = {}
@@ -703,7 +710,7 @@ class TestRetryBodyReconstruction:
         from app.routes.proxy import process_retries
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
             patch(
                 "app.utils.retry.get_retry_window_cutoff",
@@ -743,12 +750,12 @@ class TestRouteCache:
     """Tests for in-memory route caching."""
 
     def test_cache_miss_returns_none(self):
-        from app.routes.proxy import _get_cached_route
+        from app.services.route_cache import get_cached_route as _get_cached_route
 
         assert asyncio.run(_get_cached_route("nonexistent-slug")) is None
 
     def test_cache_hit_returns_route(self):
-        from app.routes.proxy import _cache_route, _get_cached_route, clear_route_cache
+        from app.services.route_cache import _cache_route, get_cached_route as _get_cached_route, clear_route_cache
 
         route = {"id": "route-1", "slug": "test"}
         asyncio.run(_cache_route("test-route", route))
@@ -768,7 +775,6 @@ class TestApiKeyCache:
     def test_fifo_eviction_when_full(self):
         from app.database import (
             _cache_api_key,
-            _api_key_cache_order,
             _api_key_cache,
             _API_KEY_CACHE_MAX_SIZE,
             clear_api_key_cache,
@@ -778,10 +784,10 @@ class TestApiKeyCache:
         for i in range(_API_KEY_CACHE_MAX_SIZE):
             asyncio.run(_cache_api_key(f"hash-{i:04d}", f"route-{i}"))
 
-        assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
+        assert len(_api_key_cache) == _API_KEY_CACHE_MAX_SIZE
 
         asyncio.run(_cache_api_key("hash-new", "route-new"))
-        assert len(_api_key_cache_order) == _API_KEY_CACHE_MAX_SIZE
+        assert len(_api_key_cache) == _API_KEY_CACHE_MAX_SIZE
         assert "hash-0000" not in _api_key_cache
         asyncio.run(clear_api_key_cache())
 
@@ -793,46 +799,40 @@ class TestHoneypotStripping:
         """When no transform is set, body is reconstructed from cleaned payload."""
         from app.routes.proxy import proxy_webhook
 
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
                 "app.routes.proxy.forward_payload",
                 new=AsyncMock(return_value=(200, "ok", {})),
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                {
-                    "id": "route-1",
-                    "destination_url": "https://example.com",
-                    "method": "POST",
-                    "headers": {},
-                    "rate_limit": 30,
-                    "webhook_secret": None,
-                    "transform_body_template": None,
-                    "transform_headers": {},
-                    "slug": "test-route",
-                    "name": "Test",
-                    "user_id": "user-1",
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
 
-            from app.routes.proxy import (
-                _route_cache,
-                _route_cache_expiry,
-                _route_cache_order,
-            )
+            from app.services.route_cache import _cache_route
 
-            _route_cache.clear()
-            _route_cache_expiry.clear()
-            _route_cache_order.clear()
+            asyncio.run(_cache_route("test-route", route))
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -863,40 +863,40 @@ class TestDecryptFailure:
         from app.routes.proxy import proxy_webhook
         from fastapi import HTTPException
 
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": "v1:some-secret",
+            "transform_body_template": None,
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
-                "app.routes.proxy.decrypt_webhook_secret",
+                "app.routes.proxy.decrypt_webhook_secrets",
                 side_effect=ValueError("Failed to decrypt webhook secret"),
             ) as mock_decrypt,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                {
-                    "id": "route-1",
-                    "destination_url": "https://example.com",
-                    "method": "POST",
-                    "headers": {},
-                    "rate_limit": 30,
-                    "webhook_secret": "v1:some-secret",
-                    "transform_body_template": None,
-                    "transform_headers": {},
-                    "slug": "test-route",
-                    "name": "Test",
-                    "user_id": "user-1",
-                    "is_active": True,
-                    "requests_count": 0,
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
 
-            from app.routes.proxy import clear_route_cache
+            from app.services.route_cache import _cache_route
 
-            asyncio.run(clear_route_cache())
+            asyncio.run(_cache_route("test-route", route))
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -926,7 +926,7 @@ class TestRetryClaimStatus:
         from app.routes.proxy import process_retries
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
         ):
             mock_settings.RETRY_ENDPOINT_SECRET = "secret"
@@ -973,7 +973,7 @@ class TestRetry429Handling:
         from app.routes.proxy import process_retries
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
             patch(
                 "app.routes.proxy.forward_payload",
@@ -1058,11 +1058,12 @@ class TestApiKeyAuth:
         }
 
     def _run(self, x_api_key=None, verify_return=None):
-        from app.routes.proxy import clear_route_cache, proxy_webhook
+        from app.routes.proxy import proxy_webhook
 
         route = self._build_route()
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
                 "app.routes.proxy.forward_payload",
                 new=AsyncMock(return_value=(200, "ok", {})),
@@ -1073,13 +1074,14 @@ class TestApiKeyAuth:
                 new=AsyncMock(return_value=verify_return),
             ) as mock_verify,
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-                route
-            ]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
-            asyncio.run(clear_route_cache())
+
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("test-route", route))
 
             request = MagicMock()
             request.headers = {"content-type": "application/json"}
@@ -1124,6 +1126,7 @@ class TestOAuthCallbackRateLimit:
 
     def setup_method(self):
         from app.routes.oauth import _oauth_callback_cache
+
         _oauth_callback_cache.clear()
 
     def test_allows_requests_under_limit(self):
@@ -1158,7 +1161,11 @@ class TestOAuthCallbackRateLimit:
         asyncio.run(_check_oauth_rate_limit(ip2))  # Should not raise
 
     def test_window_expires_allows_requests(self):
-        from app.routes.oauth import _check_oauth_rate_limit, _OAUTH_CALLBACK_RATE_LIMIT, _OAUTH_CALLBACK_RATE_WINDOW
+        from app.routes.oauth import (
+            _check_oauth_rate_limit,
+            _OAUTH_CALLBACK_RATE_LIMIT,
+            _OAUTH_CALLBACK_RATE_WINDOW,
+        )
 
         client_ip = "1.2.3.4"
 
@@ -1166,7 +1173,10 @@ class TestOAuthCallbackRateLimit:
             asyncio.run(_check_oauth_rate_limit(client_ip))
 
         # Simulate time passing beyond the window
-        with patch("app.routes.oauth.time.monotonic", return_value=time.monotonic() + _OAUTH_CALLBACK_RATE_WINDOW + 1):
+        with patch(
+            "app.routes.oauth.time.monotonic",
+            return_value=time.monotonic() + _OAUTH_CALLBACK_RATE_WINDOW + 1,
+        ):
             asyncio.run(_check_oauth_rate_limit(client_ip))  # Should not raise
 
 
@@ -1253,7 +1263,10 @@ class TestCircuitBreaker:
         assert asyncio.run(_is_circuit_breaker_open(url)) is True
 
         # Simulate time passing beyond cooldown.
-        with patch("app.routes.proxy.time.monotonic", return_value=time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1):
+        with patch(
+            "app.routes.proxy.time.monotonic",
+            return_value=time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1,
+        ):
             assert asyncio.run(_is_circuit_breaker_open(url)) is False
 
 
@@ -1266,13 +1279,13 @@ class TestRateLimitResetAlignment:
         from app.routes.proxy import _RATE_LIMIT_WINDOW_SECONDS
 
         now = time.time()
-        reset = int(math.ceil(now / _RATE_LIMIT_WINDOW_SECONDS) * _RATE_LIMIT_WINDOW_SECONDS)
+        reset = int(
+            math.ceil(now / _RATE_LIMIT_WINDOW_SECONDS) * _RATE_LIMIT_WINDOW_SECONDS
+        )
 
         # Reset must be in the future and aligned to a 60s boundary.
         assert reset > now
         assert reset % _RATE_LIMIT_WINDOW_SECONDS == 0
-
-
 
 
 class TestFillRouteCacheSingleFlight:
@@ -1280,7 +1293,7 @@ class TestFillRouteCacheSingleFlight:
 
     def test_single_flight_awaits_existing_future(self):
         """When a future already exists for a slug, await it instead of querying."""
-        from app.routes.proxy import _fill_route_cache, _route_cache_fills
+        from app.services.route_cache import fill_route_cache as _fill_route_cache, _route_cache_fills
         import time as time_module
 
         route_row = {
@@ -1309,12 +1322,13 @@ class TestFillRouteCacheSingleFlight:
             return MagicMock(data=[route_row])
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
-            patch("app.routes.proxy._cache_route", new_callable=AsyncMock),
+            patch("app.services.route_cache.admin") as mock_admin,
+            patch("app.services.route_cache._cache_route", new_callable=AsyncMock),
         ):
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute = mock_query
 
-            from app.routes.proxy import clear_route_cache
+            from app.services.route_cache import clear_route_cache
+
             asyncio.run(clear_route_cache())
 
             async def scenario():
@@ -1336,13 +1350,13 @@ class TestFillRouteCacheSingleFlight:
 
     def test_failure_removes_inflight_marker(self):
         """On DB failure, the in-flight marker must be removed so retries work."""
-        from app.routes.proxy import _fill_route_cache
+        from app.services.route_cache import fill_route_cache as _fill_route_cache
         from fastapi import HTTPException
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
-            patch("app.routes.proxy._route_cache_fills", {}),
-            patch("app.routes.proxy._route_cache_fills_lock"),
+            patch("app.services.route_cache.admin") as mock_admin,
+            patch("app.services.route_cache._route_cache_fills", {}),
+            patch("app.services.route_cache._route_cache_fills_lock"),
         ):
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
 
@@ -1351,7 +1365,8 @@ class TestFillRouteCacheSingleFlight:
             assert exc_info.value.status_code == 404
 
             # The in-flight marker must be gone so the next request can retry.
-            from app.routes.proxy import _route_cache_fills as fills
+            from app.services.route_cache import _route_cache_fills as fills
+
             assert "missing-route" not in fills
 
     def test_health_check_requires_auth(self):
@@ -1373,7 +1388,11 @@ class TestOAuthRateLimitBoundedEviction:
 
     def test_eviction_when_cache_exceeds_limit(self):
         """When the cache exceeds _OAUTH_CACHE_MAX_ENTRIES, oldest entries are evicted."""
-        from app.routes.oauth import _check_oauth_rate_limit, _oauth_callback_cache, _OAUTH_CACHE_MAX_ENTRIES
+        from app.routes.oauth import (
+            _check_oauth_rate_limit,
+            _oauth_callback_cache,
+            _OAUTH_CACHE_MAX_ENTRIES,
+        )
 
         # Fill the cache to the limit with unique IPs (one request each).
         for i in range(_OAUTH_CACHE_MAX_ENTRIES):
@@ -1418,7 +1437,9 @@ class TestValidateDestinationUrlAsync:
         from app.utils.security import validate_destination_url_async
 
         with patch("asyncio.to_thread") as mock_to_thread:
-            asyncio.run(validate_destination_url_async("https://example.com", resolve_dns=False))
+            asyncio.run(
+                validate_destination_url_async("https://example.com", resolve_dns=False)
+            )
             mock_to_thread.assert_not_called()
 
     def test_dns_resolution_uses_thread(self):
@@ -1427,7 +1448,9 @@ class TestValidateDestinationUrlAsync:
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             mock_to_thread.return_value = None
-            asyncio.run(validate_destination_url_async("https://example.com", resolve_dns=True))
+            asyncio.run(
+                validate_destination_url_async("https://example.com", resolve_dns=True)
+            )
             mock_to_thread.assert_called_once()
 
 
@@ -1440,7 +1463,9 @@ class TestSafeErrorDetail:
 
         with patch("app.utils.security.settings") as mock_settings:
             mock_settings.is_development = True
-            exc = Exception("Failed to connect to postgres://user:pass@db.example.com:5432/mydb")
+            exc = Exception(
+                "Failed to connect to postgres://user:pass@db.example.com:5432/mydb"
+            )
             detail = safe_error_detail(exc)
             # The host+port after @ is redacted, but scheme and user:pass are kept.
             assert "db.example.com:5432" not in detail
@@ -1500,6 +1525,7 @@ class TestRequestSizeLimitMiddleware:
         # fragile, so we verify the middleware is installed and the
         # timeout constants are sane.
         from app.main import _DEFAULT_MAX_BODY_SECONDS, _DEFAULT_MAX_BODY_BYTES
+
         assert _DEFAULT_MAX_BODY_SECONDS > 0
         assert _DEFAULT_MAX_BODY_BYTES > 0
 
@@ -1526,6 +1552,7 @@ class TestCryptoRoundTrip:
 
         # Temporarily clear the fernet cache to simulate no key
         from app.crypto import clear_fernet_cache
+
         clear_fernet_cache()
 
         try:
@@ -1557,3 +1584,66 @@ class TestCryptoRoundTrip:
             clear_fernet_cache()
 
 
+class TestClaimIdempotency:
+    """Tests for atomic idempotency claim and wait helpers."""
+
+    def test_claim_success_returns_true(self):
+        from app.routes.proxy import claim_idempotency
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [True]
+            result = asyncio.run(claim_idempotency("route-1", "key-1"))
+            assert result is True
+            mock_admin.rpc.assert_called_once_with(
+                "claim_idempotency_key",
+                {"p_route_id": "route-1", "p_idempotency_key": "key-1"},
+            )
+
+    def test_claim_duplicate_returns_false(self):
+        from app.routes.proxy import claim_idempotency
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.return_value.data = [False]
+            result = asyncio.run(claim_idempotency("route-1", "key-1"))
+            assert result is False
+
+    def test_claim_rpc_error_returns_false(self):
+        from app.routes.proxy import claim_idempotency
+
+        with patch("app.routes.proxy.admin") as mock_admin:
+            mock_admin.rpc.return_value.execute.side_effect = Exception("DB error")
+            result = asyncio.run(claim_idempotency("route-1", "key-1"))
+            assert result is False
+
+    def test_wait_returns_cached_result(self):
+        from app.routes.proxy import _wait_for_idempotency_result
+
+        cached = {
+            "status": "idempotent",
+            "destination_status": 200,
+            "response_body": "ok",
+            "response_headers": {},
+            "idempotent": True,
+        }
+        with (
+            patch("app.routes.proxy.check_idempotency", return_value=cached),
+        ):
+            result = asyncio.run(
+                _wait_for_idempotency_result(
+                    "route-1", "key-1", timeout=1.0, poll_interval=0.1
+                )
+            )
+            assert result == cached
+
+    def test_wait_returns_none_on_timeout(self):
+        from app.routes.proxy import _wait_for_idempotency_result
+
+        with (
+            patch("app.routes.proxy.check_idempotency", return_value=None),
+        ):
+            result = asyncio.run(
+                _wait_for_idempotency_result(
+                    "route-1", "key-1", timeout=0.2, poll_interval=0.1
+                )
+            )
+            assert result is None

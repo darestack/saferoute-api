@@ -22,6 +22,7 @@ create table public.routes (
     api_key_prefix text,
     api_key_hash text,
     webhook_secret text,
+    webhook_secrets jsonb default '[]'::jsonb,
     rate_limit integer default 30,
     transform_headers jsonb default '{}'::jsonb,
     transform_body_template text,
@@ -92,6 +93,23 @@ create table public.idempotency_cache (
 
 create index idx_idempotency_cache_lookup
     on public.idempotency_cache(route_id, idempotency_key);
+
+-- Atomically claim an idempotency key to prevent duplicate processing.
+-- Returns true if the claim succeeded (caller is the leader), false if
+-- another request already claimed this key.
+create or replace function public.claim_idempotency_key(
+    p_route_id uuid,
+    p_idempotency_key text
+)
+returns boolean as $$
+begin
+    insert into public.idempotency_cache (route_id, idempotency_key, response_status)
+    values (p_route_id, p_idempotency_key, 0)
+    on conflict (route_id, idempotency_key) do nothing;
+
+    return found;
+end;
+$$ language plpgsql;
 
 -- ========================================
 -- Rate Limits Table

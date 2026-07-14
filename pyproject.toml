@@ -33,15 +33,3 @@ disable_error_code = [
     "assignment",
     "no-untyped-def",
 ]
-
-[tool.pytest.ini_options]
-# Tests drive coroutines via ``asyncio.run`` inside synchronous test functions,
-# so the default fixture loop scope is set explicitly to silence the
-# pytest-asyncio default-scope warning and avoid surprising scope behaviour.
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-testpaths = ["tests"]
-
-markers = [
-    'integration: marks tests as integration tests (deselect with "-m not integration")',
-]

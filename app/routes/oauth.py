@@ -42,14 +42,12 @@ _OAUTH_CALLBACK_RATE_LIMIT = 10
 _OAUTH_CALLBACK_RATE_WINDOW = 60
 _OAUTH_CACHE_MAX_ENTRIES = 10_000
 
-_oauth_callback_cache: dict[str, list[float]] = {}
+from collections import OrderedDict
+
+_oauth_callback_cache: OrderedDict[str, list[float]] = OrderedDict()
 _oauth_callback_lock = asyncio.Lock()
 
-# OAuth state cache for CSRF protection.
-# Stores (state, code_challenge) tuples with a short TTL.
-_OAUTH_STATE_TTL_SECONDS = 600
-_oauth_state_cache: dict[str, tuple[str, float]] = {}
-_oauth_state_lock = asyncio.Lock()
+
 
 
 async def _check_oauth_rate_limit(client_ip: str) -> None:
@@ -74,31 +72,12 @@ async def _check_oauth_rate_limit(client_ip: str) -> None:
             )
 
         timestamps.append(now)
-        if timestamps:
-            _oauth_callback_cache[client_ip] = timestamps
-        else:
-            _oauth_callback_cache.pop(client_ip, None)
+        _oauth_callback_cache[client_ip] = timestamps
+        _oauth_callback_cache.move_to_end(client_ip)
 
-        # Bounded eviction: drop the quarter with the oldest timestamps when
-        # the cache exceeds ``_OAUTH_CACHE_MAX_ENTRIES``. Prune stale timestamps
-        # first so active IPs are not penalized by old accumulated entries.
-        if len(_oauth_callback_cache) > _OAUTH_CACHE_MAX_ENTRIES:
-            pruned: dict[str, list[float]] = {}
-            for ip, timestamps in _oauth_callback_cache.items():
-                active = [ts for ts in timestamps if ts > window_start]
-                if active:
-                    pruned[ip] = active
-            _oauth_callback_cache.clear()
-            _oauth_callback_cache.update(pruned)
-
-            if len(_oauth_callback_cache) > _OAUTH_CACHE_MAX_ENTRIES:
-                sorted_ips = sorted(
-                    _oauth_callback_cache.items(),
-                    key=lambda kv: min(kv[1]) if kv[1] else 0,
-                )
-                evict_count = max(1, _OAUTH_CACHE_MAX_ENTRIES // 4)
-                for ip, _ in sorted_ips[:evict_count]:
-                    _oauth_callback_cache.pop(ip, None)
+        # Bounded eviction: drop oldest LRU entries if we exceed capacity.
+        while len(_oauth_callback_cache) > _OAUTH_CACHE_MAX_ENTRIES:
+            _oauth_callback_cache.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------
@@ -113,14 +92,13 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return generate_pkce_pair()
 
 
-async def _store_pkce_verifier(code_challenge: str, code_verifier: str, state: Optional[str] = None) -> None:
+async def _store_pkce_verifier(
+    code_challenge: str, code_verifier: str, state: Optional[str] = None
+) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
     await store_pkce_verifier(admin, code_challenge, code_verifier)
 
-    # Store state for CSRF validation if provided.
-    if state:
-        async with _oauth_state_lock:
-            _oauth_state_cache[state] = (code_challenge, time.monotonic() + _OAUTH_STATE_TTL_SECONDS)
+    # State is now stateless (JWT), no caching needed.
 
 
 async def _retrieve_and_delete_pkce_verifier(code_challenge: str) -> Optional[str]:
@@ -181,8 +159,18 @@ async def oauth_redirect(provider: str):
             detail=(f"Unsupported provider: {provider}. Use 'google' or 'github'."),
         )
 
+    import jwt
+    import datetime
+    
     code_verifier, code_challenge = _generate_pkce_pair()
-    state = secrets.token_urlsafe(32)
+    
+    # Use JWT for stateless CSRF protection
+    payload = {
+        "challenge": code_challenge,
+        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=600),
+        "iat": datetime.datetime.now(datetime.timezone.utc),
+    }
+    state = jwt.encode(payload, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithm="HS256")
 
     try:
         await _store_pkce_verifier(code_challenge, code_verifier, state=state)
@@ -242,8 +230,7 @@ async def oauth_callback_post(
     from app.utils.security import get_client_ip
 
     client_ip = get_client_ip(request)
-    async with _oauth_callback_lock:
-        await _check_oauth_rate_limit(client_ip)
+    await _check_oauth_rate_limit(client_ip)
 
     # Validate state parameter to prevent CSRF.
     if not state:
@@ -252,14 +239,21 @@ async def oauth_callback_post(
             detail="Missing state parameter",
         )
 
-    async with _oauth_state_lock:
-        stored = _oauth_state_cache.pop(state, None)
-        if stored is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid or expired state parameter",
-            )
-        code_challenge = stored[0]
+    import jwt
+
+    try:
+        payload = jwt.decode(state, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithms=["HS256"])
+        code_challenge = payload["challenge"]
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=400,
+            detail="State parameter expired",
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid state parameter",
+        )
 
     return await _exchange_code(code, code_challenge)
 

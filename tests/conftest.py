@@ -9,6 +9,7 @@ import sys
 os.environ.setdefault("SUPABASE_URL", "http://localhost:54321")
 os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-service-key")
+os.environ.setdefault("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
 os.environ.setdefault("API_KEY_SALT", "test-salt")
 os.environ.setdefault("WEBHOOK_SECRET", "test-webhook-secret")
 os.environ.setdefault("RETRY_ENDPOINT_SECRET", "test-retry-secret")

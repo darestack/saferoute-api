@@ -8,6 +8,7 @@ from app.logging_config import configure_logging, JSONFormatter
 
 class TestJSONFormatter:
     """Tests for the production JSON log formatter."""
+
     def test_formats_as_json(self):
         formatter = JSONFormatter()
         record = logging.LogRecord(

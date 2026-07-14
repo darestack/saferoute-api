@@ -20,7 +20,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.config import settings
 from app.crypto import encrypt_webhook_secret
-from app.database import admin, clear_api_key_cache_for_route, execute_query, generate_api_key
+from app.database import (
+    admin,
+    clear_api_key_cache_for_route,
+    execute_query,
+    generate_api_key,
+)
 from app.repositories import route_repository
 from app.routes.proxy import (
     clear_route_cache_for_route,
@@ -47,7 +52,7 @@ from app.utils.security import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/auth", tags=["Authentication & Routes"])
+router = APIRouter(prefix="/v1", tags=["Authentication & Routes"])
 
 __all__ = [
     "router",
@@ -101,11 +106,12 @@ async def _get_cached_jwks() -> dict:
 # ---------------------------------------------------------------------------
 # User cache
 # ---------------------------------------------------------------------------
+from collections import OrderedDict
+
 _USER_CACHE_TTL_SECONDS = 300
 _USER_CACHE_MAX_SIZE = 1000
-_user_cache: dict[str, User] = {}
-_user_cache_expiry: dict[str, float] = {}
-_user_cache_order: list[str] = []
+_user_cache: OrderedDict[str, tuple[User, float]] = OrderedDict()
+_user_cache_order = _user_cache
 _user_cache_lock = asyncio.Lock()
 
 # In-flight user fetches: prevents duplicate DB calls when many concurrent
@@ -118,25 +124,25 @@ async def _get_cached_user(user_id: str) -> Optional[User]:
     """Return a cached User if available and fresh."""
     async with _user_cache_lock:
         now = time.monotonic()
-        expiry = _user_cache_expiry.get(user_id, 0.0)
-        if user_id in _user_cache and now < expiry:
-            return _user_cache[user_id]
+        if user_id in _user_cache:
+            user, expiry = _user_cache[user_id]
+            if now < expiry:
+                _user_cache.move_to_end(user_id)
+                return user
+            else:
+                del _user_cache[user_id]
     return None
 
 
 async def _cache_user(user: User) -> None:
     """Store a User in the cache with TTL and FIFO eviction."""
     async with _user_cache_lock:
-        _user_cache[user.id] = user
-        _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
-        if user.id not in _user_cache_order:
-            _user_cache_order.append(user.id)
+        if user.id in _user_cache:
+            _user_cache.move_to_end(user.id)
+        _user_cache[user.id] = (user, time.monotonic() + _USER_CACHE_TTL_SECONDS)
 
-        # FIFO eviction if over max size.
-        while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
-            oldest = _user_cache_order.pop(0)
-            _user_cache.pop(oldest, None)
-            _user_cache_expiry.pop(oldest, None)
+        while len(_user_cache) > _USER_CACHE_MAX_SIZE:
+            _user_cache.popitem(last=False)
 
 
 async def _fetch_and_cache_user(user_id: str) -> User:
@@ -181,24 +187,24 @@ async def _fetch_and_cache_user(user_id: str) -> User:
         async with _user_cache_lock:
             # Double-check in case another coroutine cached the same user.
             now = time.monotonic()
-            expiry = _user_cache_expiry.get(user_id, 0.0)
-            if user_id in _user_cache and now < expiry:
-                return _user_cache[user_id]
+            if user_id in _user_cache:
+                cached_user, expiry = _user_cache[user_id]
+                if now < expiry:
+                    _user_cache.move_to_end(user_id)
+                    return cached_user
+                else:
+                    del _user_cache[user_id]
 
-            _user_cache[user.id] = user
-            _user_cache_expiry[user.id] = time.monotonic() + _USER_CACHE_TTL_SECONDS
-            if user.id not in _user_cache_order:
-                _user_cache_order.append(user.id)
-            while len(_user_cache_order) > _USER_CACHE_MAX_SIZE:
-                oldest = _user_cache_order.pop(0)
-                _user_cache.pop(oldest, None)
-                _user_cache_expiry.pop(oldest, None)
+            _user_cache[user.id] = (user, time.monotonic() + _USER_CACHE_TTL_SECONDS)
+            while len(_user_cache) > _USER_CACHE_MAX_SIZE:
+                _user_cache.popitem(last=False)
 
             fut.set_result(user)
             return user
     except Exception as exc:
         if not fut.done():
             fut.set_exception(exc)
+            fut.exception()
         raise
     finally:
         _user_cache_fills.pop(user_id, None)
@@ -459,7 +465,9 @@ async def update_route(
         updates["slug"] = generate_slug(updates["name"])
 
     if "slug" in updates:
-        if await route_repository.slug_exists_for_other_route(updates["slug"], route_id):
+        if await route_repository.slug_exists_for_other_route(
+            updates["slug"], route_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Slug already in use",
@@ -534,10 +542,7 @@ async def delete_route(
 ):
     """Delete a route owned by the authenticated user."""
     result = await execute_query(
-        admin.table("routes")
-        .delete()
-        .eq("id", route_id)
-        .eq("user_id", current_user.id)
+        admin.table("routes").delete().eq("id", route_id).eq("user_id", current_user.id)
     )
 
     if not result.data:
@@ -642,7 +647,9 @@ async def get_route_stats(
     """
     await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
 
-    stats = (await execute_query(admin.rpc("get_route_stats", {"p_route_id": route_id}))).data
+    stats = (
+        await execute_query(admin.rpc("get_route_stats", {"p_route_id": route_id}))
+    ).data
 
     if not stats:
         return RouteStatsResponse(route_id=route_id)
@@ -664,28 +671,6 @@ async def get_route_stats(
         deliveries_30d=row.get("deliveries_30d", 0) or 0,
         success_rate_percent=success_rate,
     )
-
-
-@router.get("/health")
-async def health_check():
-    """Check API and database connectivity.
-
-    Returns:
-        Health status with database connectivity check.
-    """
-    db_ok = False
-    try:
-        # Read-only connectivity probe — no side effects.
-        await execute_query(admin.table("routes").select("id").limit(1))
-        db_ok = True
-    except Exception:
-        db_ok = False
-
-    return {
-        "status": "healthy" if db_ok else "degraded",
-        "database": "connected" if db_ok else "disconnected",
-        "service": "SafeRoute API",
-    }
 
 
 @router.get(
@@ -807,13 +792,15 @@ async def retry_failed_webhook(
         )
 
     await execute_query(
-        admin.table("webhook_logs").update(
+        admin.table("webhook_logs")
+        .update(
             {
                 "retry_status": "pending",
                 "next_retry_at": datetime.now(timezone.utc).isoformat(),
                 "retry_count": 0,
             }
-        ).eq("id", log_id)
+        )
+        .eq("id", log_id)
     )
 
     return {"status": "queued", "log_id": log_id}

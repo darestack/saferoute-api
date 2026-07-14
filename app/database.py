@@ -16,6 +16,7 @@ from typing import Any, Optional, cast
 
 import asyncio
 import httpx
+from collections import OrderedDict
 from supabase import Client, create_client
 
 from app.config import settings
@@ -111,10 +112,7 @@ async def verify_api_key(full_key: Optional[str]) -> Optional[str]:
 
     try:
         result = await execute_query(
-            admin.table("routes")
-            .select("id")
-            .eq("api_key_hash", key_hash)
-            .limit(1)
+            admin.table("routes").select("id").eq("api_key_hash", key_hash).limit(1)
         )
 
         if result.data:
@@ -197,9 +195,8 @@ admin = get_supabase_client(use_service_role=True)
 # ---------------------------------------------------------------------------
 _API_KEY_CACHE_TTL_SECONDS = 300
 _API_KEY_CACHE_MAX_SIZE = 500
-_api_key_cache: dict[str, str] = {}
-_api_key_cache_expiry: dict[str, float] = {}
-_api_key_cache_order: list[str] = []
+_api_key_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+_api_key_route_index: dict[str, set[str]] = {}
 _api_key_cache_lock = asyncio.Lock()
 
 
@@ -207,38 +204,44 @@ async def _get_cached_api_key(key_hash: str) -> Optional[str]:
     """Return a cached route_id for an API key hash if available and fresh."""
     async with _api_key_cache_lock:
         now = time.monotonic()
-        expiry = _api_key_cache_expiry.get(key_hash, 0.0)
-        if key_hash in _api_key_cache and now < expiry:
-            return _api_key_cache[key_hash]
+        if key_hash in _api_key_cache:
+            route_id, expiry = _api_key_cache[key_hash]
+            if now < expiry:
+                _api_key_cache.move_to_end(key_hash)
+                return route_id
+            else:
+                del _api_key_cache[key_hash]
+                if route_id in _api_key_route_index:
+                    _api_key_route_index[route_id].discard(key_hash)
+                    if not _api_key_route_index[route_id]:
+                        del _api_key_route_index[route_id]
         return None
 
 
 async def _cache_api_key(key_hash: str, route_id: str) -> None:
     """Store an API key hash → route_id mapping with TTL and max size."""
     async with _api_key_cache_lock:
-        _api_key_cache[key_hash] = route_id
-        _api_key_cache_expiry[key_hash] = time.monotonic() + _API_KEY_CACHE_TTL_SECONDS
-        if key_hash not in _api_key_cache_order:
-            _api_key_cache_order.append(key_hash)
-        while len(_api_key_cache_order) > _API_KEY_CACHE_MAX_SIZE:
-            oldest = _api_key_cache_order.pop(0)
-            _api_key_cache.pop(oldest, None)
-            _api_key_cache_expiry.pop(oldest, None)
+        if key_hash in _api_key_cache:
+            _api_key_cache.move_to_end(key_hash)
+        _api_key_cache[key_hash] = (
+            route_id,
+            time.monotonic() + _API_KEY_CACHE_TTL_SECONDS,
+        )
+        _api_key_route_index.setdefault(route_id, set()).add(key_hash)
+        while len(_api_key_cache) > _API_KEY_CACHE_MAX_SIZE:
+            evicted_hash, (evicted_route, _) = _api_key_cache.popitem(last=False)
+            if evicted_route in _api_key_route_index:
+                _api_key_route_index[evicted_route].discard(evicted_hash)
+                if not _api_key_route_index[evicted_route]:
+                    del _api_key_route_index[evicted_route]
 
 
 async def clear_api_key_cache_for_route(route_id: str) -> None:
     """Remove cached API-key lookups for a route after key rotation."""
     async with _api_key_cache_lock:
-        stale_hashes = [
-            key_hash
-            for key_hash, cached_route_id in _api_key_cache.items()
-            if cached_route_id == route_id
-        ]
-        for key_hash in stale_hashes:
+        hashes = _api_key_route_index.pop(route_id, set())
+        for key_hash in hashes:
             _api_key_cache.pop(key_hash, None)
-            _api_key_cache_expiry.pop(key_hash, None)
-            if key_hash in _api_key_cache_order:
-                _api_key_cache_order.remove(key_hash)
 
 
 async def clear_api_key_cache() -> None:
@@ -249,5 +252,4 @@ async def clear_api_key_cache() -> None:
     """
     async with _api_key_cache_lock:
         _api_key_cache.clear()
-        _api_key_cache_expiry.clear()
-        _api_key_cache_order.clear()
+        _api_key_route_index.clear()

@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI) -> Any:
     # Warn if the deployment appears to use multiple workers with in-process
     # caches, which can cause stale configs and inconsistent rate limiting.
     import os
+
     workers = os.getenv("WORKERS", os.getenv("UVICORN_WORKERS", "1"))
     if workers != "1":
         logger.warning(
@@ -56,6 +57,12 @@ async def lifespan(app: FastAPI) -> Any:
             "shared across workers. For consistent behavior, deploy with a "
             "single worker or move caches to Redis.",
             workers,
+        )
+
+    if not settings.RETRY_ENDPOINT_SECRET.strip():
+        logger.warning(
+            "RETRY_ENDPOINT_SECRET is empty. The internal retry and cleanup "
+            "endpoints will reject all callers."
         )
 
     yield
@@ -219,7 +226,12 @@ class RequestSizeLimitMiddleware:
     slow-loris attacks.
     """
 
-    def __init__(self, app: Any, max_size: int = _DEFAULT_MAX_BODY_BYTES, max_seconds: int = _DEFAULT_MAX_BODY_SECONDS) -> None:
+    def __init__(
+        self,
+        app: Any,
+        max_size: int = _DEFAULT_MAX_BODY_BYTES,
+        max_seconds: int = _DEFAULT_MAX_BODY_SECONDS,
+    ) -> None:
         """Initialize the middleware.
 
         Args:
@@ -323,9 +335,7 @@ async def shutdown_event() -> None:
 
     try:
         if db_module.has_http_client() and not db_module.get_http_client().is_closed:
-            await asyncio.wait_for(
-                db_module.get_http_client().aclose(), timeout=5.0
-            )
+            await asyncio.wait_for(db_module.get_http_client().aclose(), timeout=5.0)
     except asyncio.TimeoutError:
         logger.warning("HTTP client shutdown timed out")
 
@@ -335,14 +345,28 @@ async def shutdown_event() -> None:
         logger.warning("JWKS client shutdown timed out")
 
 
-@app.get("/")
-async def health_check() -> dict[str, str]:
-    """Return a minimal health-check payload.
+@app.get("/health")
+async def health_check():
+    """Check API and database connectivity.
 
     Returns:
-        dict: Service name and health status.
+        dict: Health status with database connectivity check.
     """
-    return {
-        "status": "healthy",
-        "service": "SafeRoute API",
-    }
+    db_ok = False
+    try:
+        from app.database import admin, execute_query
+        # Read-only connectivity probe — no side effects.
+        await execute_query(admin.table("routes").select("id").limit(1))
+        db_ok = True
+    except Exception as exc:
+        logger.error("Health check database probe failed: %s", exc)
+
+    status_code = 200 if db_ok else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "healthy" if db_ok else "unhealthy",
+            "database": "connected" if db_ok else "disconnected",
+            "service": "SafeRoute API",
+        },
+    )

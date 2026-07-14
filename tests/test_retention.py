@@ -55,7 +55,7 @@ class TestRetrySecretAuth:
 
     def test_valid_secret_passes_auth(self):
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
         ):
             _mock_settings(mock_settings)
@@ -71,7 +71,7 @@ class TestRetryAtomicClaim:
 
     def test_atomic_claim_prevents_duplicate_delivery(self):
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
             patch(
                 "app.routes.proxy.forward_payload",
@@ -107,7 +107,7 @@ class TestRetryReaper:
 
     def test_reaper_resets_stuck_retrying_rows(self):
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
         ):
             _mock_settings(mock_settings)
@@ -126,9 +126,9 @@ class TestRetryReaper:
             eq_calls = (
                 mock_admin.table.return_value.update.return_value.eq.call_args_list
             )
-            assert any(
-                c.args == ("retry_status", "retrying") for c in eq_calls
-            ), "reaper must target retry_status='retrying'"
+            assert any(c.args == ("retry_status", "retrying") for c in eq_calls), (
+                "reaper must target retry_status='retrying'"
+            )
 
 
 class TestProxyDestinationValidation:
@@ -156,21 +156,28 @@ class TestProxyDestinationValidation:
         }
         with (
             patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
             patch(
                 "app.routes.proxy.forward_payload",
                 new=AsyncMock(return_value=(200, "ok", {})),
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
-            patch("app.routes.proxy.verify_api_key", new_callable=AsyncMock, return_value=None),
+            patch(
+                "app.routes.proxy.verify_api_key",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
-            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                 route
             ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
-            asyncio.run(clear_route_cache())
-            assert "unique-test-route-xyz" not in _route_cache
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("unique-test-route-xyz", route))
+            assert "unique-test-route-xyz" in _route_cache
 
             request = MagicMock()
             request.headers = {}
@@ -203,7 +210,7 @@ class TestCleanupEndpoint:
 
     def test_invokes_all_cleanup_functions(self):
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retention.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
         ):
             _mock_settings(mock_settings)
@@ -231,7 +238,7 @@ class TestRetryCircuitBreakerInteraction:
         from app.routes.proxy import process_retries
 
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.retry_processor.admin") as mock_admin,
             patch("app.routes.proxy.settings") as mock_settings,
             patch(
                 "app.routes.proxy._is_circuit_breaker_open",
