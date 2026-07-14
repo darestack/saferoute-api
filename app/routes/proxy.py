@@ -627,6 +627,14 @@ def _validate_form_schema(payload: dict, form_schema: dict) -> None:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid email: {field_name}",
                 )
+            if rules.get("reject_disposable"):
+                from app.utils.email import is_disposable_email
+
+                if is_disposable_email(value):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Disposable email not allowed: {field_name}",
+                    )
         elif field_type == "number":
             try:
                 float(value)

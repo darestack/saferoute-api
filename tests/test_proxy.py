@@ -960,6 +960,44 @@ class TestFormValidation:
         payload = {"name": "Jane", "age": 30}
         _validate_form_schema(payload, form_schema)  # should not raise
 
+    def test_disposable_email_rejected_when_enabled(self):
+        from app.routes.proxy import _validate_form_schema
+        from fastapi import HTTPException
+
+        form_schema = {
+            "fields": {
+                "email": {"type": "email", "required": True, "reject_disposable": True},
+            }
+        }
+        payload = {"email": "test@mailinator.com"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_form_schema(payload, form_schema)
+        assert exc_info.value.status_code == 400
+        assert "Disposable email" in str(exc_info.value.detail)
+
+    def test_legitimate_email_passes_disposable_check(self):
+        from app.routes.proxy import _validate_form_schema
+
+        form_schema = {
+            "fields": {
+                "email": {"type": "email", "required": True, "reject_disposable": True},
+            }
+        }
+        payload = {"email": "user@gmail.com"}
+        _validate_form_schema(payload, form_schema)  # should not raise
+
+    def test_disposable_check_skipped_when_disabled(self):
+        from app.routes.proxy import _validate_form_schema
+
+        form_schema = {
+            "fields": {
+                "email": {"type": "email", "required": True},
+            }
+        }
+        payload = {"email": "test@mailinator.com"}
+        _validate_form_schema(payload, form_schema)  # should not raise
+
 
 class TestSpamShield:
     """Spam protection: honeypot and User-Agent blocking."""
