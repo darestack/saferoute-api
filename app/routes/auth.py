@@ -106,7 +106,7 @@ async def _get_cached_jwks() -> dict:
 # ---------------------------------------------------------------------------
 # User cache
 # ---------------------------------------------------------------------------
-from collections import OrderedDict
+from collections import OrderedDict  # noqa: E402
 
 _USER_CACHE_TTL_SECONDS = 300
 _USER_CACHE_MAX_SIZE = 1000

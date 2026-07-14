@@ -18,13 +18,15 @@ from pydantic import BaseModel, Field, ConfigDict
 Slug = Annotated[str, Field(pattern="^[a-z0-9-]+$", min_length=1, max_length=64)]
 """Public route identifier. Lowercase alphanumeric and hyphens only."""
 
-from pydantic import HttpUrl
-from pydantic.functional_validators import AfterValidator
+from pydantic import HttpUrl  # noqa: E402
+from pydantic.functional_validators import AfterValidator  # noqa: E402
+
 
 def _require_https(v: HttpUrl) -> str:
     if v.scheme != "https":
         raise ValueError("URL scheme must be https")
     return str(v)
+
 
 HttpsUrl = Annotated[
     HttpUrl,

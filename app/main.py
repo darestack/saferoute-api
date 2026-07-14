@@ -355,6 +355,7 @@ async def health_check():
     db_ok = False
     try:
         from app.database import admin, execute_query
+
         # Read-only connectivity probe — no side effects.
         await execute_query(admin.table("routes").select("id").limit(1))
         db_ok = True

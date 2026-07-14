@@ -85,8 +85,10 @@ class TestProxyWebhookIntegration:
     def test_health_check(self):
         """Test that root health check endpoint returns 200."""
         with (
-            patch("app.database.admin") as mock_admin,
-            patch("app.database.execute_query", return_value=MagicMock(data=[{"id": "1"}])),
+            patch("app.database.admin") as _,
+            patch(
+                "app.database.execute_query", return_value=MagicMock(data=[{"id": "1"}])
+            ),
         ):
             response = client.get("/health")
             assert response.status_code == 200
@@ -99,7 +101,7 @@ class TestProxyWebhookIntegration:
     def test_missing_route_returns_404(self):
         """Test that routing to a non-existent slug returns 404."""
         with (
-            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.routes.proxy.admin") as _,
             patch("app.services.route_cache.admin") as mock_cache_admin,
         ):
             mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
@@ -221,7 +223,9 @@ class TestProxyWebhookIntegration:
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]

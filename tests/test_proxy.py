@@ -503,7 +503,9 @@ class TestProxyContentTypePreservation:
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
@@ -558,7 +560,9 @@ class TestProxyContentTypePreservation:
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
@@ -663,7 +667,9 @@ class TestIdempotencyStoresOnlySuccess:
             patch("app.routes.proxy.forward_payload") as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic") as mock_bump,
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
@@ -755,7 +761,11 @@ class TestRouteCache:
         assert asyncio.run(_get_cached_route("nonexistent-slug")) is None
 
     def test_cache_hit_returns_route(self):
-        from app.services.route_cache import _cache_route, get_cached_route as _get_cached_route, clear_route_cache
+        from app.services.route_cache import (
+            _cache_route,
+            get_cached_route as _get_cached_route,
+            clear_route_cache,
+        )
 
         route = {"id": "route-1", "slug": "test"}
         asyncio.run(_cache_route("test-route", route))
@@ -825,7 +835,9 @@ class TestHoneypotStripping:
             ) as mock_forward,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
@@ -889,7 +901,9 @@ class TestDecryptFailure:
             ) as mock_decrypt,
             patch("app.routes.proxy.bump_route_metrics_atomic"),
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
@@ -1074,7 +1088,9 @@ class TestApiKeyAuth:
                 new=AsyncMock(return_value=verify_return),
             ) as mock_verify,
         ):
-            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [route]
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": True, "new_count": 1}
             ]
@@ -1293,7 +1309,10 @@ class TestFillRouteCacheSingleFlight:
 
     def test_single_flight_awaits_existing_future(self):
         """When a future already exists for a slug, await it instead of querying."""
-        from app.services.route_cache import fill_route_cache as _fill_route_cache, _route_cache_fills
+        from app.services.route_cache import (
+            fill_route_cache as _fill_route_cache,
+            _route_cache_fills,
+        )
         import time as time_module
 
         route_row = {

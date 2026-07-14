@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import secrets
 import time
 from typing import Optional
 from urllib.parse import urlencode, urljoin
@@ -42,12 +41,10 @@ _OAUTH_CALLBACK_RATE_LIMIT = 10
 _OAUTH_CALLBACK_RATE_WINDOW = 60
 _OAUTH_CACHE_MAX_ENTRIES = 10_000
 
-from collections import OrderedDict
+from collections import OrderedDict  # noqa: E402
 
 _oauth_callback_cache: OrderedDict[str, list[float]] = OrderedDict()
 _oauth_callback_lock = asyncio.Lock()
-
-
 
 
 async def _check_oauth_rate_limit(client_ip: str) -> None:
@@ -161,16 +158,19 @@ async def oauth_redirect(provider: str):
 
     import jwt
     import datetime
-    
+
     code_verifier, code_challenge = _generate_pkce_pair()
-    
+
     # Use JWT for stateless CSRF protection
     payload = {
         "challenge": code_challenge,
-        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=600),
+        "exp": datetime.datetime.now(datetime.timezone.utc)
+        + datetime.timedelta(seconds=600),
         "iat": datetime.datetime.now(datetime.timezone.utc),
     }
-    state = jwt.encode(payload, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithm="HS256")
+    state = jwt.encode(
+        payload, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithm="HS256"
+    )
 
     try:
         await _store_pkce_verifier(code_challenge, code_verifier, state=state)
@@ -242,7 +242,9 @@ async def oauth_callback_post(
     import jwt
 
     try:
-        payload = jwt.decode(state, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithms=["HS256"])
+        payload = jwt.decode(
+            state, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithms=["HS256"]
+        )
         code_challenge = payload["challenge"]
     except jwt.ExpiredSignatureError:
         raise HTTPException(

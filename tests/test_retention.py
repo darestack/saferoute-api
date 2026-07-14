@@ -135,7 +135,7 @@ class TestProxyDestinationValidation:
     """Regression coverage for the proxy destination-validation path."""
 
     def test_invalid_destination_returns_400_not_crash(self):
-        from app.routes.proxy import clear_route_cache, proxy_webhook, _route_cache
+        from app.routes.proxy import proxy_webhook, _route_cache
 
         route = {
             "id": "route-1",

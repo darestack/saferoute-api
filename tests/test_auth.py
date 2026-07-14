@@ -154,8 +154,10 @@ class TestHealthEndpoint:
 
     def test_health_returns_200(self):
         with (
-            patch("app.database.admin") as mock_admin,
-            patch("app.database.execute_query", return_value=MagicMock(data=[{"id": "1"}])),
+            patch("app.database.admin") as _,
+            patch(
+                "app.database.execute_query", return_value=MagicMock(data=[{"id": "1"}])
+            ),
         ):
             from fastapi.testclient import TestClient
             from app.main import app

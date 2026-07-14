@@ -1,13 +1,12 @@
 import json
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 from app.database import admin, execute_query
 from app.config import settings
 from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
 from app.utils.transform import render_template
-from hmac import compare_digest
 
 logger = logging.getLogger(__name__)
 

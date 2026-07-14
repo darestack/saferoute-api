@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
 from typing import Any, Optional, cast
@@ -34,7 +33,7 @@ from app.database import (
     get_http_client,
     verify_api_key,
 )
-from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
+from app.utils.retry import should_retry, calculate_next_retry
 from app.utils.security import (
     verify_webhook_signature,
     get_client_ip,
@@ -78,31 +77,29 @@ _RETRY_BATCH_SIZE = settings.RETRY_BATCH_SIZE
 # worker dead and returns it to the "pending" pool for another attempt.
 _RETRY_CLAIM_STALE_SECONDS = settings.RETRY_CLAIM_STALE_SECONDS
 
-from app.services.route_cache import (
+from app.services.route_cache import (  # noqa: E402
+    _cache_route,  # noqa: F401 - re-exported for tests
+    get_cached_route as _get_cached_route,  # noqa: F401 - re-exported for tests
+    _route_cache,  # noqa: F401 - re-exported for tests
     clear_route_cache,
-    get_cached_route,
-    get_cached_route as _get_cached_route,
     fill_route_cache,
+    get_cached_route,
     invalidate_route_cache,
-    _cache_route,
-    _route_cache,
 )
 
 
 # ---------------------------------------------------------------------------
 # Circuit breaker for outbound HTTP
 # ---------------------------------------------------------------------------
-from app.services.circuit_breaker import (
-    _CIRCUIT_BREAKER_THRESHOLD,
-    _CIRCUIT_BREAKER_COOLDOWN_SECONDS,
-    _CIRCUIT_BREAKER_MAX_ENTRIES,
-    _circuit_breaker_state,
-    is_circuit_breaker_open as _is_circuit_breaker_open,
-    record_circuit_breaker_success,
-    record_circuit_breaker_success as _record_circuit_breaker_success,
-    record_circuit_breaker_failure,
-    record_circuit_breaker_failure as _record_circuit_breaker_failure,
+from app.services.circuit_breaker import (  # noqa: E402
+    _CIRCUIT_BREAKER_COOLDOWN_SECONDS,  # noqa: F401 - re-exported for tests
+    _CIRCUIT_BREAKER_MAX_ENTRIES,  # noqa: F401 - re-exported for tests
+    _CIRCUIT_BREAKER_THRESHOLD,  # noqa: F401 - re-exported for tests
+    _circuit_breaker_state,  # noqa: F401 - re-exported for tests
     clear_route_circuit_breaker,
+    is_circuit_breaker_open as _is_circuit_breaker_open,
+    record_circuit_breaker_failure as _record_circuit_breaker_failure,
+    record_circuit_breaker_success as _record_circuit_breaker_success,
 )
 
 
@@ -352,16 +349,16 @@ async def forward_payload(
             {k: str(v) for k, v in response.headers.items()},
         )
         if 200 <= response.status_code < 300:
-            await record_circuit_breaker_success(url)
+            await _record_circuit_breaker_success(url)
         else:
-            await record_circuit_breaker_failure(url)
+            await _record_circuit_breaker_failure(url)
         return result
     except httpx.TimeoutException:
-        await record_circuit_breaker_failure(url)
+        await _record_circuit_breaker_failure(url)
         return 504, "Destination timeout", {}
     except httpx.RequestError as exc:
         logger.warning("Destination unreachable: %s", exc)
-        await record_circuit_breaker_failure(url)
+        await _record_circuit_breaker_failure(url)
         return 502, "Destination unreachable", {}
 
 
@@ -652,9 +649,7 @@ async def proxy_webhook(
 
         claimed = await claim_idempotency(route["id"], idempotency_key)
         if not claimed:
-            cached = await _wait_for_idempotency_result(
-                route["id"], idempotency_key
-            )
+            cached = await _wait_for_idempotency_result(route["id"], idempotency_key)
             if cached:
                 return JSONResponse(
                     content={
@@ -751,7 +746,8 @@ async def proxy_webhook(
     )
 
 
-from app.services.retry_processor import process_pending_retries
+from app.services.retry_processor import process_pending_retries  # noqa: E402
+
 
 @router.post("/internal/process-retries")
 async def process_retries(
@@ -767,7 +763,8 @@ async def process_retries(
     return await process_pending_retries(forward_payload)
 
 
-from app.services.retention import run_cleanup
+from app.services.retention import run_cleanup  # noqa: E402
+
 
 @router.post("/internal/cleanup")
 async def cleanup(
@@ -782,9 +779,6 @@ async def cleanup(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     return await run_cleanup(keep_days)
-
-
-
 
 
 @router.get("/internal/health/outbound")
