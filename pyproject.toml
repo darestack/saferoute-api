@@ -21,6 +21,10 @@ module = [
     "app.routes.auth",
     "app.routes.oauth",
     "app.routes.proxy",
+    "app.services.circuit_breaker",
+    "app.services.route_cache",
+    "app.services.retry_processor",
+    "app.services.retention",
 ]
 disable_error_code = [
     "union-attr",

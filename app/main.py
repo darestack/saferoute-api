@@ -346,7 +346,7 @@ async def shutdown_event() -> None:
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> JSONResponse:
     """Check API and database connectivity.
 
     Returns:

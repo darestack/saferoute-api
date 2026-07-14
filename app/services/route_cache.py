@@ -50,7 +50,7 @@ async def fill_route_cache(slug: str) -> dict:
     async with _route_cache_fills_lock:
         existing = _route_cache_fills.get(slug)
         if existing is not None:
-            return await existing[0]
+            return cast(dict[str, Any], await existing[0])
 
         fut = asyncio.get_running_loop().create_future()
         _route_cache_fills[slug] = (fut, time.monotonic())
