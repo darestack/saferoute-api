@@ -244,11 +244,6 @@ create policy "Service role full access webhook_failures"
     to service_role
     using (true);
 
-create trigger update_webhook_failures_updated_at
-    before update on public.webhook_failures
-    for each row
-    execute function public.update_updated_at();
-
 -- ========================================
 -- Triggers
 -- ========================================
@@ -259,6 +254,11 @@ begin
     return new;
 end;
 $$ language plpgsql;
+
+create trigger update_webhook_failures_updated_at
+    before update on public.webhook_failures
+    for each row
+    execute function public.update_updated_at();
 
 create trigger update_routes_updated_at
     before update on public.routes
