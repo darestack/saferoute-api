@@ -423,3 +423,114 @@ class TestManualRetryEndpoint:
                     )
                 )
         assert exc.value.status_code == 400
+
+
+class TestReplayWebhookLog:
+    """Tests for manual webhook log replay."""
+
+    def test_replay_success(self):
+        from app.routes.auth import replay_webhook_log
+        from app.models import User
+
+        mock_user = User(id="u1", email="e@e.com", created_at=None)
+        mock_route = {
+            "id": "route-1",
+            "destination_url": "https://example.com/webhook",
+            "method": "POST",
+            "headers": {},
+        }
+        mock_log = {
+            "id": "log-1",
+            "route_id": "route-1",
+            "request_body": {"name": "test"},
+            "content_type": "application/json",
+            "ip_address": "1.2.3.4",
+            "user_agent": "curl",
+        }
+
+        with (
+            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.route_repository") as mock_repo,
+            patch("app.routes.auth.forward_payload", new_callable=AsyncMock, return_value=(200, "ok", {})),
+            patch("app.routes.auth.log_delivery", new_callable=AsyncMock, return_value=1),
+            patch("app.routes.auth.rebuild_retry_body", return_value=b'{"name":"test"}'),
+            patch("app.routes.auth.get_owned_route_or_404"),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                mock_log
+            ]
+            mock_repo.find_by_id = AsyncMock(return_value=mock_route)
+
+            response = asyncio.run(
+                replay_webhook_log(
+                    route_id="route-1",
+                    log_id="log-1",
+                    current_user=mock_user,
+                )
+            )
+
+            assert response.status_code == 200
+            body = response.body.decode()
+            assert '"replayed"' in body
+            assert '"destination_status"' in body
+
+    def test_replay_missing_log_returns_404(self):
+        from app.routes.auth import replay_webhook_log
+        from app.models import User
+        from fastapi import HTTPException
+
+        mock_user = User(id="u1", email="e@e.com", created_at=None)
+
+        with (
+            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.get_owned_route_or_404"),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(
+                    replay_webhook_log(
+                        route_id="route-1",
+                        log_id="missing-log",
+                        current_user=mock_user,
+                    )
+                )
+            assert exc.value.status_code == 404
+
+    def test_replay_empty_body_returns_400(self):
+        from app.routes.auth import replay_webhook_log
+        from app.models import User
+        from fastapi import HTTPException
+
+        mock_user = User(id="u1", email="e@e.com", created_at=None)
+        mock_log = {
+            "id": "log-1",
+            "route_id": "route-1",
+            "request_body": None,
+            "content_type": "application/json",
+        }
+        mock_route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+        }
+
+        with (
+            patch("app.routes.auth.admin") as mock_admin,
+            patch("app.routes.auth.route_repository") as mock_repo,
+            patch("app.routes.auth.rebuild_retry_body", return_value=b""),
+            patch("app.routes.auth.get_owned_route_or_404"),
+        ):
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                mock_log
+            ]
+            mock_repo.find_by_id = AsyncMock(return_value=mock_route)
+
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(
+                    replay_webhook_log(
+                        route_id="route-1",
+                        log_id="log-1",
+                        current_user=mock_user,
+                    )
+                )
+            assert exc.value.status_code == 400

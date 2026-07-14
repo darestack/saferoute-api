@@ -17,6 +17,7 @@ import jwt
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.crypto import encrypt_webhook_secret
@@ -30,7 +31,10 @@ from app.repositories import route_repository
 from app.routes.proxy import (
     clear_route_cache_for_route,
     clear_circuit_breaker_for_url,
+    forward_payload,
+    log_delivery,
 )
+from app.services.retry_processor import rebuild_retry_body
 from app.models import (
     RouteCreate,
     RouteResponse,
@@ -826,3 +830,103 @@ async def retry_failed_webhook(
     )
 
     return RetryQueuedResponse(status="queued", log_id=int(log_id))
+
+
+@router.post("/routes/{route_id}/logs/{log_id}/replay")
+async def replay_webhook_log(
+    route_id: str,
+    log_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Manually replay a webhook delivery from a log entry.
+
+    Retrieves the stored request body from the webhook log and re-forwards
+    it to the route's destination URL. Useful for testing or recovering from
+    downstream failures without requiring the original client to resend.
+
+    Args:
+        route_id: The route UUID.
+        log_id: The webhook log entry ID to replay.
+        current_user: Injected authenticated user.
+
+    Returns:
+        JSON with ``status`` and ``destination_status``.
+
+    Raises:
+        HTTPException: 404 if the route or log entry does not exist.
+        HTTPException: 400 if the log entry has no stored request body.
+    """
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="*")
+
+    result = await execute_query(
+        admin.table("webhook_logs")
+        .select("*")
+        .eq("id", log_id)
+        .eq("route_id", route_id)
+    )
+
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Webhook log not found",
+        )
+
+    log_entry = result.data[0]
+    route = await route_repository.find_by_id(route_id, current_user.id)
+    if not route:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route not found",
+        )
+
+    try:
+        forward_body = rebuild_retry_body(log_entry)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    if not forward_body:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No request body available for replay",
+        )
+
+    method = route.get("method", "POST")
+    destination = route["destination_url"]
+    headers = route.get("headers", {})
+    content_type = log_entry.get("content_type", "")
+    if content_type and not any(
+        key.lower() == "content-type" for key in headers
+    ):
+        headers["Content-Type"] = content_type
+
+    status_code, response_body, response_headers = await forward_payload(
+        method=method,
+        url=destination,
+        body=forward_body,
+        headers=headers,
+    )
+
+    await log_delivery(
+        route_id=route_id,
+        status_code=status_code,
+        payload=log_entry.get("request_body") or {},
+        response_body=response_body,
+        response_headers=response_headers,
+        client_ip=log_entry.get("ip_address", "0.0.0.0"),
+        user_agent=log_entry.get("user_agent"),
+        duration_ms=0,
+        content_type=content_type,
+        idempotency_key=None,
+        retry_status="none",
+        next_retry_at=None,
+    )
+
+    return JSONResponse(
+        content={
+            "status": "replayed",
+            "destination_status": status_code,
+        }
+    )
