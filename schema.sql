@@ -114,7 +114,11 @@ $$ language plpgsql;
 -- ========================================
 -- Rate Limits Table
 -- ========================================
-create table public.rate_limits (
+-- UNLOGGED table for high-throughput rate-limit writes. Unlogged tables skip
+-- WAL, making inserts/updates roughly 2-5x faster at the cost of not being
+-- crash-recoverable. Rate limit buckets are ephemeral by design (they expire
+-- after 60s and are cleaned up hourly), so data loss on crash is acceptable.
+create unlogged table public.rate_limits (
     id uuid default uuid_generate_v4() primary key,
     route_id uuid not null references public.routes(id) on delete cascade,
     ip_address inet not null,
@@ -284,16 +288,9 @@ $$ language plpgsql;
 -- Atomically increment the rate-limit counter for a (route, ip) pair using a
 -- fixed 60-second bucket keyed on `window_start`.
 --
--- NOTE: `window_start` is a *stable* bucket boundary (computed inside Postgres
--- via date_bin) rather than a request-relative "now - 60s" value. The previous
--- implementation stored `now - 60s` as the anchor and matched on
--- `window_start >= p_window_start`; because every request passed a drifting
--- cutoff, no stored row ever matched and a brand-new row was inserted on every
--- call, so the counter never accumulated and the limit was never enforced.
--- Keeping `window_start` as a fixed bucket shared by all requests in the same
--- 60s window makes the UPDATE path hit reliably, so counts accumulate and the
--- limit actually triggers. The `unique(route_id, ip_address, window_start)`
--- constraint guarantees at most one row per bucket.
+-- Uses a single INSERT ... ON CONFLICT DO UPDATE to minimize lock contention
+-- under concurrent bursts. The UNLOGGED table further improves write throughput
+-- by skipping WAL.
 create or replace function public.increment_rate_limit(
     p_route_id uuid,
     p_ip inet,
@@ -310,13 +307,11 @@ declare
         '1970-01-01 00:00:00+00'::timestamptz
     );
 begin
-    -- Try to increment an existing row for the current 60s bucket.
-    update public.rate_limits
-    set request_count = request_count + 1
-    where route_id = p_route_id
-      and ip_address = p_ip
-      and window_start = v_bucket
-      and request_count < p_max_requests
+    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
+    values (p_route_id, p_ip, 1, v_bucket)
+    on conflict (route_id, ip_address, window_start) do update
+    set request_count = rate_limits.request_count + 1
+    where rate_limits.request_count < p_max_requests
     returning request_count into new_count;
 
     if found then
@@ -325,38 +320,15 @@ begin
         return;
     end if;
 
-    -- A row for this bucket exists but is already at/over the limit.
-    perform 1
-    from public.rate_limits
-    where route_id = p_route_id
-      and ip_address = p_ip
-      and window_start = v_bucket;
-
-    if found then
-        select request_count into new_count
-        from public.rate_limits
-        where route_id = p_route_id
-          and ip_address = p_ip
-          and window_start = v_bucket;
-        success := false;
-        return next;
-        return;
-    end if;
-
-    -- No row for the current bucket yet: create it. The unique constraint
-    -- makes this safe under concurrent inserts (a lost race simply re-reads
-    -- the row the winning writer created).
-    insert into public.rate_limits (route_id, ip_address, request_count, window_start)
-    values (p_route_id, p_ip, 1, v_bucket)
-    on conflict (route_id, ip_address, window_start) do nothing;
-
+    -- Row exists but is already at/over the limit. Return the current count
+    -- so the caller can report how many requests remain.
     select request_count into new_count
     from public.rate_limits
     where route_id = p_route_id
       and ip_address = p_ip
       and window_start = v_bucket;
 
-    success := true;
+    success := false;
     return next;
     return;
 end;
