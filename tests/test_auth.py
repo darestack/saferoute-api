@@ -378,10 +378,10 @@ class TestManualRetryEndpoint:
         mock_user = User(id="u1", email="e@e.com", created_at=None)
         mock_admin = MagicMock()
         mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-            {"id": "log-1", "retry_status": "exhausted"}
+            {"id": 1, "retry_status": "exhausted"}
         ]
         mock_admin.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
-            {"id": "log-1"}
+            {"id": 1}
         ]
 
         with (
@@ -391,13 +391,13 @@ class TestManualRetryEndpoint:
             response = asyncio.run(
                 retry_failed_webhook(
                     route_id="route-1",
-                    log_id="log-1",
+                    log_id="1",
                     current_user=mock_user,
                 )
             )
 
-        assert response["status"] == "queued"
-        assert response["log_id"] == "log-1"
+        assert response.status == "queued"
+        assert response.log_id == 1
 
     def test_retry_non_exhausted_returns_400(self):
         from app.routes.auth import retry_failed_webhook

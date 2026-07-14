@@ -381,9 +381,9 @@ class TestProcessRetriesEmptyDestination:
                     x_retry_secret="secret",
                 )
             )
-            assert response["processed"] == 1
-            assert response["results"][0]["outcome"] == "exhausted"
-            assert response["results"][0]["status_code"] == 0
+            assert response.processed == 1
+            assert response.results[0]["outcome"] == "exhausted"
+            assert response.results[0]["status_code"] == 0
 
 
 class TestEnforceRateLimit:
@@ -748,8 +748,8 @@ class TestRetryBodyReconstruction:
                     x_retry_secret="secret",
                 )
             )
-            assert response["processed"] == 1
-            assert response["results"][0]["outcome"] == "exhausted"
+            assert response.processed == 1
+            assert response.results[0]["outcome"] == "exhausted"
 
 
 class TestRouteCache:
@@ -976,7 +976,7 @@ class TestRetryClaimStatus:
                 if c[0][0] == {"retry_status": "retrying"}
             ]
             assert len(claim_calls) == 1
-            assert response["processed"] == 1
+            assert response.processed == 1
 
 
 class TestRetry429Handling:
@@ -1020,9 +1020,9 @@ class TestRetry429Handling:
                     x_retry_secret="secret",
                 )
             )
-            assert response["processed"] == 1
+            assert response.processed == 1
             # 429 is retryable → should be "pending", not "exhausted".
-            assert response["results"][0]["outcome"] == "pending"
+            assert response.results[0]["outcome"] == "pending"
 
 
 class TestRateLimitRpcSignature:

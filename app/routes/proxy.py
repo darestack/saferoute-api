@@ -33,6 +33,7 @@ from app.database import (
     get_http_client,
     verify_api_key,
 )
+from app.models import OutboundHealthResponse, RetryProcessResponse, CleanupResponse
 from app.utils.retry import should_retry, calculate_next_retry
 from app.utils.security import (
     verify_webhook_signature,
@@ -749,7 +750,10 @@ async def proxy_webhook(
 from app.services.retry_processor import process_pending_retries  # noqa: E402
 
 
-@router.post("/internal/process-retries")
+@router.post(
+    "/internal/process-retries",
+    response_model=RetryProcessResponse,
+)
 async def process_retries(
     request: Request,
     x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
@@ -766,7 +770,10 @@ async def process_retries(
 from app.services.retention import run_cleanup  # noqa: E402
 
 
-@router.post("/internal/cleanup")
+@router.post(
+    "/internal/cleanup",
+    response_model=CleanupResponse,
+)
 async def cleanup(
     request: Request,
     x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
@@ -781,7 +788,10 @@ async def cleanup(
     return await run_cleanup(keep_days)
 
 
-@router.get("/internal/health/outbound")
+@router.get(
+    "/internal/health/outbound",
+    response_model=OutboundHealthResponse,
+)
 async def outbound_health_check(
     x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
 ):
@@ -810,18 +820,18 @@ async def outbound_health_check(
     try:
         response = await client.head(target, timeout=_FORWARD_TIMEOUT_SECONDS)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        return {
-            "status": "healthy",
-            "target": target,
-            "status_code": response.status_code,
-            "duration_ms": duration_ms,
-        }
+        return OutboundHealthResponse(
+            status="healthy",
+            target=target,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
     except Exception as exc:
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.warning("Outbound health check failed: %s", exc)
-        return {
-            "status": "unhealthy",
-            "target": target,
-            "error": str(exc),
-            "duration_ms": duration_ms,
-        }
+        return OutboundHealthResponse(
+            status="unhealthy",
+            target=target,
+            error=str(exc),
+            duration_ms=duration_ms,
+        )

@@ -37,6 +37,7 @@ from app.models import (
     RouteUpdate,
     RouteCreateResponse,
     RouteStatsResponse,
+    RetryQueuedResponse,
     User,
     UserCreate,
     WebhookLogResponse,
@@ -635,6 +636,21 @@ async def list_route_logs(
     return [WebhookLogResponse(**row) for row in result.data]
 
 
+@router.delete("/routes/{route_id}/logs", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_route_logs(
+    route_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Delete all webhook logs for a route.
+
+    This is useful for clearing old delivery history to free up database
+    space or remove sensitive data. The route itself is preserved.
+    """
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+
+    await execute_query(admin.table("webhook_logs").delete().eq("route_id", route_id))
+
+
 # ---------------------------------------------------------------------------
 # Route analytics
 # ---------------------------------------------------------------------------
@@ -809,4 +825,4 @@ async def retry_failed_webhook(
         .eq("id", log_id)
     )
 
-    return {"status": "queued", "log_id": log_id}
+    return RetryQueuedResponse(status="queued", log_id=int(log_id))

@@ -1,13 +1,14 @@
 import logging
-from typing import Optional, Any
+from typing import Optional
 
 from app.database import admin, execute_query
 from app.config import settings
+from app.models import CleanupResponse
 
 logger = logging.getLogger(__name__)
 
 
-async def run_cleanup(keep_days: int | None = None) -> dict[str, Any]:
+async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
     """Run periodic retention cleanup to bound database growth.
 
     Prunes expired PKCE verifiers, idempotency cache entries, rate-limit
@@ -53,10 +54,10 @@ async def run_cleanup(keep_days: int | None = None) -> dict[str, Any]:
     pkce_verifiers_cleaned_count = await _safe_void_rpc("cleanup_pkce_verifiers")
     idempotency_cache_cleaned_count = await _safe_void_rpc("cleanup_idempotency_cache")
 
-    return {
-        "webhook_logs_removed": webhook_logs_removed,
-        "rate_limits_cleaned": rate_limits_cleaned_count,
-        "pkce_verifiers_cleaned": pkce_verifiers_cleaned_count,
-        "idempotency_cache_cleaned": idempotency_cache_cleaned_count,
-        "keep_days": keep_days,
-    }
+    return CleanupResponse(
+        webhook_logs_removed=webhook_logs_removed,
+        rate_limits_cleaned=rate_limits_cleaned_count,
+        pkce_verifiers_cleaned=pkce_verifiers_cleaned_count,
+        idempotency_cache_cleaned=idempotency_cache_cleaned_count,
+        keep_days=keep_days,
+    )

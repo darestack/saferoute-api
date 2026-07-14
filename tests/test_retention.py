@@ -63,7 +63,7 @@ class TestRetrySecretAuth:
             response = asyncio.run(
                 process_retries(request=MagicMock(), x_retry_secret="secret")
             )
-            assert response["processed"] == 0
+            assert response.processed == 0
 
 
 class TestRetryAtomicClaim:
@@ -98,7 +98,7 @@ class TestRetryAtomicClaim:
             )
 
             # Exactly one delivery, not two: the second claim found no row.
-            assert response["processed"] == 1
+            assert response.processed == 1
             assert mock_forward.call_count == 1
 
 
@@ -218,7 +218,7 @@ class TestCleanupEndpoint:
                 cleanup(request=MagicMock(), x_retry_secret="secret", keep_days=30)
             )
 
-            assert response["keep_days"] == 30
+            assert response.keep_days == 30
             rpc_names = [c.args[0] for c in mock_admin.rpc.call_args_list]
             assert "cleanup_webhook_logs" in rpc_names
             assert "cleanup_rate_limits" in rpc_names
@@ -226,9 +226,9 @@ class TestCleanupEndpoint:
             assert "cleanup_idempotency_cache" in rpc_names
 
             # Boolean results should be returned as-is (not coerced to counts).
-            assert response["rate_limits_cleaned"] is True
-            assert response["pkce_verifiers_cleaned"] is True
-            assert response["idempotency_cache_cleaned"] is True
+            assert response.rate_limits_cleaned is True
+            assert response.pkce_verifiers_cleaned is True
+            assert response.idempotency_cache_cleaned is True
 
 
 class TestRetryCircuitBreakerInteraction:
@@ -262,9 +262,9 @@ class TestRetryCircuitBreakerInteraction:
 
             # Circuit breaker open → forward_payload should return 503
             # without ever calling the HTTP client.
-            assert response["processed"] == 1
-            assert response["results"][0]["status_code"] == 503
+            assert response.processed == 1
+            assert response.results[0]["status_code"] == 503
             # 503 is retryable, so with retry_count=0 and max_retries=3,
             # the outcome should be "pending" for another attempt.
-            assert response["results"][0]["outcome"] == "pending"
+            assert response.results[0]["outcome"] == "pending"
             mock_http_client.assert_not_called()

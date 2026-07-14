@@ -8,7 +8,7 @@ and input constraints consistent with the Supabase tables defined in
 
 from __future__ import annotations
 from datetime import datetime
-from typing import Optional, Annotated
+from typing import Any, Optional, Annotated
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -202,6 +202,40 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     service: str
+
+
+class OutboundHealthResponse(BaseModel):
+    """Outbound connectivity health check response."""
+
+    status: str
+    target: str
+    status_code: Optional[int] = None
+    duration_ms: int
+    error: Optional[str] = None
+
+
+class RetryQueuedResponse(BaseModel):
+    """Response when a webhook delivery is queued for retry."""
+
+    status: str
+    log_id: int
+
+
+class RetryProcessResponse(BaseModel):
+    """Response from the process-retries endpoint."""
+
+    processed: int
+    results: list[dict[str, Any]]
+
+
+class CleanupResponse(BaseModel):
+    """Response from the cleanup endpoint."""
+
+    webhook_logs_removed: int
+    rate_limits_cleaned: bool
+    pkce_verifiers_cleaned: bool
+    idempotency_cache_cleaned: bool
+    keep_days: int
 
 
 class RouteStatsResponse(BaseModel):

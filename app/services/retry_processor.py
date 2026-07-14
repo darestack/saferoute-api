@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from app.database import admin, execute_query
 from app.config import settings
+from app.models import RetryProcessResponse
 from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
 from app.utils.transform import render_template
 
@@ -227,4 +228,4 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
         )
         results.append(outcome)
 
-    return {"processed": len(results), "results": results}
+    return RetryProcessResponse(processed=len(results), results=results)
