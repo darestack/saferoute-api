@@ -972,11 +972,14 @@ class TestSpamShield:
             "slug": "test-route",
             "spam_honeypot_field": "honeypot",
             "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
         }
         payload = {"honeypot": "filled"}
 
         with pytest.raises(HTTPException) as exc_info:
-            _check_spam_shield(payload, route, "1.2.3.4", "curl")
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "curl")
+            )
         assert exc_info.value.status_code == 400
 
     def test_blocked_user_agent_returns_403(self):
@@ -987,6 +990,7 @@ class TestSpamShield:
             "slug": "test-route",
             "spam_honeypot_field": None,
             "spam_blocked_ua": ["bot", "scraper"],
+            "spam_allowed_countries": [],
         }
         payload = {}
 
@@ -1003,9 +1007,69 @@ class TestSpamShield:
             "slug": "test-route",
             "spam_honeypot_field": None,
             "spam_blocked_ua": ["bot"],
+            "spam_allowed_countries": [],
         }
         payload = {}
-        _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")  # should not raise
+        asyncio.run(
+            _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+        )  # should not raise
+
+    def test_allowed_country_passes(self):
+        from app.routes.proxy import _check_spam_shield
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": ["US", "GB"],
+        }
+        payload = {}
+        with patch(
+            "app.routes.proxy._lookup_country_code",
+            return_value="US",
+        ):
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+            )  # should not raise
+
+    def test_blocked_country_returns_403(self):
+        from app.routes.proxy import _check_spam_shield
+        from fastapi import HTTPException
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": ["US", "GB"],
+        }
+        payload = {}
+        with patch(
+            "app.routes.proxy._lookup_country_code",
+            return_value="CN",
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+                )
+            assert exc_info.value.status_code == 403
+
+    def test_geolocation_failure_allows_request(self):
+        from app.routes.proxy import _check_spam_shield
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": ["US", "GB"],
+        }
+        payload = {}
+        with patch(
+            "app.routes.proxy._lookup_country_code",
+            return_value=None,
+        ):
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+            )  # should not raise, fails open
 
 
 class TestDecryptFailure:

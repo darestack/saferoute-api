@@ -54,6 +54,50 @@ __all__ = [
     "clear_circuit_breaker_for_url",
 ]
 
+# ---------------------------------------------------------------------------
+# IP geolocation cache (country code lookups)
+# ---------------------------------------------------------------------------
+_ip_country_cache: dict[str, Optional[str]] = {}
+"""Simple in-memory cache for IP -> countryCode lookups."""
+
+_GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
+"""ip-api.com endpoint for country code lookups (free tier, no key)."""
+
+_GEOLOCATION_TIMEOUT = 2.0
+"""Timeout for geolocation HTTP requests."""
+
+
+async def _lookup_country_code(client_ip: str) -> Optional[str]:
+    """Lookup the 2-letter country code for an IP address.
+
+    Uses ip-api.com (free tier, ~45k requests/month, no API key).
+    Results are cached in-memory to avoid repeated lookups.
+
+    Args:
+        client_ip: The IP address to look up.
+
+    Returns:
+        The 2-letter ISO country code, or ``None`` if lookup fails.
+    """
+    if client_ip in _ip_country_cache:
+        return _ip_country_cache[client_ip]
+
+    country_code: Optional[str] = None
+    try:
+        client = get_http_client()
+        response = await client.get(
+            _GEOLOCATION_URL.format(ip=client_ip),
+            timeout=_GEOLOCATION_TIMEOUT,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            country_code = data.get("countryCode")
+    except Exception:
+        logger.debug("Geolocation lookup failed for IP %s", client_ip)
+
+    _ip_country_cache[client_ip] = country_code
+    return country_code
+
 # Tunables — sourced from app.config.settings so they are runtime-overridable
 # without code changes. The module-level names remain for backward compatibility
 # with existing tests that patch them directly.
@@ -620,13 +664,13 @@ def _validate_form_schema(payload: dict, form_schema: dict) -> None:
                 )
 
 
-def _check_spam_shield(
+async def _check_spam_shield(
     payload: dict,
     route: dict,
     client_ip: str,
     user_agent: Optional[str],
 ) -> None:
-    """Apply spam checks: honeypot, User-Agent blocklist.
+    """Apply spam checks: honeypot, User-Agent blocklist, country block.
 
     Args:
         payload: Parsed request body.
@@ -636,7 +680,7 @@ def _check_spam_shield(
 
     Raises:
         HTTPException: 400 if honeypot is triggered.
-        HTTPException: 403 if User-Agent is blocked.
+        HTTPException: 403 if User-Agent is blocked or country is not allowed.
     """
     honeypot_field = route.get("spam_honeypot_field")
     if honeypot_field and payload.get(honeypot_field):
@@ -652,6 +696,21 @@ def _check_spam_shield(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Access denied",
                 )
+
+    allowed_countries = route.get("spam_allowed_countries") or []
+    if allowed_countries:
+        country = await _lookup_country_code(client_ip)
+        if country and country not in allowed_countries:
+            logger.info(
+                "Country blocked for slug=%s, country=%s, ip=%s",
+                route.get("slug"),
+                country,
+                client_ip,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
 
 @router.post("/v1/route/{slug}")
@@ -724,7 +783,7 @@ async def proxy_webhook(
         route = await fill_route_cache(slug)
 
     _validate_form_schema(payload, route.get("form_schema") or {})
-    _check_spam_shield(payload, route, client_ip, user_agent)
+    await _check_spam_shield(payload, route, client_ip, user_agent)
 
     destination = route["destination_url"]
     try:
