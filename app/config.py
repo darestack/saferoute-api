@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: str = ""
     RETENTION_DAYS: int = 30
     OUTBOUND_HEALTH_CHECK_URL: str = "https://www.google.com/generate_204"
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    DEFAULT_RATE_LIMIT: int = 30
+    FORWARD_TIMEOUT_SECONDS: float = 10.0
+    MAX_LOG_BODY_BYTES: int = 10_000
+    MAX_RETRIES: int = 3
+    RETRY_BATCH_SIZE: int = 100
+    RETRY_CLAIM_STALE_SECONDS: int = 300
 
     @property
     def is_production(self) -> bool:

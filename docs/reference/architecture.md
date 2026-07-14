@@ -22,7 +22,7 @@ SafeRoute API is a high-performance, asynchronous webhook forwarding engine buil
 8. **Metrics**: Increment the route's delivery counters atomically.
 
 ## Security Boundaries
-- **SSRF Prevention**: `validate_destination_url_async` ensures destinations are valid HTTP/HTTPS URLs and do not point to internal IP ranges. DNS rebinding is prevented by forcing request-time DNS resolution (`resolve_dns=True`).
+- **SSRF Prevention**: `validate_destination_url_async` ensures destinations are valid HTTP/HTTPS URLs and do not point to internal IP ranges. DNS resolution is performed at route-creation time only (`resolve_dns=False` on the hot path) to avoid latency and TOCTOU issues. The write-time DNS check is the primary defense against DNS rebinding.
 - **Database Access**: The application uses the Supabase service-role key for internal queries, bypassing Row-Level Security (RLS) to act as a privileged daemon.
 - **Secrets Management**: Webhook secrets are stored symmetrically encrypted in the database.
 

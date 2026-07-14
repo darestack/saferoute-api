@@ -11,10 +11,10 @@ from hmac import compare_digest
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRIES = 3
-_RETRY_BATCH_SIZE = 100
-_RETRY_CLAIM_STALE_SECONDS = 300
-_MAX_LOG_BODY_BYTES = 10_000
+_MAX_RETRIES = settings.MAX_RETRIES
+_RETRY_BATCH_SIZE = settings.RETRY_BATCH_SIZE
+_RETRY_CLAIM_STALE_SECONDS = settings.RETRY_CLAIM_STALE_SECONDS
+_MAX_LOG_BODY_BYTES = settings.MAX_LOG_BODY_BYTES
 
 
 async def reap_stale_retries() -> None:

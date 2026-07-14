@@ -8,11 +8,11 @@ SafeRoute is a standard ASGI FastAPI application designed to run behind a revers
 - `SUPABASE_URL`: The URL of your Supabase instance.
 - `SUPABASE_KEY`: The public anon key.
 - `SUPABASE_SERVICE_ROLE_KEY`: The service role key (required).
-- `SECRET_KEY`: Used for JWTs and symmetric encryption (must be exactly 32 bytes, url-safe base64).
+- `ENCRYPTION_KEY`: Used for webhook secret encryption and JWT signing (must be at least 32 chars in production).
 - `API_KEY_SALT`: Salt used for hashing API keys.
 - `RETRY_ENDPOINT_SECRET`: A shared secret used by cron jobs to authenticate to the `/internal/` endpoints.
 - `TRUSTED_PROXIES`: A comma-separated list of trusted upstream proxies (e.g., `10.0.0.1, 10.0.0.2`). Used to safely extract `X-Forwarded-For`.
-- `RETENTION_DAYS`: Webhook log retention period (default `7`).
+- `RETENTION_DAYS`: Webhook log retention period (default `30`).
 
 ### Running the App
 Use Uvicorn to run the app:

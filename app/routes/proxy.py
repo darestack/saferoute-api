@@ -53,28 +53,30 @@ __all__ = [
     "clear_circuit_breaker_for_url",
 ]
 
-# Tunables
-_RATE_LIMIT_WINDOW_SECONDS = 60
+# Tunables — sourced from app.config.settings so they are runtime-overridable
+# without code changes. The module-level names remain for backward compatibility
+# with existing tests that patch them directly.
+_RATE_LIMIT_WINDOW_SECONDS = settings.RATE_LIMIT_WINDOW_SECONDS
 """Sliding window duration for per-IP rate limiting."""
 
-_DEFAULT_RATE_LIMIT = 30
+_DEFAULT_RATE_LIMIT = settings.DEFAULT_RATE_LIMIT
 """Default max requests per IP per route within the window."""
 
-_FORWARD_TIMEOUT_SECONDS = 10.0
+_FORWARD_TIMEOUT_SECONDS = settings.FORWARD_TIMEOUT_SECONDS
 """Timeout for the outbound request to the destination webhook."""
 
-_MAX_LOG_BODY_BYTES = 10_000
+_MAX_LOG_BODY_BYTES = settings.MAX_LOG_BODY_BYTES
 """Truncate stored response bodies to this size to control database growth."""
 
-_MAX_RETRIES = 3
+_MAX_RETRIES = settings.MAX_RETRIES
 """Maximum number of retry attempts for failed deliveries."""
 
-_RETRY_BATCH_SIZE = 100
+_RETRY_BATCH_SIZE = settings.RETRY_BATCH_SIZE
 """Maximum number of retry entries to process in a single /internal/process-retries call."""
 
 # How long a row may stay claimed ("retrying") before the reaper considers the
 # worker dead and returns it to the "pending" pool for another attempt.
-_RETRY_CLAIM_STALE_SECONDS = 300
+_RETRY_CLAIM_STALE_SECONDS = settings.RETRY_CLAIM_STALE_SECONDS
 
 from app.services.route_cache import (
     clear_route_cache,

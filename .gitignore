@@ -15,6 +15,7 @@ build/
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # IDE
 .vscode/
@@ -36,7 +37,6 @@ htmlcov/
 # Vercel
 .vercel/
 .vercel
-.env*
 
 # Playwright MCP browser session artifacts
 .playwright-mcp/
