@@ -86,6 +86,7 @@ SafeRoute gives you a backend without the backend:
 - [x] Spam shield (honeypot + rate limiting + User-Agent filtering)
 - [x] Manual replay queue for failed deliveries
 - [x] Bulk log cleanup endpoint
+- [x] Email notifications via Resend
 - [x] Standardized API responses with Pydantic models
 
 ## What's missing
@@ -94,7 +95,6 @@ SafeRoute gives you a backend without the backend:
 - [ ] Country blocking
 - [ ] Cloudflare Turnstile support
 - [ ] Disposable email detection
-- [ ] Email notifications via Resend
 - [ ] Managed network egress controls
 
 ## Documentation
