@@ -71,13 +71,23 @@ _JWKS_CACHE_TTL_SECONDS = 300
 _jwks_cache: Optional[dict] = None
 _jwks_cache_expiry: float = 0.0
 _jwks_lock = asyncio.Lock()
-_jwks_client = httpx.AsyncClient(timeout=5.0)
+_jjwks_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_jwks_client() -> httpx.AsyncClient:
+    """Return the shared JWKS HTTP client, creating it on first call."""
+    global _jjwks_client
+    if _jjwks_client is None or _jjwks_client.is_closed:
+        _jjwks_client = httpx.AsyncClient(timeout=5.0)
+    return _jjwks_client
 
 
 async def close_jwks_client() -> None:
     """Close the shared JWKS HTTP client on application shutdown."""
-    if not _jwks_client.is_closed:
-        await _jwks_client.aclose()
+    global _jjwks_client
+    if _jjwks_client is not None and not _jjwks_client.is_closed:
+        await _jjwks_client.aclose()
+        _jjwks_client = None
 
 
 async def _get_cached_jwks() -> dict:
@@ -95,7 +105,7 @@ async def _get_cached_jwks() -> dict:
 
         jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
         try:
-            response = await _jwks_client.get(
+            response = await _get_jwks_client().get(
                 jwks_url,
                 headers={"apikey": settings.SUPABASE_KEY},
             )

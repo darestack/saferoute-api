@@ -31,8 +31,13 @@ async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
             if isinstance(result.data, list) and result.data:
                 value = result.data[0]
                 if isinstance(value, dict):
+                    # Prefer known count column names; fall back to first value.
+                    for key in ("webhook_logs_removed", "count", "removed", "total"):
+                        if key in value:
+                            return int(value[key])
                     return int(next(iter(value.values())))
-                return int(value)
+                if isinstance(value, (int, float)):
+                    return int(value)
             return 0
         except Exception:
             logger.warning("Cleanup step %s failed", fn_name)
