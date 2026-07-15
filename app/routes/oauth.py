@@ -9,11 +9,14 @@ for a Supabase JWT session.
 
 from __future__ import annotations
 import asyncio
+import datetime
 import inspect
 import logging
 import time
 from typing import Optional
 from urllib.parse import urlencode, urljoin
+
+import jwt
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -176,8 +179,6 @@ async def oauth_redirect(provider: str):
             detail=(f"Unsupported provider: {provider}. Use 'google' or 'github'."),
         )
 
-    import jwt
-    import datetime
 
     code_verifier, code_challenge = _generate_pkce_pair()
 
@@ -259,7 +260,6 @@ async def oauth_callback_post(
             detail="Missing state parameter",
         )
 
-    import jwt
 
     try:
         payload = jwt.decode(

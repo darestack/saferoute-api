@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import os
 from typing import Any, Optional
@@ -51,7 +52,6 @@ async def _load_disposable_email_domains() -> None:
 
     # Primary source: embedded JSON file (no network required).
     try:
-        import json
         from pathlib import Path
         json_path = Path(__file__).with_name("disposable_domains.json")
         if json_path.exists():
@@ -114,7 +114,6 @@ def _load_disposable_domains_sync() -> None:
     if _DISPOSABLE_EMAIL_DOMAINS:
         return
     try:
-        import json
         from pathlib import Path
         json_path = Path(__file__).with_name("disposable_domains.json")
         if json_path.exists():
@@ -339,7 +338,6 @@ async def send_submission_email(
         return False
 
     # Basic email format validation to avoid wasting Resend API calls.
-    import re
     email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     if not to or not email_re.match(to):
         logger.warning("Invalid recipient email address, skipping send: %s", to)

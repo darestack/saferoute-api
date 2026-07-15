@@ -6,6 +6,7 @@ time so the application fails fast if secrets are missing.
 """
 
 from __future__ import annotations
+import warnings
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 
@@ -134,7 +135,6 @@ class Settings(BaseSettings):
                     "TURNSTILE_SECRET_KEY must be at least 16 chars in production"
                 )
         elif not self.ENCRYPTION_KEY.strip():
-            import warnings
 
             warnings.warn(
                 "Running without ENCRYPTION_KEY. "

@@ -7,6 +7,7 @@ both locally and on Vercel via the Mangum ASGI handler.
 
 from __future__ import annotations
 import asyncio
+import os
 import time
 import logging
 import uuid
@@ -48,7 +49,6 @@ async def lifespan(app: FastAPI) -> Any:
 
     # Warn if the deployment appears to use multiple workers with in-process
     # caches, which can cause stale configs and inconsistent rate limiting.
-    import os
 
     workers = os.getenv("WORKERS", os.getenv("UVICORN_WORKERS", "1"))
     if workers != "1":
