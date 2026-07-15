@@ -64,7 +64,7 @@ class TestUserCache:
                 asyncio.run(_fetch_and_cache_user("missing-user"))
 
     def test_cache_fifo_eviction_when_full(self):
-        from app.routes.auth import _user_cache, _user_cache_order
+        from app.routes.auth import _user_cache
 
         # Fill cache to max size.
         for i in range(_USER_CACHE_MAX_SIZE):
@@ -76,7 +76,7 @@ class TestUserCache:
             )
             asyncio.run(_cache_user(user))
 
-        assert len(_user_cache_order) == _USER_CACHE_MAX_SIZE
+        assert len(_user_cache) == _USER_CACHE_MAX_SIZE
 
         # Add one more user - oldest should be evicted.
         new_user = User(
@@ -87,7 +87,7 @@ class TestUserCache:
         )
         asyncio.run(_cache_user(new_user))
 
-        assert len(_user_cache_order) == _USER_CACHE_MAX_SIZE
+        assert len(_user_cache) == _USER_CACHE_MAX_SIZE
         assert "user-0000" not in _user_cache
         assert "user-new" in _user_cache
 

@@ -129,7 +129,6 @@ from collections import OrderedDict  # noqa: E402
 _USER_CACHE_TTL_SECONDS = 300
 _USER_CACHE_MAX_SIZE = 1000
 _user_cache: OrderedDict[str, tuple[User, float]] = OrderedDict()
-_user_cache_order = _user_cache
 _user_cache_lock = asyncio.Lock()
 
 # In-flight user fetches: prevents duplicate DB calls when many concurrent
