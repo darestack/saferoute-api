@@ -323,6 +323,13 @@ async def send_submission_email(
     if not settings.RESEND_API_KEY:
         return False
 
+    # Basic email format validation to avoid wasting Resend API calls.
+    import re
+    email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    if not to or not email_re.match(to):
+        logger.warning("Invalid recipient email address, skipping send: %s", to)
+        return False
+
     try:
         email = _render_submission_email(to, subject, payload, route_name, reply_to)
         return await _send_with_retry(email)

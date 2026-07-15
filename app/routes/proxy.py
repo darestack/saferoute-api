@@ -13,6 +13,7 @@ forwards payloads, and logs delivery results. Supports:
 from __future__ import annotations
 import json
 import logging
+import re
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,11 @@ __all__ = [
 _ip_country_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
 """Simple in-memory LRU cache for IP -> countryCode lookups."""
 
+# NOTE: ip-api.com free tier only supports HTTP (not HTTPS). This means
+# client IP addresses are sent over unencrypted HTTP for geolocation lookups.
+# This is a privacy tradeoff accepted because the free tier has no rate limit
+# and requires no API key. For higher privacy requirements, consider upgrading
+# to ip-api.com pro tier or switching to a HTTPS-only geolocation provider.
 _GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
 """ip-api.com endpoint for country code lookups (free tier, no key)."""
 
@@ -670,8 +676,6 @@ def _validate_form_schema(payload: dict, form_schema: dict) -> None:
 
         field_type = rules.get("type", "string")
         if field_type == "email":
-            import re
-
             email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
             if not isinstance(value, str) or not email_re.match(value):
                 raise HTTPException(
