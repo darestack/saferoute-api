@@ -87,7 +87,9 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
     """Lookup the 2-letter country code for an IP address.
 
     Uses ip-api.com (free tier, ~45k requests/month, no API key).
-    Results are cached in-memory with an LRU eviction policy.
+    Results are cached in-memory with an LRU eviction policy. Failed
+    lookups (including private/IPv6 addresses) are cached as ``None``
+    to avoid repeated HTTP requests for the same IP.
 
     Args:
         client_ip: The IP address to look up.
@@ -101,6 +103,21 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
 
     country_code: Optional[str] = None
     try:
+        # Quick check: skip lookup for clearly non-public IPs to avoid
+        # unnecessary HTTP requests to the geolocation service.
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(client_ip)
+            if not ip.is_global:
+                # Private, loopback, link-local, etc. — cache as None.
+                _ip_country_cache[client_ip] = None
+                _ip_country_cache.move_to_end(client_ip)
+                _ip_country_cache_evict()
+                return None
+        except ValueError:
+            # Not a valid IP address (could be a hostname); proceed with lookup.
+            pass
+
         client = get_http_client()
         response = await client.get(
             _GEOLOCATION_URL.format(ip=client_ip),

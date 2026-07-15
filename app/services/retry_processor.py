@@ -34,7 +34,18 @@ async def reap_stale_retries() -> None:
 
 
 def rebuild_retry_body(log_entry: dict[str, Any]) -> bytes:
-    """Rebuild the request body from a stored webhook log entry."""
+    """Rebuild the request body from a stored webhook log entry.
+
+    Args:
+        log_entry: The webhook log entry containing ``request_body`` and
+            ``content_type``.
+
+    Returns:
+        Reconstructed request body bytes, or ``b""`` if unavailable.
+
+    Raises:
+        ValueError: If the content type cannot be reconstructed.
+    """
     stored_body = log_entry.get("request_body", {})
     content_type = log_entry.get("content_type", "")
 
@@ -69,7 +80,21 @@ async def update_retry_outcome(
     log_entry: dict[str, Any],
     response_body: str,
 ) -> dict[str, Any]:
-    """Update the webhook log with the retry outcome and return a result dict."""
+    """Update the webhook log with the retry outcome and return a result dict.
+
+    Args:
+        log_id: The webhook log entry ID.
+        retry_count: The current retry attempt count.
+        new_status: The final retry status ("succeeded", "exhausted", etc.).
+        status_code: HTTP status from the destination.
+        next_retry: ISO timestamp of next retry, or ``None``.
+        log_entry: The original webhook log entry.
+        response_body: Response body from the destination.
+
+    Returns:
+        Outcome dict with ``log_id``, ``retry_count``, ``status_code``, and
+        ``outcome`` fields.
+    """
     result = await execute_query(
         admin.table("webhook_logs")
         .update(
