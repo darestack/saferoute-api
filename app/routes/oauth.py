@@ -42,7 +42,8 @@ def _get_jwt_signing_key() -> str:
         import secrets
         _DEV_JWT_KEY = secrets.token_urlsafe(32)
         logger.warning(
-            "ENCRYPTION_KEY is not set. Using per-process random JWT signing key. "            "OAuth state tokens will not survive process restarts."
+            "ENCRYPTION_KEY is not set. Using per-process random JWT signing key. "
+            "OAuth state tokens will not survive process restarts."
         )
     return _DEV_JWT_KEY
 
@@ -85,6 +86,9 @@ async def _check_oauth_rate_limit(client_ip: str) -> None:
             )
 
         timestamps.append(now)
+        # Bound per-IP list size to prevent memory leak under sustained scanning.
+        if len(timestamps) > _OAUTH_CALLBACK_RATE_LIMIT * 2:
+            timestamps = timestamps[-_OAUTH_CALLBACK_RATE_LIMIT:]
         _oauth_callback_cache[client_ip] = timestamps
         _oauth_callback_cache.move_to_end(client_ip)
 
@@ -259,7 +263,9 @@ async def oauth_callback_post(
 
     try:
         payload = jwt.decode(
-            state, settings.ENCRYPTION_KEY or _get_jwt_signing_key(), algorithms=["HS256"]
+            state,
+            settings.ENCRYPTION_KEY or _get_jwt_signing_key(),
+            algorithms=["HS256"],
         )
         code_challenge = payload["challenge"]
     except jwt.ExpiredSignatureError:

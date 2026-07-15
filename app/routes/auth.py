@@ -133,7 +133,8 @@ _user_cache_lock = asyncio.Lock()
 
 # In-flight user fetches: prevents duplicate DB calls when many concurrent
 # requests miss the cache for the same user_id.
-_user_cache_fills: dict[str, asyncio.Future] = {}
+_USER_CACHE_FILLS_MAX_ENTRIES = 1_000
+_user_cache_fills: "OrderedDict[str, tuple[asyncio.Future, float]]" = OrderedDict()
 _user_cache_fills_lock = asyncio.Lock()
 
 
@@ -179,6 +180,12 @@ async def _fetch_and_cache_user(user_id: str) -> User:
 
         fut = asyncio.get_running_loop().create_future()
         _user_cache_fills[user_id] = (fut, time.monotonic())
+
+        # Evict oldest entries if over limit to prevent memory leak.
+        while len(_user_cache_fills) > _USER_CACHE_FILLS_MAX_ENTRIES:
+            _evict_key, (_evict_fut, _evict_ts) = _user_cache_fills.popitem(last=False)
+            if not _evict_fut.done():
+                _evict_fut.cancel()
 
     try:
         # Perform the blocking DB call outside the lock to avoid stalling
@@ -503,7 +510,9 @@ async def update_route(
         ]
     elif updates.get("webhook_secret"):
         # Single secret update without array — migrate to array format
-        updates["webhook_secrets"] = [encrypt_webhook_secret(updates.pop("webhook_secret"))]
+        updates["webhook_secrets"] = [
+            encrypt_webhook_secret(updates.pop("webhook_secret"))
+        ]
     if "webhook_secret" in updates and updates["webhook_secret"]:
         updates["webhook_secret"] = encrypt_webhook_secret(updates["webhook_secret"])
 

@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="forbid",
+        extra="ignore",
         str_strip_whitespace=True,
     )
 
@@ -111,11 +111,11 @@ class Settings(BaseSettings):
                 raise ValueError("ALLOWED_HOSTS must be set in production")
             if not self.ENCRYPTION_KEY.strip() or len(self.ENCRYPTION_KEY) < 32:
                 raise ValueError(
-                    "ENCRYPTION_KEY must be a strong secret (at least 32 chars) in production"
+                    "ENCRYPTION_KEY must be a strong secret (at least 32 chars) in prod"
                 )
             if not self.API_KEY_SALT.strip() or len(self.API_KEY_SALT) < 16:
                 raise ValueError(
-                    "API_KEY_SALT must be a strong secret (at least 16 chars) in production"
+                    "API_KEY_SALT must be a strong secret (at least 16 chars) in prod"
                 )
             if self.WEBHOOK_SECRET and len(self.WEBHOOK_SECRET) < 32:
                 raise ValueError(
@@ -137,7 +137,8 @@ class Settings(BaseSettings):
             import warnings
 
             warnings.warn(
-                "Running without ENCRYPTION_KEY. Webhook secrets will be stored in plain text.",
+                "Running without ENCRYPTION_KEY. "
+                "Webhook secrets will be stored in plain text.",
                 RuntimeWarning,
                 stacklevel=2,
             )

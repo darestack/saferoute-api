@@ -91,11 +91,16 @@ async def _load_disposable_email_domains() -> None:
                         )
                         return
         except Exception:
-            logger.exception("Failed to load disposable email domains from %s", _DISPOSABLE_EMAIL_LIST_URL)
+            logger.exception(
+                "Failed to load disposable email domains from %s",
+                _DISPOSABLE_EMAIL_LIST_URL,
+            )
 
     # Last resort: empty set (no disposable detection).
     _DISPOSABLE_EMAIL_DOMAINS = set()
-    logger.warning("No disposable email domains loaded; disposable check will be ineffective")
+    logger.warning(
+        "No disposable email domains loaded; disposable check will be ineffective"
+    )
 
 
 def _load_disposable_domains_sync() -> None:
@@ -249,7 +254,12 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
             result = client.emails.send(email)
             logger.info(
                 "Submission email sent",
-                extra={"to": email.get("to"), "subject": email.get("subject"), "id": result.get("id"), "attempt": attempt},
+                extra={
+                    "to": email.get("to"),
+                    "subject": email.get("subject"),
+                    "id": result.get("id"),
+                    "attempt": attempt,
+                },
             )
             return True
         except ResendError as exc:
@@ -282,7 +292,9 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
                 await asyncio.sleep(backoff)
             else:
                 logger.exception(
-                    "Email send failed after %d attempts to %s", _EMAIL_RETRY_ATTEMPTS, email.get("to")
+                    "Email send failed after %d attempts to %s",
+                    _EMAIL_RETRY_ATTEMPTS,
+                    email.get("to"),
                 )
         except Exception as exc:
             if attempt < _EMAIL_RETRY_ATTEMPTS:
@@ -296,7 +308,9 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
                 await asyncio.sleep(backoff)
             else:
                 logger.exception(
-                    "Email send failed after %d attempts to %s", _EMAIL_RETRY_ATTEMPTS, email.get("to")
+                    "Email send failed after %d attempts to %s",
+                    _EMAIL_RETRY_ATTEMPTS,
+                    email.get("to"),
                 )
 
     return False

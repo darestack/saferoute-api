@@ -25,7 +25,7 @@ async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
     keep_days = max(1, min(int(keep_days or settings.RETENTION_DAYS), 365))
 
     async def _safe_count_rpc(fn_name: str, params: Optional[dict] = None) -> int:
-        """Invoke a SQL cleanup function that returns a row count, tolerating missing functions."""
+        """Invoke a SQL cleanup function returning row counts, ignoring missing RPCs."""
         try:
             result = await execute_query(admin.rpc(fn_name, params or {}))
             if isinstance(result.data, list) and result.data:
@@ -44,7 +44,7 @@ async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
             return 0
 
     async def _safe_void_rpc(fn_name: str, params: Optional[dict] = None) -> bool:
-        """Invoke a SQL cleanup function that returns void, tolerating missing functions."""
+        """Invoke a SQL cleanup function returning void, ignoring missing RPCs."""
         try:
             await execute_query(admin.rpc(fn_name, params or {}))
             return True

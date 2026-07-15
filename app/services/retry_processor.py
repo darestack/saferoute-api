@@ -124,7 +124,8 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
     pending = await execute_query(
         admin.table("webhook_logs")
         .select(
-            "*, routes!inner(destination_url, method, headers, transform_headers, transform_body_template)"
+            "*, routes!inner(destination_url, method, headers, "
+            "transform_headers, transform_body_template)"
         )
         .eq("retry_status", "pending")
         .lte("next_retry_at", now)

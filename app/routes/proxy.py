@@ -174,7 +174,7 @@ _MAX_RETRIES = settings.MAX_RETRIES
 """Maximum number of retry attempts for failed deliveries."""
 
 _RETRY_BATCH_SIZE = settings.RETRY_BATCH_SIZE
-"""Maximum number of retry entries to process in a single /internal/process-retries call."""
+"""Maximum retry entries per /internal/process-retries call."""
 
 # How long a row may stay claimed ("retrying") before the reaper considers the
 # worker dead and returns it to the "pending" pool for another attempt.
@@ -346,7 +346,8 @@ async def store_idempotency(
         )
     except Exception:
         logger.exception(
-            "Failed to store idempotency cache entry for route_id=%s, idempotency_key=%s, status_code=%s",
+            "Failed to store idempotency cache entry for "
+            "route_id=%s, idempotency_key=%s, status_code=%s",
             route_id,
             idempotency_key,
             status_code,
@@ -683,7 +684,10 @@ def _validate_form_schema(payload: dict, form_schema: dict) -> None:
                     detail=f"Invalid email: {field_name}",
                 )
             if rules.get("reject_disposable"):
-                from app.utils.email import is_disposable_email, _ensure_disposable_domains_loaded
+                from app.utils.email import (
+                    is_disposable_email,
+                    _ensure_disposable_domains_loaded,
+                )
 
                 # Ensure the domain list is loaded before checking.
                 _ensure_disposable_domains_loaded()
@@ -1008,7 +1012,8 @@ async def proxy_webhook(
     ):
         await send_submission_email(
             to=email_config["to"],
-            subject=email_config.get("subject") or f"New submission: {route.get('name', route.get('slug', ''))}",
+            subject=email_config.get("subject")
+            or f"New submission: {route.get('name', route.get('slug', ''))}",
             payload=payload if isinstance(payload, dict) else {"raw": str(payload)},
             route_name=route.get("name") or route.get("slug", ""),
             reply_to=email_config.get("reply_to") or "",
