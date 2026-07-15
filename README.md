@@ -83,7 +83,7 @@ SafeRoute gives you a backend without the backend:
 - [x] Supabase schema with RLS, rate-limit table, webhook logs
 - [x] Webhook secret rotation support
 - [x] Form validation schema support
-- [x] Spam shield (honeypot + rate limiting + User-Agent filtering + country blocking + IP blacklist + disposable email detection)
+- [x] Spam shield (honeypot + rate limiting + User-Agent filtering + country blocking + IP blacklist + disposable email detection + Cloudflare Turnstile)
 - [x] Manual replay queue for failed deliveries
 - [x] Bulk log cleanup endpoint
 - [x] Email notifications via Resend
@@ -92,7 +92,6 @@ SafeRoute gives you a backend without the backend:
 ## What's missing
 
 - [ ] Dashboard UI
-- [ ] Cloudflare Turnstile support
 - [ ] Managed network egress controls
 
 ## Documentation
