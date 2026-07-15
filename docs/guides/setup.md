@@ -49,6 +49,18 @@ ALLOWED_HOSTS=localhost:8000
 TRUSTED_PROXIES=
 ENVIRONMENT=development
 RETENTION_DAYS=30
+OUTBOUND_HEALTH_CHECK_URL=https://www.google.com/generate_204
+FORWARD_TIMEOUT_SECONDS=10.0
+RATE_LIMIT_WINDOW_SECONDS=60
+DEFAULT_RATE_LIMIT=30
+MAX_RETRIES=3
+RETRY_BATCH_SIZE=100
+RETRY_CLAIM_STALE_SECONDS=300
+MAX_LOG_BODY_BYTES=10000
+RESEND_API_KEY=
+EMAIL_FROM=noreply@saferoute.dev
+EMAIL_REPLY_TO=
+TURNSTILE_SECRET_KEY=
 ```
 
 - `SUPABASE_URL` and `SUPABASE_KEY` from Project Settings → API
@@ -60,6 +72,19 @@ RETENTION_DAYS=30
 - `ALLOWED_HOSTS` — **required in production** (comma-separated). On Vercel set to your app domain(s); empty (or missing) makes the app refuse to start.
 - `TRUSTED_PROXIES` — comma-separated edge/CDN IPs whose `X-Forwarded-For` is trusted for per-IP rate limiting. **Required when deployed behind a CDN/Vercel** so clients aren't all grouped into one rate-limit bucket.
 - `RETENTION_DAYS` — how many days of webhook delivery history to retain (1-365). Defaults to 30.
+- `OUTBOUND_HEALTH_CHECK_URL` — endpoint used by `/internal/health/outbound` to verify egress. Defaults to `https://www.google.com/generate_204`.
+- `FORWARD_TIMEOUT_SECONDS` — timeout for outbound webhook delivery requests. Defaults to `10.0`.
+- `RATE_LIMIT_WINDOW_SECONDS` — sliding window duration for per-IP rate limiting. Defaults to `60`.
+- `DEFAULT_RATE_LIMIT` — default max requests per IP per route within the window. Defaults to `30`.
+- `MAX_RETRIES` — maximum retry attempts for failed deliveries. Defaults to `3`.
+- `RETRY_BATCH_SIZE` — max retry entries processed per `/internal/process-retries` call. Defaults to `100`.
+- `RETRY_CLAIM_STALE_SECONDS` — how long a claimed retry may sit before the reaper resets it. Defaults to `300`.
+- `MAX_LOG_BODY_BYTES` — truncate stored response bodies to this size. Defaults to `10000`.
+- `RESEND_API_KEY` — optional Resend API key for email notifications. If empty, email delivery is skipped.
+- `EMAIL_FROM` — sender address for notification emails. Defaults to `noreply@saferoute.dev`.
+- `EMAIL_REPLY_TO` — optional reply-to address for notification emails.
+- `TURNSTILE_SECRET_KEY` — optional Cloudflare Turnstile secret key. Required per-route when Turnstile is enabled.
+- `DISPOSABLE_EMAIL_LIST_URL` — optional URL to a JSON array of disposable email domains. Defaults to the maintained list at `https://raw.githubusercontent.com/ivolo/disposable-email-domains/master/index.json`. Set to empty string to disable external fetching and use the embedded fallback list.
 
 ## 4. Run locally
 
