@@ -92,6 +92,42 @@ class TestUserCache:
         assert "user-new" in _user_cache
 
 
+class TestWebhookSecrets:
+    """Tests for multi-secret webhook secret support."""
+
+    def test_create_route_with_webhook_secrets(self):
+        """RouteCreate should accept webhook_secrets array."""
+        from app.models import RouteCreate
+
+        route = RouteCreate(
+            name="Test Route",
+            destination_url="https://example.com",
+            webhook_secrets=["secret1", "secret2", "secret3"],
+        )
+        assert route.webhook_secrets == ["secret1", "secret2", "secret3"]
+
+    def test_update_route_with_webhook_secrets(self):
+        """RouteUpdate should accept webhook_secrets array."""
+        from app.models import RouteUpdate
+
+        update = RouteUpdate(
+            webhook_secrets=["new-secret-1", "new-secret-2"],
+        )
+        assert update.webhook_secrets == ["new-secret-1", "new-secret-2"]
+
+    def test_route_create_rejects_too_many_secrets(self):
+        """RouteCreate should reject more than 10 secrets."""
+        from app.models import RouteCreate
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            RouteCreate(
+                name="Test Route",
+                destination_url="https://example.com",
+                webhook_secrets=[f"secret-{i}" for i in range(11)],
+            )
+
+
 class TestGenerateSlug:
     """Tests for slug generation and sanitization."""
 

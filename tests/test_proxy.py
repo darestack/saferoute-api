@@ -2100,6 +2100,47 @@ class TestDisposableEmailLoading:
         assert is_disposable_email("") is False
 
 
+class TestEmailRenderingSecurity:
+    """Tests for email rendering security."""
+
+    def test_render_submission_email_escapes_html(self):
+        """Payload values with HTML should be escaped in email body."""
+        from app.utils.email import _render_submission_email
+
+        payload = {
+            "name": "<script>alert('xss')</script>",
+            "email": "test@example.com",
+        }
+        email = _render_submission_email(
+            to="admin@example.com",
+            subject="Test",
+            payload=payload,
+            route_name="Test Route",
+        )
+        html_body = email["html"]
+        # The script tag should be escaped, not present as raw HTML.
+        assert "<script>" not in html_body
+        assert "&lt;script&gt;" in html_body
+        # Normal values should still be present.
+        assert "test@example.com" in html_body
+
+    def test_render_submission_email_escapes_special_chars(self):
+        """Special characters should be HTML-escaped."""
+        from app.utils.email import _render_submission_email
+
+        payload = {"value": "A & B < C > D 'quoted'"}
+        email = _render_submission_email(
+            to="admin@example.com",
+            subject="Test",
+            payload=payload,
+            route_name="Test Route",
+        )
+        html_body = email["html"]
+        assert "&amp;" in html_body
+        assert "&lt;" in html_body
+        assert "&gt;" in html_body
+
+
 class TestEmailNotifications:
     """Tests for email notification delivery."""
 
@@ -2275,6 +2316,22 @@ class TestEmailNotifications:
             assert result is False
             # Should retry 3 times (default _EMAIL_RETRY_ATTEMPTS)
             assert mock_resend.emails.send.call_count == 3
+
+    def test_send_submission_email_validates_recipient(self):
+        """Invalid recipient email addresses should be rejected early."""
+        from app.utils.email import send_submission_email
+
+        with patch("app.utils.email._get_resend_client") as mock_client:
+            result = asyncio.run(
+                send_submission_email(
+                    to="not-an-email",
+                    subject="Test",
+                    payload={"key": "value"},
+                    route_name="Test",
+                )
+            )
+            assert result is False
+            mock_client.assert_not_called()
 
     def test_skips_email_on_failed_delivery(self):
         """When delivery fails (status >= 400), send_submission_email should not be called."""

@@ -191,13 +191,14 @@ def _render_submission_email(
     Returns:
         Resend email payload dict.
     """
+    _html_escape = html.escape
     rows = "".join(
-        f"<tr><td><strong>{html.escape(str(key))}</strong></td>"
-        f"<td>{html.escape(str(value))}</td></tr>"
+        f"<tr><td><strong>{_html_escape(str(key))}</strong></td>"
+        f"<td>{_html_escape(str(value))}</td></tr>"
         for key, value in payload.items()
     )
 
-    html = f"""
+    email_html = f"""
     <html>
       <body>
         <h2>New submission: {route_name}</h2>
@@ -212,7 +213,7 @@ def _render_submission_email(
         "from": settings.EMAIL_FROM,
         "to": to,
         "subject": subject,
-        "html": html,
+        "html": email_html,
     }
     if reply_to:
         email["reply_to"] = reply_to
