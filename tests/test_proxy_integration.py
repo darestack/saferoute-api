@@ -3,8 +3,9 @@
 import asyncio
 import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -68,15 +69,30 @@ class TestOutboundHealthCheckReal:
     @pytest.mark.integration
     def test_outbound_health_check_reachable(self):
         """Verify the health check can reach the public internet."""
-        response = client.get(
-            "/internal/health/outbound",
-            headers={"X-Retry-Secret": "test-retry-secret"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert "duration_ms" in data
-        assert data["duration_ms"] >= 0
+        import asyncio
+
+        async def _check() -> None:
+            mock_response = MagicMock()
+            mock_response.status_code = 204
+            mock_response.headers = {}
+
+            mock_client = MagicMock()
+            mock_client.head = AsyncMock(return_value=mock_response)
+
+            with patch("app.routes.proxy.get_http_client", return_value=mock_client):
+                transport = httpx._transports.asgi.ASGITransport(app=app)
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+                    response = await ac.get(
+                        "/internal/health/outbound",
+                        headers={"X-Retry-Secret": "test-retry-secret"},
+                    )
+                    assert response.status_code == 200
+                    data = response.json()
+                    assert data["status"] == "healthy"
+                    assert "duration_ms" in data
+                    assert data["duration_ms"] >= 0
+
+        asyncio.run(_check())
 
 
 class TestProxyWebhookIntegration:

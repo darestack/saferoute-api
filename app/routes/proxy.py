@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
 from typing import Any, Optional, cast
@@ -57,8 +58,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # IP geolocation cache (country code lookups)
 # ---------------------------------------------------------------------------
-_ip_country_cache: dict[str, Optional[str]] = {}
-"""Simple in-memory cache for IP -> countryCode lookups."""
+_ip_country_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+"""Simple in-memory LRU cache for IP -> countryCode lookups."""
 
 _GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
 """ip-api.com endpoint for country code lookups (free tier, no key)."""
@@ -66,12 +67,21 @@ _GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
 _GEOLOCATION_TIMEOUT = 2.0
 """Timeout for geolocation HTTP requests."""
 
+_GEOLOCATION_CACHE_MAXSIZE = 4096
+"""Maximum entries in the geolocation cache to bound memory."""
+
+
+def _ip_country_cache_evict() -> None:
+    """Evict oldest entries if cache exceeds max size."""
+    while len(_ip_country_cache) > _GEOLOCATION_CACHE_MAXSIZE:
+        _ip_country_cache.popitem(last=False)
+
 
 async def _lookup_country_code(client_ip: str) -> Optional[str]:
     """Lookup the 2-letter country code for an IP address.
 
     Uses ip-api.com (free tier, ~45k requests/month, no API key).
-    Results are cached in-memory to avoid repeated lookups.
+    Results are cached in-memory with an LRU eviction policy.
 
     Args:
         client_ip: The IP address to look up.
@@ -80,6 +90,7 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
         The 2-letter ISO country code, or ``None`` if lookup fails.
     """
     if client_ip in _ip_country_cache:
+        _ip_country_cache.move_to_end(client_ip)
         return _ip_country_cache[client_ip]
 
     country_code: Optional[str] = None
@@ -96,6 +107,8 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
         logger.debug("Geolocation lookup failed for IP %s", client_ip)
 
     _ip_country_cache[client_ip] = country_code
+    _ip_country_cache.move_to_end(client_ip)
+    _ip_country_cache_evict()
     return country_code
 
 

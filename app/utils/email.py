@@ -8,9 +8,12 @@ Uses Resend for transactional email delivery. Supports notifications for:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from typing import Any, Optional
 
+import httpx
 from resend import Resend
 
 from app.config import settings
@@ -19,17 +22,24 @@ logger = logging.getLogger(__name__)
 
 _resend_client = None
 
+# ---------------------------------------------------------------------------
+# Disposable email detection
+# ---------------------------------------------------------------------------
+_DISPOSABLE_EMAIL_DOMAINS: set[str] = set()
+"""Runtime-loaded set of disposable email domains.
 
-def _get_resend_client() -> Optional[Resend]:
-    global _resend_client
-    if _resend_client is None:
-        if not settings.RESEND_API_KEY:
-            return None
-        _resend_client = Resend(api_key=settings.RESEND_API_KEY)
-    return _resend_client
+Loaded from ``DISPOSABLE_EMAIL_LIST_URL`` if set, otherwise falls back to
+an embedded minimal list. The cache is refreshed on every ``settings``
+reload (typically only on startup).
+"""
 
+_DISPOSABLE_EMAIL_LIST_URL = os.environ.get(
+    "DISPOSABLE_EMAIL_LIST_URL",
+    "https://raw.githubusercontent.com/ivolo/disposable-email-domains/master/index.json",
+)
+"""Source for disposable email domains. Set to empty string to disable."""
 
-_DISPOSABLE_EMAIL_DOMAINS = {
+_EMBEDDED_DISPOSABLE_DOMAINS = {
     "10minutemail.com",
     "guerrillamail.com",
     "mailinator.com",
@@ -421,11 +431,37 @@ _DISPOSABLE_EMAIL_DOMAINS = {
     "zymail.com",
     "zzi.us",
 }
-"""Common disposable email domains.
+"""Minimal embedded fallback list if external fetch fails."""
 
-Updated periodically. For production use, consider fetching from
-https://raw.githubusercontent.com/ivolo/disposable-email-domains/master/index.json
-"""
+
+async def _load_disposable_email_domains() -> None:
+    """Load disposable email domains from external source or fallback."""
+    global _DISPOSABLE_EMAIL_DOMAINS
+
+    if not _DISPOSABLE_EMAIL_LIST_URL:
+        _DISPOSABLE_EMAIL_DOMAINS = set(_EMBEDDED_DISPOSABLE_DOMAINS)
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(_DISPOSABLE_EMAIL_LIST_URL)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    _DISPOSABLE_EMAIL_DOMAINS = {
+                        domain.strip().lower()
+                        for domain in data
+                        if isinstance(domain, str) and domain.strip()
+                    }
+                    logger.info(
+                        "Loaded %d disposable email domains", len(_DISPOSABLE_EMAIL_DOMAINS)
+                    )
+                    return
+    except Exception:
+        logger.exception("Failed to load disposable email domains from %s", _DISPOSABLE_EMAIL_LIST_URL)
+
+    _DISPOSABLE_EMAIL_DOMAINS = set(_EMBEDDED_DISPOSABLE_DOMAINS)
+    logger.info("Falling back to embedded disposable email list (%d domains)", len(_DISPOSABLE_EMAIL_DOMAINS))
 
 
 def is_disposable_email(email: str) -> bool:
@@ -443,6 +479,22 @@ def is_disposable_email(email: str) -> bool:
     return domain in _DISPOSABLE_EMAIL_DOMAINS
 
 
+# ---------------------------------------------------------------------------
+# Resend email client
+# ---------------------------------------------------------------------------
+def _get_resend_client() -> Optional[Resend]:
+    """Lazily initialize and return the Resend client."""
+    global _resend_client
+    if _resend_client is None:
+        if not settings.RESEND_API_KEY:
+            return None
+        _resend_client = Resend(api_key=settings.RESEND_API_KEY)
+    return _resend_client
+
+
+# ---------------------------------------------------------------------------
+# Email rendering
+# ---------------------------------------------------------------------------
 def _render_submission_email(
     to: str,
     subject: str,
@@ -490,6 +542,55 @@ def _render_submission_email(
     return email
 
 
+# ---------------------------------------------------------------------------
+# Email delivery with retry
+# ---------------------------------------------------------------------------
+_EMAIL_RETRY_ATTEMPTS = 3
+"""Maximum attempts for email delivery."""
+
+_EMAIL_RETRY_BACKOFF_BASE = 1.0
+"""Base backoff in seconds between email retries."""
+
+
+async def _send_with_retry(email: dict[str, Any]) -> bool:
+    """Send an email with exponential backoff retry.
+
+    Args:
+        email: Resend email payload dict.
+
+    Returns:
+        ``True`` if the email was accepted by Resend, ``False`` otherwise.
+    """
+    client = _get_resend_client()
+    if client is None:
+        return False
+
+    for attempt in range(1, _EMAIL_RETRY_ATTEMPTS + 1):
+        try:
+            result = client.emails.send(email)
+            logger.info(
+                "Submission email sent",
+                extra={"to": email.get("to"), "subject": email.get("subject"), "id": result.get("id"), "attempt": attempt},
+            )
+            return True
+        except Exception as exc:
+            if attempt < _EMAIL_RETRY_ATTEMPTS:
+                backoff = _EMAIL_RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+                logger.warning(
+                    "Email send attempt %d failed, retrying in %.1fs: %s",
+                    attempt,
+                    backoff,
+                    exc,
+                )
+                await asyncio.sleep(backoff)
+            else:
+                logger.exception(
+                    "Email send failed after %d attempts to %s", _EMAIL_RETRY_ATTEMPTS, email.get("to")
+                )
+
+    return False
+
+
 async def send_submission_email(
     to: str,
     subject: str,
@@ -513,16 +614,8 @@ async def send_submission_email(
         return False
 
     try:
-        client = _get_resend_client()
-        if client is None:
-            return False
         email = _render_submission_email(to, subject, payload, route_name, reply_to)
-        result = client.emails.send(email)
-        logger.info(
-            "Submission email sent",
-            extra={"to": to, "subject": subject, "id": result.get("id")},
-        )
-        return True
+        return await _send_with_retry(email)
     except Exception:
-        logger.exception("Failed to send submission email to %s", to)
+        logger.exception("Failed to queue submission email to %s", to)
         return False

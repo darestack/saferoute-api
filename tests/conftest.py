@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import patch
 
 # Set required environment variables before importing app modules.
 os.environ.setdefault("SUPABASE_URL", "http://localhost:54321")
@@ -85,6 +86,25 @@ def sample_route() -> dict:
         "rate_limit": 30,
         "transform_headers": {},
         "transform_body_template": None,
+        "form_schema": {},
+        "spam_honeypot_field": None,
+        "spam_blocked_ua": [],
+        "spam_allowed_countries": [],
+        "spam_blocked_ips": [],
+        "turnstile_enabled": False,
+        "turnstile_site_key": None,
+        "turnstile_secret_key": None,
+        "email_notifications": {},
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-15T10:30:00Z",
     }
+
+
+@pytest.fixture
+def disposable_email_domains():
+    """Patch the global disposable email domains set with test data."""
+    from app.utils import email as email_utils
+
+    test_domains = {"mailinator.com", "yopmail.com", "guerrillamail.com"}
+    with patch.object(email_utils, "_DISPOSABLE_EMAIL_DOMAINS", test_domains):
+        yield test_domains

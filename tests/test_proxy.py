@@ -966,7 +966,7 @@ class TestFormValidation:
         payload = {"name": "Jane", "age": 30}
         _validate_form_schema(payload, form_schema)  # should not raise
 
-    def test_disposable_email_rejected_when_enabled(self):
+    def test_disposable_email_rejected_when_enabled(self, disposable_email_domains):
         from app.routes.proxy import _validate_form_schema
         from fastapi import HTTPException
 

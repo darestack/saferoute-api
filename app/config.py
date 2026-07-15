@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = "noreply@saferoute.dev"
     EMAIL_REPLY_TO: str = ""
+    TURNSTILE_SECRET_KEY: str = ""
 
     @property
     def is_production(self) -> bool:
@@ -123,6 +124,14 @@ class Settings(BaseSettings):
             if self.RETRY_ENDPOINT_SECRET and len(self.RETRY_ENDPOINT_SECRET) < 32:
                 raise ValueError(
                     "RETRY_ENDPOINT_SECRET must be at least 32 chars in production"
+                )
+            if self.RESEND_API_KEY and len(self.RESEND_API_KEY) < 16:
+                raise ValueError(
+                    "RESEND_API_KEY must be at least 16 chars in production"
+                )
+            if self.TURNSTILE_SECRET_KEY and len(self.TURNSTILE_SECRET_KEY) < 16:
+                raise ValueError(
+                    "TURNSTILE_SECRET_KEY must be at least 16 chars in production"
                 )
         elif not self.ENCRYPTION_KEY.strip():
             import warnings
