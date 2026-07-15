@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
 
+# When ENCRYPTION_KEY is not configured (non-production only), generate a
+# per-process random key for signing OAuth state JWTs instead of using a
+# predictable hardcoded fallback. This prevents state-forgery attacks during
+# development and testing while keeping the app runnable.
+_DEV_JWT_KEY: str = ""
+
+def _get_jwt_signing_key() -> str:
+    global _DEV_JWT_KEY
+    if not _DEV_JWT_KEY:
+        import secrets
+        _DEV_JWT_KEY = secrets.token_urlsafe(32)
+        logger.warning(
+            "ENCRYPTION_KEY is not set. Using per-process random JWT signing key. "            "OAuth state tokens will not survive process restarts."
+        )
+    return _DEV_JWT_KEY
+
 __all__ = [
     "router",
 ]
@@ -169,7 +185,7 @@ async def oauth_redirect(provider: str):
         "iat": datetime.datetime.now(datetime.timezone.utc),
     }
     state = jwt.encode(
-        payload, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithm="HS256"
+        payload, settings.ENCRYPTION_KEY or _get_jwt_signing_key(), algorithm="HS256"
     )
 
     try:
@@ -243,7 +259,7 @@ async def oauth_callback_post(
 
     try:
         payload = jwt.decode(
-            state, settings.ENCRYPTION_KEY or "fallback-dev-key", algorithms=["HS256"]
+            state, settings.ENCRYPTION_KEY or _get_jwt_signing_key(), algorithms=["HS256"]
         )
         code_challenge = payload["challenge"]
     except jwt.ExpiredSignatureError:

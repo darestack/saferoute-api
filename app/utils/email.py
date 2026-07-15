@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 import httpx
 from resend import Resend
+from resend.exceptions import ResendError
 
 from app.config import settings
 
@@ -573,6 +574,30 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
                 extra={"to": email.get("to"), "subject": email.get("subject"), "id": result.get("id"), "attempt": attempt},
             )
             return True
+        except ResendError as exc:
+            # Permanent API errors (auth, validation, etc.) should not be retried.
+            code = getattr(exc, "code", None)
+            if isinstance(code, int) and 400 <= code < 500:
+                logger.error(
+                    "Permanent Resend error (status=%s) sending to %s: %s",
+                    code,
+                    email.get("to"),
+                    exc,
+                )
+                return False
+            if attempt < _EMAIL_RETRY_ATTEMPTS:
+                backoff = _EMAIL_RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+                logger.warning(
+                    "Email send attempt %d failed, retrying in %.1fs: %s",
+                    attempt,
+                    backoff,
+                    exc,
+                )
+                await asyncio.sleep(backoff)
+            else:
+                logger.exception(
+                    "Email send failed after %d attempts to %s", _EMAIL_RETRY_ATTEMPTS, email.get("to")
+                )
         except Exception as exc:
             if attempt < _EMAIL_RETRY_ATTEMPTS:
                 backoff = _EMAIL_RETRY_BACKOFF_BASE * (2 ** (attempt - 1))

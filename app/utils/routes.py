@@ -30,7 +30,9 @@ def route_to_response(
         "last_used_at": route.get("last_used_at"),
         "api_key_prefix": route.get("api_key_prefix"),
         "rate_limit": route.get("rate_limit", 30),
-        "has_webhook_secret": bool(route.get("webhook_secret")),
+        "has_webhook_secret": bool(
+            route.get("webhook_secret") or route.get("webhook_secrets")
+        ),
         "has_transform": bool(
             route.get("transform_body_template") or route.get("transform_headers")
         ),
