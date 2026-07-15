@@ -338,11 +338,15 @@ async def shutdown_event() -> None:
             await asyncio.wait_for(db_module.get_http_client().aclose(), timeout=5.0)
     except asyncio.TimeoutError:
         logger.warning("HTTP client shutdown timed out")
+    except Exception:
+        logger.warning("HTTP client shutdown failed", exc_info=True)
 
     try:
         await asyncio.wait_for(close_jwks_client(), timeout=5.0)
     except asyncio.TimeoutError:
         logger.warning("JWKS client shutdown timed out")
+    except Exception:
+        logger.warning("JWKS client shutdown failed", exc_info=True)
 
 
 @app.get("/health")
