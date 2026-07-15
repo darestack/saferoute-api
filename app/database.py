@@ -148,9 +148,10 @@ async def bump_route_metrics_atomic(route_id: str) -> None:
 # Shared module-level clients. Import these elsewhere rather than calling
 # ``get_supabase_client()`` repeatedly.
 #
-# These are lazily initialized to avoid crashing the process at import time
-# if environment variables are missing. The first call to either function
-# creates the client and caches it for subsequent calls.
+# Initialized at import time via get_supabase_client(), which creates the
+# client on first call and caches it for subsequent calls. If environment
+# variables are missing, the process fails fast during import rather than
+# failing later during the first request.
 _supabase_client: Optional[Client] = None
 _admin_client: Optional[Client] = None
 

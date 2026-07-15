@@ -55,11 +55,15 @@ async def fill_route_cache(slug: str) -> dict:
         fut = asyncio.get_running_loop().create_future()
         _route_cache_fills[slug] = (fut, time.monotonic())
 
-        # Cleanup old entries to prevent memory leak
+        # Cleanup old entries to prevent memory leak.
+        # Cancel any pending futures before eviction to prevent
+        # "Exception was never retrieved" warnings in Python 3.12+.
         if len(_route_cache_fills) > _ROUTE_CACHE_FILLS_MAX_ENTRIES:
             evict_count = max(1, _ROUTE_CACHE_FILLS_MAX_ENTRIES // 4)
             for _ in range(evict_count):
-                _route_cache_fills.popitem(last=False)
+                _evict_key, (fut, _ts) = _route_cache_fills.popitem(last=False)
+                if not fut.done():
+                    fut.cancel()
 
     try:
         result = await execute_query(

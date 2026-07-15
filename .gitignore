@@ -40,3 +40,4 @@ htmlcov/
 
 # Playwright MCP browser session artifacts
 .playwright-mcp/
+.kilo/
