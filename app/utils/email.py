@@ -9,6 +9,7 @@ Uses Resend for transactional email delivery. Supports notifications for:
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 from typing import Any, Optional
@@ -191,7 +192,8 @@ def _render_submission_email(
         Resend email payload dict.
     """
     rows = "".join(
-        f"<tr><td><strong>{key}</strong></td><td>{value}</td></tr>"
+        f"<tr><td><strong>{html.escape(str(key))}</strong></td>"
+        f"<td>{html.escape(str(value))}</td></tr>"
         for key, value in payload.items()
     )
 

@@ -390,6 +390,10 @@ async def create_route(
         insert_data["webhook_secret"] = encrypt_webhook_secret(
             route_data.webhook_secret
         )
+    if route_data.webhook_secrets:
+        insert_data["webhook_secrets"] = [
+            encrypt_webhook_secret(secret) for secret in route_data.webhook_secrets
+        ]
     if route_data.transform_body_template:
         insert_data["transform_body_template"] = route_data.transform_body_template
 
@@ -484,6 +488,13 @@ async def update_route(
                 detail="Slug already in use",
             )
 
+    if "webhook_secrets" in updates and updates["webhook_secrets"]:
+        updates["webhook_secrets"] = [
+            encrypt_webhook_secret(secret) for secret in updates["webhook_secrets"]
+        ]
+    elif updates.get("webhook_secret"):
+        # Single secret update without array — migrate to array format
+        updates["webhook_secrets"] = [encrypt_webhook_secret(updates.pop("webhook_secret"))]
     if "webhook_secret" in updates and updates["webhook_secret"]:
         updates["webhook_secret"] = encrypt_webhook_secret(updates["webhook_secret"])
 

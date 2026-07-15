@@ -63,6 +63,7 @@ class RouteCreate(BaseModel):
     method: str = Field(default="POST", pattern="^(GET|POST|PUT|PATCH|DELETE)$")
     headers: dict[str, str] = Field(default_factory=dict)
     webhook_secret: Optional[str] = Field(None, min_length=8, max_length=256)
+    webhook_secrets: Optional[list[str]] = Field(None, max_length=10)
     rate_limit: int = Field(default=30, ge=1, le=1000)
     transform_headers: dict[str, str] = Field(default_factory=dict)
     transform_body_template: Optional[str] = Field(None, max_length=10000)
@@ -145,6 +146,7 @@ class RouteUpdate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_active: Optional[bool] = None
     webhook_secret: Optional[str] = Field(None, min_length=8, max_length=256)
+    webhook_secrets: Optional[list[str]] = Field(None, max_length=10)
     clear_webhook_secret: Optional[bool] = None
     rate_limit: Optional[int] = Field(None, ge=1, le=1000)
     transform_headers: Optional[dict[str, str]] = None
