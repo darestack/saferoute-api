@@ -679,7 +679,15 @@ def _validate_form_schema(payload: dict, form_schema: dict) -> None:
                     detail=f"Invalid email: {field_name}",
                 )
             if rules.get("reject_disposable"):
-                from app.utils.email import is_disposable_email
+                from app.utils.email import is_disposable_email, _ensure_disposable_domains_loaded
+
+                # Ensure the domain list is loaded before checking.
+                try:
+                    loop = asyncio.get_running_loop()
+                    asyncio.create_task(_ensure_disposable_domains_loaded())
+                except RuntimeError:
+                    # No event loop running (e.g., sync context); load synchronously.
+                    asyncio.run(_ensure_disposable_domains_loaded())
 
                 if is_disposable_email(value):
                     raise HTTPException(
