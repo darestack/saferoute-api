@@ -97,17 +97,46 @@ async def _load_disposable_email_domains() -> None:
     logger.warning("No disposable email domains loaded; disposable check will be ineffective")
 
 
-_disposable_domains_loaded = False
-"""Flag indicating whether the disposable email domain list has been loaded."""
+def _load_disposable_domains_sync() -> None:
+    """Synchronously load disposable email domains from the embedded JSON file.
 
-
-async def _ensure_disposable_domains_loaded() -> None:
-    """Load disposable email domains if not already loaded."""
-    global _disposable_domains_loaded
-    if _disposable_domains_loaded:
+    This is the primary loading path; it requires no network I/O and works
+    in any context (sync, async, tests, startup). Idempotent: safe to call
+    multiple times; subsequent calls are no-ops once the set is populated.
+    """
+    global _DISPOSABLE_EMAIL_DOMAINS
+    if _DISPOSABLE_EMAIL_DOMAINS:
         return
-    await _load_disposable_email_domains()
-    _disposable_domains_loaded = True
+    try:
+        import json
+        from pathlib import Path
+        json_path = Path(__file__).with_name("disposable_domains.json")
+        if json_path.exists():
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                _DISPOSABLE_EMAIL_DOMAINS = {
+                    domain.strip().lower()
+                    for domain in data
+                    if isinstance(domain, str) and domain.strip()
+                }
+                logger.info(
+                    "Loaded %d disposable email domains from embedded file",
+                    len(_DISPOSABLE_EMAIL_DOMAINS),
+                )
+                return
+    except Exception:
+        logger.exception("Failed to load embedded disposable email domains")
+    _DISPOSABLE_EMAIL_DOMAINS = set()
+
+
+def _ensure_disposable_domains_loaded() -> None:
+    """Load disposable email domains if not already loaded.
+
+    Uses synchronous file I/O so it works in both sync and async contexts
+    without requiring an event loop.
+    """
+    _load_disposable_domains_sync()
 
 
 def is_disposable_email(email: str) -> bool:
@@ -119,6 +148,7 @@ def is_disposable_email(email: str) -> bool:
     Returns:
         ``True`` if the domain is in the disposable list, ``False`` otherwise.
     """
+    _ensure_disposable_domains_loaded()
     if not email or "@" not in email:
         return False
     domain = email.split("@")[-1].strip().lower()
@@ -222,6 +252,14 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
         except ResendError as exc:
             # Permanent API errors (auth, validation, etc.) should not be retried.
             code = getattr(exc, "code", None)
+            if isinstance(code, str) and code.isdigit() and 400 <= int(code) < 500:
+                logger.error(
+                    "Permanent Resend error (status=%s) sending to %s: %s",
+                    code,
+                    email.get("to"),
+                    exc,
+                )
+                return False
             if isinstance(code, int) and 400 <= code < 500:
                 logger.error(
                     "Permanent Resend error (status=%s) sending to %s: %s",

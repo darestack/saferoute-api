@@ -2075,6 +2075,31 @@ class TestClaimIdempotency:
             assert result is None
 
 
+class TestDisposableEmailLoading:
+    """Tests that disposable email domains are actually loaded and checked."""
+
+    def test_is_disposable_email_returns_true_for_known_domain(self):
+        from app.utils.email import is_disposable_email
+
+        # The embedded list should be loaded; mailinator.com is in it.
+        assert is_disposable_email("test@mailinator.com") is True
+
+    def test_is_disposable_email_returns_false_for_legitimate_domain(self):
+        from app.utils.email import is_disposable_email
+
+        assert is_disposable_email("test@gmail.com") is False
+
+    def test_is_disposable_email_handles_missing_at(self):
+        from app.utils.email import is_disposable_email
+
+        assert is_disposable_email("not-an-email") is False
+
+    def test_is_disposable_email_handles_none(self):
+        from app.utils.email import is_disposable_email
+
+        assert is_disposable_email("") is False
+
+
 class TestEmailNotifications:
     """Tests for email notification delivery."""
 
@@ -2213,6 +2238,43 @@ class TestEmailNotifications:
             )
 
             mock_send_email.assert_not_called()
+
+    def test_send_with_retry_skips_permanent_4xx_error(self):
+        """Resend 4xx errors should not be retried."""
+        from app.utils.email import _send_with_retry
+        from resend.exceptions import ResendError
+
+        class FakeResendError(ResendError):
+            def __init__(self):
+                super().__init__("401", "authentication_error", "Invalid API key")
+
+        with patch("app.utils.email._get_resend_client") as mock_client:
+            mock_resend = MagicMock()
+            mock_resend.emails.send.side_effect = FakeResendError()
+            mock_client.return_value = mock_resend
+
+            result = asyncio.run(_send_with_retry({"to": "test@example.com"}))
+            assert result is False
+            # Should be called exactly once (no retries on 4xx)
+            assert mock_resend.emails.send.call_count == 1
+
+    def test_send_with_retry_retries_on_transient_error(self):
+        """Transient errors should be retried up to the limit."""
+        from app.utils.email import _send_with_retry
+
+        with patch("app.utils.email._get_resend_client") as mock_client:
+            mock_resend = MagicMock()
+            mock_resend.emails.send.side_effect = [
+                Exception("Network timeout"),
+                Exception("Network timeout"),
+                Exception("Network timeout"),
+            ]
+            mock_client.return_value = mock_resend
+
+            result = asyncio.run(_send_with_retry({"to": "test@example.com"}))
+            assert result is False
+            # Should retry 3 times (default _EMAIL_RETRY_ATTEMPTS)
+            assert mock_resend.emails.send.call_count == 3
 
     def test_skips_email_on_failed_delivery(self):
         """When delivery fails (status >= 400), send_submission_email should not be called."""

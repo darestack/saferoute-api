@@ -41,6 +41,28 @@ class TestRouteUtilities:
         assert response["has_transform"] is True
         assert response["transform_headers"] == {"X-Event": "{{ event }}"}
 
+    def test_route_to_response_detects_webhook_secrets_array(
+        self, sample_route: dict[str, Any]
+    ) -> None:
+        """has_webhook_secret must be True when webhook_secrets (JSONB array) is set."""
+        sample_route["webhook_secret"] = None
+        sample_route["webhook_secrets"] = ["v1:encrypted-old", "v1:encrypted-new"]
+
+        response = route_to_response(sample_route)
+
+        assert response["has_webhook_secret"] is True
+
+    def test_route_to_response_no_secret_when_both_empty(
+        self, sample_route: dict[str, Any]
+    ) -> None:
+        """has_webhook_secret must be False when neither field is set."""
+        sample_route["webhook_secret"] = None
+        sample_route["webhook_secrets"] = []
+
+        response = route_to_response(sample_route)
+
+        assert response["has_webhook_secret"] is False
+
     def test_get_owned_route_or_404_returns_first_row(
         self, sample_route: dict[str, Any]
     ) -> None:

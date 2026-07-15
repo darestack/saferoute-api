@@ -78,3 +78,14 @@ def test_development_allows_missing_encryption_key(monkeypatch):
     settings = Settings(_env_file=None)
     assert settings.ENVIRONMENT == "development"
     assert settings.ENCRYPTION_KEY == ""
+
+
+def test_extra_env_vars_ignored_by_pydantic_settings(monkeypatch):
+    """Note: pydantic-settings ignores extra env vars; extra=forbid only applies
+    to directly passed kwargs, not environment variables. This is a known
+    limitation of the library. Typos in env vars will not raise ValidationError."""
+    _base_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    # This should NOT raise - pydantic-settings silently ignores extra env vars
+    settings = Settings(_env_file=None)
+    assert settings.SUPABASE_URL == "https://example.supabase.co"
