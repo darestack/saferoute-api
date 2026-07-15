@@ -115,6 +115,9 @@ class RouteResponse(BaseModel):
     spam_blocked_ua: list[str] = Field(default_factory=list)
     spam_allowed_countries: list[str] = Field(default_factory=list)
     spam_blocked_ips: list[str] = Field(default_factory=list)
+    turnstile_enabled: bool = False
+    turnstile_site_key: Optional[str] = None
+    turnstile_secret_key: Optional[str] = None
     email_notifications: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -151,6 +154,9 @@ class RouteUpdate(BaseModel):
     spam_blocked_ua: Optional[list[str]] = None
     spam_allowed_countries: Optional[list[str]] = None
     spam_blocked_ips: Optional[list[str]] = None
+    turnstile_enabled: Optional[bool] = None
+    turnstile_site_key: Optional[str] = None
+    turnstile_secret_key: Optional[str] = None
     email_notifications: Optional[dict[str, Any]] = None
 
 

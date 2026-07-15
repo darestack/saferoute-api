@@ -1154,6 +1154,96 @@ class TestSpamShield:
             _check_spam_shield(payload, route, "9.9.9.9", "Mozilla/5.0")
         )  # should not raise
 
+    def test_turnstile_valid_token_passes(self):
+        from app.routes.proxy import _check_spam_shield
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
+            "turnstile_enabled": True,
+            "turnstile_site_key": "site-key",
+            "turnstile_secret_key": "secret-key",
+        }
+        payload = {"cf-turnstile-response": "valid-token"}
+        with patch(
+            "app.routes.proxy._verify_turnstile_token",
+            return_value=True,
+        ):
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+            )  # should not raise
+
+    def test_turnstile_invalid_token_returns_403(self):
+        from app.routes.proxy import _check_spam_shield
+        from fastapi import HTTPException
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
+            "turnstile_enabled": True,
+            "turnstile_site_key": "site-key",
+            "turnstile_secret_key": "secret-key",
+        }
+        payload = {"cf-turnstile-response": "invalid-token"}
+        with patch(
+            "app.routes.proxy._verify_turnstile_token",
+            return_value=False,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+                )
+            assert exc_info.value.status_code == 403
+
+    def test_turnstile_missing_token_returns_403(self):
+        from app.routes.proxy import _check_spam_shield
+        from fastapi import HTTPException
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
+            "turnstile_enabled": True,
+            "turnstile_site_key": "site-key",
+            "turnstile_secret_key": "secret-key",
+        }
+        payload = {}
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_turnstile_skipped_when_disabled(self):
+        from app.routes.proxy import _check_spam_shield
+
+        route = {
+            "slug": "test-route",
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
+            "turnstile_enabled": False,
+            "turnstile_site_key": "site-key",
+            "turnstile_secret_key": "secret-key",
+        }
+        payload = {"cf-turnstile-response": "token"}
+        with patch(
+            "app.routes.proxy._verify_turnstile_token",
+            return_value=False,
+        ):
+            asyncio.run(
+                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
+            )  # should not raise, Turnstile not enforced
+
 
 class TestDecryptFailure:
     """Tests that decryption failures are handled safely."""

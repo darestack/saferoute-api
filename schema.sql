@@ -31,6 +31,9 @@ create table public.routes (
     spam_blocked_ua text[] default '{}',
     spam_allowed_countries text[] default '{}',
     spam_blocked_ips text[] default '{}',
+    turnstile_enabled boolean default false,
+    turnstile_site_key text,
+    turnstile_secret_key text,
     email_notifications jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null

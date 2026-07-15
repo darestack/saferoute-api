@@ -98,6 +98,44 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
     _ip_country_cache[client_ip] = country_code
     return country_code
 
+
+async def _verify_turnstile_token(
+    token: str,
+    secret_key: str,
+    client_ip: str,
+) -> bool:
+    """Verify a Cloudflare Turnstile token.
+
+    Args:
+        token: The ``cf-turnstile-response`` token from the client.
+        secret_key: The route's Turnstile secret key.
+        client_ip: The client IP address for remoteip validation.
+
+    Returns:
+        ``True`` if the token is valid, ``False`` otherwise.
+    """
+    if not token or not secret_key:
+        return False
+
+    try:
+        client = get_http_client()
+        response = await client.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data={
+                "secret": secret_key,
+                "response": token,
+                "remoteip": client_ip,
+            },
+            timeout=5.0,
+        )
+        if response.status_code == 200:
+            result = response.json()
+            return bool(result.get("success"))
+    except Exception:
+        logger.exception("Turnstile verification failed for IP %s", client_ip)
+
+    return False
+
 # Tunables — sourced from app.config.settings so they are runtime-overridable
 # without code changes. The module-level names remain for backward compatibility
 # with existing tests that patch them directly.
@@ -731,6 +769,34 @@ async def _check_spam_shield(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
+
+    turnstile_enabled = route.get("turnstile_enabled")
+    if turnstile_enabled:
+        turnstile_token = payload.get("cf-turnstile-response")
+        turnstile_secret = route.get("turnstile_secret_key")
+        if not turnstile_token or not turnstile_secret:
+            logger.info(
+                "Turnstile missing token/secret for slug=%s",
+                route.get("slug"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Turnstile verification required",
+            )
+
+        valid = await _verify_turnstile_token(
+            turnstile_token, turnstile_secret, client_ip
+        )
+        if not valid:
+            logger.info(
+                "Turnstile verification failed for slug=%s, ip=%s",
+                route.get("slug"),
+                client_ip,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Turnstile verification failed",
+            )
 
 
 @router.post("/v1/route/{slug}")
