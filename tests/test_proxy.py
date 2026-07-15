@@ -1858,6 +1858,23 @@ class TestCircuitBreakerBoundedEviction:
 class TestValidateDestinationUrlAsync:
     """Tests for validate_destination_url_async behavior."""
 
+    def test_negative_geolocation_cached(self):
+        """Failed IP lookups should be cached as None to avoid repeated HTTP requests."""
+        from app.routes.proxy import _lookup_country_code, _ip_country_cache
+
+        # Clear cache
+        _ip_country_cache.clear()
+
+        # Use a private IP that should be cached as None without HTTP request
+        with patch("app.routes.proxy.get_http_client") as mock_client:
+            result = asyncio.run(_lookup_country_code("192.168.1.1"))
+            assert result is None
+            # Should not have made any HTTP requests
+            mock_client.assert_not_called()
+            # Should be cached
+            assert "192.168.1.1" in _ip_country_cache
+            assert _ip_country_cache["192.168.1.1"] is None
+
     def test_no_dns_resolution_skips_thread(self):
         """When resolve_dns=False, validate_destination_url_async should not dispatch to a thread."""
         from app.utils.security import validate_destination_url_async
