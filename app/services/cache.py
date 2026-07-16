@@ -46,6 +46,10 @@ class DistributedCache:
         self._lock = asyncio.Lock()
         self._max_size = max_size
         self._default_ttl = default_ttl
+        self._hits = 0
+        self._misses = 0
+        self._l2_hits = 0
+        self._l2_misses = 0
 
     async def get(self, key: str) -> Any | None:
         """Get a value from the cache.
@@ -64,6 +68,7 @@ class DistributedCache:
                 value, expiry = self._cache[key]
                 if time.monotonic() < expiry:
                     self._cache.move_to_end(key)
+                    self._hits += 1
                     return value
                 else:
                     del self._cache[key]
@@ -73,6 +78,7 @@ class DistributedCache:
             from app.database import cache_get as _cache_get
             raw = await _cache_get(key)
             if raw is not None:
+                self._l2_hits += 1
                 value = json.loads(raw) if isinstance(raw, str) else raw
                 # Repopulate L1
                 async with self._lock:
@@ -82,6 +88,8 @@ class DistributedCache:
         except Exception:
             logger.exception("L2 cache get failed for key=%s", key)
 
+        self._misses += 1
+        self._l2_misses += 1
         return None
 
     async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
@@ -162,6 +170,23 @@ class DistributedCache:
     def __contains__(self, key: object) -> bool:
         """Check if a key exists in the L1 cache (ignores L2)."""
         return key in self._cache
+
+    def get_metrics(self) -> dict[str, int | float]:
+        """Return cache hit/miss metrics.
+
+        Returns:
+            Dict with hits, misses, l2_hits, l2_misses, hit_rate, l1_size.
+        """
+        total = self._hits + self._misses
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "l2_hits": self._l2_hits,
+            "l2_misses": self._l2_misses,
+            "hit_rate": self._hits / total if total > 0 else 0.0,
+            "l1_size": len(self._cache),
+            "l1_max_size": self._max_size,
+        }
 
     def _evict(self) -> None:
         """Evict oldest entries if L1 exceeds max size."""

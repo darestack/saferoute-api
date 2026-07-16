@@ -108,11 +108,12 @@ class TestProxyWebhookIntegration:
         ):
             response = client.get("/health")
             assert response.status_code == 200
-            assert response.json() == {
-                "status": "healthy",
-                "database": "connected",
-                "service": "SafeRoute API",
-            }
+            body = response.json()
+            assert body["status"] == "healthy"
+            assert body["database"] == "connected"
+            assert body["cache"] == "connected"
+            assert "cache_metrics" in body
+            assert body["service"] == "SafeRoute API"
 
     def test_missing_route_returns_404(self):
         """Test that routing to a non-existent slug returns 404."""

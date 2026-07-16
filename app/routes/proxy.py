@@ -1150,3 +1150,55 @@ async def outbound_health_check(
             error=str(exc),
             duration_ms=duration_ms,
         )
+
+
+@router.get(
+    "/internal/cache/stats",
+    summary="Cache statistics",
+    description="Return detailed metrics for all distributed caches.",
+)
+async def cache_stats(request: Request) -> JSONResponse:
+    """Return cache statistics for monitoring and debugging."""
+    try:
+        from app.routes.auth import _user_cache
+        from app.services.route_cache import _route_cache
+        from app.routes.proxy import _ip_country_cache
+        from app.database import _api_key_cache
+
+        caches = {
+            "user_cache": _user_cache.get_metrics(),
+            "route_cache": _route_cache.get_metrics(),
+            "geolocation_cache": _ip_country_cache.get_metrics(),
+            "api_key_cache": _api_key_cache.get_metrics(),
+        }
+
+        # Calculate aggregate stats
+        total_hits = sum(c["hits"] for c in caches.values())
+        total_misses = sum(c["misses"] for c in caches.values())
+        total_l2_hits = sum(c["l2_hits"] for c in caches.values())
+        total_l2_misses = sum(c["l2_misses"] for c in caches.values())
+        total_size = sum(c["l1_size"] for c in caches.values())
+        total_max = sum(c["l1_max_size"] for c in caches.values())
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "caches": caches,
+                "aggregate": {
+                    "total_hits": total_hits,
+                    "total_misses": total_misses,
+                    "total_l2_hits": total_l2_hits,
+                    "total_l2_misses": total_l2_misses,
+                    "overall_hit_rate": total_hits / (total_hits + total_misses) if (total_hits + total_misses) > 0 else 0.0,
+                    "total_l1_size": total_size,
+                    "total_l1_max_size": total_max,
+                    "utilization_pct": round(total_size / total_max * 100, 1) if total_max > 0 else 0.0,
+                },
+            },
+        )
+    except Exception as exc:
+        logger.error("Cache stats endpoint failed: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to retrieve cache stats"},
+        )

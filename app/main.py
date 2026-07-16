@@ -353,12 +353,14 @@ async def shutdown_event() -> None:
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    """Check API and database connectivity.
+    """Check API, database, and cache connectivity.
 
     Returns:
-        dict: Health status with database connectivity check.
+        dict: Health status with database and cache connectivity checks.
     """
     db_ok = False
+    cache_ok = False
+    cache_metrics = {}
     try:
         from app.database import admin, execute_query
 
@@ -368,12 +370,40 @@ async def health_check() -> JSONResponse:
     except Exception as exc:
         logger.error("Health check database probe failed: %s", exc)
 
-    status_code = 200 if db_ok else 503
+    # Cache health check
+    try:
+        from app.services.cache import DistributedCache
+        from app.database import cache_get
+
+        # Test L2 cache connectivity with a simple key
+        test_key = "__health_check__"
+        await cache_get(test_key)
+        cache_ok = True
+
+        # Collect cache metrics from known caches
+        from app.routes.auth import _user_cache
+        from app.services.route_cache import _route_cache
+        from app.routes.proxy import _ip_country_cache
+        from app.database import _api_key_cache
+
+        cache_metrics = {
+            "user_cache": _user_cache.get_metrics(),
+            "route_cache": _route_cache.get_metrics(),
+            "geolocation_cache": _ip_country_cache.get_metrics(),
+            "api_key_cache": _api_key_cache.get_metrics(),
+        }
+    except Exception as exc:
+        logger.error("Health check cache probe failed: %s", exc)
+
+    overall_ok = db_ok and cache_ok
+    status_code = 200 if overall_ok else 503
     return JSONResponse(
         status_code=status_code,
         content={
-            "status": "healthy" if db_ok else "unhealthy",
+            "status": "healthy" if overall_ok else "unhealthy",
             "database": "connected" if db_ok else "disconnected",
+            "cache": "connected" if cache_ok else "disconnected",
+            "cache_metrics": cache_metrics,
             "service": "SafeRoute API",
         },
     )
