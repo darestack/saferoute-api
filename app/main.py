@@ -372,7 +372,6 @@ async def health_check() -> JSONResponse:
 
     # Cache health check
     try:
-        from app.services.cache import DistributedCache
         from app.database import cache_get
 
         # Test L2 cache connectivity with a simple key

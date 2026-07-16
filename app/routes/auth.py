@@ -125,7 +125,7 @@ async def _get_cached_jwks() -> dict:
 # User cache (L1 in-memory + L2 PostgreSQL)
 # ---------------------------------------------------------------------------
 from collections import OrderedDict  # noqa: E402
-from app.services.cache import DistributedCache
+from app.services.cache import DistributedCache  # noqa: E402
 
 _USER_CACHE_TTL_SECONDS = 300
 _USER_CACHE_MAX_SIZE = 1000

@@ -15,7 +15,6 @@ import json
 import logging
 import re
 import time
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
 from typing import Any, Optional, cast
@@ -59,7 +58,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # IP geolocation cache (country code lookups)
 # ---------------------------------------------------------------------------
-from app.services.cache import DistributedCache
+from app.services.cache import DistributedCache  # noqa: E402
 
 _ip_country_cache = DistributedCache(
     max_size=4096,

@@ -15,7 +15,6 @@ from typing import Any, Optional, cast
 
 import asyncio
 import httpx
-from collections import OrderedDict
 from supabase import Client, create_client
 
 from app.config import settings
@@ -196,7 +195,7 @@ admin = get_supabase_client(use_service_role=True)
 _API_KEY_CACHE_TTL_SECONDS = 300
 _API_KEY_CACHE_MAX_SIZE = 500
 
-from app.services.cache import DistributedCache
+from app.services.cache import DistributedCache  # noqa: E402
 
 _api_key_cache = DistributedCache(
     max_size=_API_KEY_CACHE_MAX_SIZE,
