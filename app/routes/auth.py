@@ -10,7 +10,7 @@ import inspect
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional, cast
 
 import httpx
 import jwt
@@ -167,7 +167,7 @@ async def _get_cached_user(user_id: str) -> Optional[User]:
     if raw is not None:
         if isinstance(raw, dict):
             return _dict_to_user(raw)
-        return raw
+        return cast(User, raw)
     return None
 
 
@@ -225,8 +225,9 @@ async def _fetch_and_cache_user(user_id: str) -> User:
         # while we were waiting for the DB response.
         cached = await _user_cache.get(user_id)
         if cached is not None:
-            fut.set_result(cached)
-            return cached
+            user = cast(User, cached)
+            fut.set_result(user)
+            return user
 
         await _user_cache.set(
             user.id, _user_to_dict(user), ttl=_USER_CACHE_TTL_SECONDS

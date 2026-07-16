@@ -11,7 +11,6 @@ from __future__ import annotations
 import hmac
 import logging
 import secrets
-import time
 from typing import Any, Optional, cast
 
 import asyncio
@@ -211,7 +210,7 @@ async def _get_cached_api_key(key_hash: str) -> Optional[str]:
     """Return a cached route_id for an API key hash if available and fresh."""
     route_id = await _api_key_cache.get(key_hash)
     if route_id is not None:
-        return route_id
+        return cast(str, route_id)
     return None
 
 

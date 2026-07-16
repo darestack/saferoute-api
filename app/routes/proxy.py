@@ -95,7 +95,7 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
     """
     cached = await _ip_country_cache.get(client_ip)
     if cached is not None:
-        return cached
+        return cast(Optional[str], cached)
 
     country_code: Optional[str] = None
     try:
