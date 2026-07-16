@@ -57,8 +57,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # OAuth callback rate limiting (per-IP, in-memory)
 # ---------------------------------------------------------------------------
-_OAUTH_CALLBACK_RATE_LIMIT = 10
-_OAUTH_CALLBACK_RATE_WINDOW = 60
+_OAUTH_CALLBACK_RATE_LIMIT = settings.OAUTH_CALLBACK_RATE_LIMIT
+_OAUTH_CALLBACK_RATE_WINDOW = settings.OAUTH_CALLBACK_RATE_WINDOW_SECONDS
 _OAUTH_CACHE_MAX_ENTRIES = 10_000
 
 from collections import OrderedDict  # noqa: E402

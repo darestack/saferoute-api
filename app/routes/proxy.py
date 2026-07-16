@@ -75,7 +75,7 @@ _ip_country_cache = DistributedCache(
 _GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
 """ip-api.com endpoint for country code lookups (free tier, no key)."""
 
-_GEOLOCATION_TIMEOUT = 2.0
+_GEOLOCATION_TIMEOUT = settings.GEOLOCATION_TIMEOUT_SECONDS
 """Timeout for geolocation HTTP requests."""
 
 

@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     RETRY_BATCH_SIZE: int = 100
     RETRY_CLAIM_STALE_SECONDS: int = 300
     RESEND_API_KEY: str = ""
+    EMAIL_RETRY_ATTEMPTS: int = 3
+    EMAIL_RETRY_BACKOFF_BASE: float = 1.0
+    GEOLOCATION_TIMEOUT_SECONDS: float = 2.0
+    CIRCUIT_BREAKER_TIMEOUT_SECONDS: float = 60.0
+    MAX_REQUEST_BODY_BYTES: int = 1_048_576  # 1 MiB
+    OAUTH_CALLBACK_RATE_LIMIT: int = 10
+    OAUTH_CALLBACK_RATE_WINDOW_SECONDS: int = 60
     EMAIL_FROM: str = "noreply@saferoute.dev"
     EMAIL_REPLY_TO: str = ""
     TURNSTILE_SECRET_KEY: str = ""

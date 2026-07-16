@@ -43,9 +43,6 @@ _DISPOSABLE_EMAIL_LIST_URL = os.environ.get(
 )
 """Source for disposable email domains. Set to empty string to disable."""
 
-# Domains loaded from app/utils/disposable_domains.json at startup.
-"""Minimal embedded fallback list if external fetch fails."""
-
 
 async def _load_disposable_email_domains() -> None:
     """Load disposable email domains from embedded JSON file or external source."""
@@ -229,10 +226,10 @@ def _render_submission_email(
 # ---------------------------------------------------------------------------
 # Email delivery with retry
 # ---------------------------------------------------------------------------
-_EMAIL_RETRY_ATTEMPTS = 3
+_EMAIL_RETRY_ATTEMPTS = settings.EMAIL_RETRY_ATTEMPTS
 """Maximum attempts for email delivery."""
 
-_EMAIL_RETRY_BACKOFF_BASE = 1.0
+_EMAIL_RETRY_BACKOFF_BASE = settings.EMAIL_RETRY_BACKOFF_BASE
 """Base backoff in seconds between email retries."""
 
 

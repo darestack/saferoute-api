@@ -207,7 +207,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 # Request size limit
 # ---------------------------------------------------------------------------
-_DEFAULT_MAX_BODY_BYTES = 1024 * 1024  # 1 MiB
+_DEFAULT_MAX_BODY_BYTES = settings.MAX_REQUEST_BODY_BYTES
 _DEFAULT_MAX_BODY_SECONDS = 30
 
 

@@ -2,8 +2,10 @@ import asyncio
 import time
 from collections import OrderedDict
 
+from app.config import settings
+
 _CIRCUIT_BREAKER_THRESHOLD = 5
-_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
+_CIRCUIT_BREAKER_COOLDOWN_SECONDS = settings.CIRCUIT_BREAKER_TIMEOUT_SECONDS
 _CIRCUIT_BREAKER_MAX_ENTRIES = 1_000
 
 _circuit_breaker_state: OrderedDict[str, dict] = OrderedDict()
