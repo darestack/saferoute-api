@@ -254,3 +254,78 @@ async def clear_api_key_cache() -> None:
     async with _api_key_cache_lock:
         _api_key_cache.clear()
         _api_key_route_index.clear()
+
+
+# ---------------------------------------------------------------------------
+# Distributed cache (L2 - PostgreSQL)
+# ---------------------------------------------------------------------------
+async def cache_get(key: str) -> Any | None:
+    """Get a value from the distributed PostgreSQL cache.
+
+    Args:
+        key: Cache key.
+
+    Returns:
+        Cached value, or ``None`` if not found or expired.
+    """
+    try:
+        result = await execute_query(
+            admin.rpc("cache_get", {"p_key": key})
+        )
+        if result.data and result.data[0] is not None:
+            return result.data[0]
+    except Exception:
+        logger.exception("Distributed cache get failed for key=%s", key)
+    return None
+
+
+async def cache_set(key: str, value: Any, ttl_seconds: int = 300) -> None:
+    """Set a value in the distributed PostgreSQL cache.
+
+    Args:
+        key: Cache key.
+        value: Value to cache (must be JSON-serializable).
+        ttl_seconds: Time-to-live in seconds. Defaults to 300 (5 minutes).
+    """
+    try:
+        import json
+        await execute_query(
+            admin.rpc("cache_set", {
+                "p_key": key,
+                "p_value": json.dumps(value),
+                "p_ttl_seconds": ttl_seconds,
+            })
+        )
+    except Exception:
+        logger.exception("Distributed cache set failed for key=%s", key)
+
+
+async def cache_delete(key: str) -> None:
+    """Delete a value from the distributed PostgreSQL cache.
+
+    Args:
+        key: Cache key to delete.
+    """
+    try:
+        await execute_query(
+            admin.rpc("cache_delete", {"p_key": key})
+        )
+    except Exception:
+        logger.exception("Distributed cache delete failed for key=%s", key)
+
+
+async def cache_cleanup() -> int:
+    """Clean up expired entries from the distributed cache.
+
+    Returns:
+        Number of expired entries removed.
+    """
+    try:
+        result = await execute_query(
+            admin.rpc("cache_cleanup")
+        )
+        if result.data and result.data[0] is not None:
+            return int(result.data[0])
+    except Exception:
+        logger.exception("Distributed cache cleanup failed")
+    return 0
