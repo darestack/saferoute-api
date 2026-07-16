@@ -192,49 +192,34 @@ admin = get_supabase_client(use_service_role=True)
 
 
 # ---------------------------------------------------------------------------
-# API key verification cache
+# API key verification cache (L1 in-memory + L2 PostgreSQL)
 # ---------------------------------------------------------------------------
 _API_KEY_CACHE_TTL_SECONDS = 300
 _API_KEY_CACHE_MAX_SIZE = 500
-_api_key_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+
+from app.services.cache import DistributedCache
+
+_api_key_cache = DistributedCache(
+    max_size=_API_KEY_CACHE_MAX_SIZE,
+    default_ttl=_API_KEY_CACHE_TTL_SECONDS,
+)
 _api_key_route_index: dict[str, set[str]] = {}
 _api_key_cache_lock = asyncio.Lock()
 
 
 async def _get_cached_api_key(key_hash: str) -> Optional[str]:
     """Return a cached route_id for an API key hash if available and fresh."""
-    async with _api_key_cache_lock:
-        now = time.monotonic()
-        if key_hash in _api_key_cache:
-            route_id, expiry = _api_key_cache[key_hash]
-            if now < expiry:
-                _api_key_cache.move_to_end(key_hash)
-                return route_id
-            else:
-                del _api_key_cache[key_hash]
-                if route_id in _api_key_route_index:
-                    _api_key_route_index[route_id].discard(key_hash)
-                    if not _api_key_route_index[route_id]:
-                        del _api_key_route_index[route_id]
-        return None
+    route_id = await _api_key_cache.get(key_hash)
+    if route_id is not None:
+        return route_id
+    return None
 
 
 async def _cache_api_key(key_hash: str, route_id: str) -> None:
     """Store an API key hash → route_id mapping with TTL and max size."""
+    await _api_key_cache.set(key_hash, route_id, ttl=_API_KEY_CACHE_TTL_SECONDS)
     async with _api_key_cache_lock:
-        if key_hash in _api_key_cache:
-            _api_key_cache.move_to_end(key_hash)
-        _api_key_cache[key_hash] = (
-            route_id,
-            time.monotonic() + _API_KEY_CACHE_TTL_SECONDS,
-        )
         _api_key_route_index.setdefault(route_id, set()).add(key_hash)
-        while len(_api_key_cache) > _API_KEY_CACHE_MAX_SIZE:
-            evicted_hash, (evicted_route, _) = _api_key_cache.popitem(last=False)
-            if evicted_route in _api_key_route_index:
-                _api_key_route_index[evicted_route].discard(evicted_hash)
-                if not _api_key_route_index[evicted_route]:
-                    del _api_key_route_index[evicted_route]
 
 
 async def clear_api_key_cache_for_route(route_id: str) -> None:
@@ -242,17 +227,16 @@ async def clear_api_key_cache_for_route(route_id: str) -> None:
     async with _api_key_cache_lock:
         hashes = _api_key_route_index.pop(route_id, set())
         for key_hash in hashes:
-            _api_key_cache.pop(key_hash, None)
+            await _api_key_cache.delete(key_hash)
 
 
 async def clear_api_key_cache() -> None:
     """Clear the entire API key verification cache.
 
-    Must be called from an async context because it acquires
-    ``_api_key_cache_lock`` to stay consistent with concurrent readers.
+    Clears both L1 in-memory and L2 PostgreSQL caches.
     """
+    await _api_key_cache.clear()
     async with _api_key_cache_lock:
-        _api_key_cache.clear()
         _api_key_route_index.clear()
 
 

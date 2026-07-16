@@ -1863,7 +1863,7 @@ class TestValidateDestinationUrlAsync:
         from app.routes.proxy import _lookup_country_code, _ip_country_cache
 
         # Clear cache
-        _ip_country_cache.clear()
+        asyncio.run(_ip_country_cache.clear())
 
         # Use a private IP that should be cached as None without HTTP request
         with patch("app.routes.proxy.get_http_client") as mock_client:
@@ -1872,8 +1872,8 @@ class TestValidateDestinationUrlAsync:
             # Should not have made any HTTP requests
             mock_client.assert_not_called()
             # Should be cached
-            assert "192.168.1.1" in _ip_country_cache
-            assert _ip_country_cache["192.168.1.1"] is None
+            cached = asyncio.run(_ip_country_cache.get("192.168.1.1"))
+            assert cached is None
 
     def test_no_dns_resolution_skips_thread(self):
         """When resolve_dns=False, validate_destination_url_async should not dispatch to a thread."""

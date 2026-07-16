@@ -122,14 +122,17 @@ async def _get_cached_jwks() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# User cache
+# User cache (L1 in-memory + L2 PostgreSQL)
 # ---------------------------------------------------------------------------
 from collections import OrderedDict  # noqa: E402
+from app.services.cache import DistributedCache
 
 _USER_CACHE_TTL_SECONDS = 300
 _USER_CACHE_MAX_SIZE = 1000
-_user_cache: OrderedDict[str, tuple[User, float]] = OrderedDict()
-_user_cache_lock = asyncio.Lock()
+_user_cache = DistributedCache(
+    max_size=_USER_CACHE_MAX_SIZE,
+    default_ttl=_USER_CACHE_TTL_SECONDS,
+)
 
 # In-flight user fetches: prevents duplicate DB calls when many concurrent
 # requests miss the cache for the same user_id.
@@ -138,29 +141,39 @@ _user_cache_fills: "OrderedDict[str, tuple[asyncio.Future, float]]" = OrderedDic
 _user_cache_fills_lock = asyncio.Lock()
 
 
+def _user_to_dict(user: User) -> dict[str, Any]:
+    """Serialize a User to a JSON-compatible dict."""
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def _dict_to_user(data: dict[str, Any]) -> User:
+    """Deserialize a dict back to a User model."""
+    return User(
+        id=data["id"],
+        email=data["email"],
+        full_name=data.get("full_name"),
+        created_at=data.get("created_at"),
+    )
+
+
 async def _get_cached_user(user_id: str) -> Optional[User]:
     """Return a cached User if available and fresh."""
-    async with _user_cache_lock:
-        now = time.monotonic()
-        if user_id in _user_cache:
-            user, expiry = _user_cache[user_id]
-            if now < expiry:
-                _user_cache.move_to_end(user_id)
-                return user
-            else:
-                del _user_cache[user_id]
+    raw = await _user_cache.get(user_id)
+    if raw is not None:
+        if isinstance(raw, dict):
+            return _dict_to_user(raw)
+        return raw
     return None
 
 
 async def _cache_user(user: User) -> None:
     """Store a User in the cache with TTL and FIFO eviction."""
-    async with _user_cache_lock:
-        if user.id in _user_cache:
-            _user_cache.move_to_end(user.id)
-        _user_cache[user.id] = (user, time.monotonic() + _USER_CACHE_TTL_SECONDS)
-
-        while len(_user_cache) > _USER_CACHE_MAX_SIZE:
-            _user_cache.popitem(last=False)
+    await _user_cache.set(user.id, _user_to_dict(user), ttl=_USER_CACHE_TTL_SECONDS)
 
 
 async def _fetch_and_cache_user(user_id: str) -> User:
@@ -207,24 +220,19 @@ async def _fetch_and_cache_user(user_id: str) -> User:
             created_at=result.user.created_at,
         )
 
-        # Cache the user under the lock after the DB call completes.
-        async with _user_cache_lock:
-            # Double-check in case another coroutine cached the same user.
-            now = time.monotonic()
-            if user_id in _user_cache:
-                cached_user, expiry = _user_cache[user_id]
-                if now < expiry:
-                    _user_cache.move_to_end(user_id)
-                    return cached_user
-                else:
-                    del _user_cache[user_id]
+        # Cache the user after the DB call completes.
+        # Double-check in case another coroutine cached the same user
+        # while we were waiting for the DB response.
+        cached = await _user_cache.get(user_id)
+        if cached is not None:
+            fut.set_result(cached)
+            return cached
 
-            _user_cache[user.id] = (user, time.monotonic() + _USER_CACHE_TTL_SECONDS)
-            while len(_user_cache) > _USER_CACHE_MAX_SIZE:
-                _user_cache.popitem(last=False)
-
-            fut.set_result(user)
-            return user
+        await _user_cache.set(
+            user.id, _user_to_dict(user), ttl=_USER_CACHE_TTL_SECONDS
+        )
+        fut.set_result(user)
+        return user
     except Exception as exc:
         if not fut.done():
             fut.set_exception(exc)

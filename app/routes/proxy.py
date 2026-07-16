@@ -59,8 +59,13 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # IP geolocation cache (country code lookups)
 # ---------------------------------------------------------------------------
-_ip_country_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
-"""Simple in-memory LRU cache for IP -> countryCode lookups."""
+from app.services.cache import DistributedCache
+
+_ip_country_cache = DistributedCache(
+    max_size=4096,
+    default_ttl=3600,  # 1 hour TTL for geolocation results
+)
+"""Distributed cache for IP -> countryCode lookups."""
 
 # NOTE: ip-api.com free tier only supports HTTP (not HTTPS). This means
 # client IP addresses are sent over unencrypted HTTP for geolocation lookups.
@@ -73,22 +78,13 @@ _GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
 _GEOLOCATION_TIMEOUT = 2.0
 """Timeout for geolocation HTTP requests."""
 
-_GEOLOCATION_CACHE_MAXSIZE = 4096
-"""Maximum entries in the geolocation cache to bound memory."""
-
-
-def _ip_country_cache_evict() -> None:
-    """Evict oldest entries if cache exceeds max size."""
-    while len(_ip_country_cache) > _GEOLOCATION_CACHE_MAXSIZE:
-        _ip_country_cache.popitem(last=False)
-
 
 async def _lookup_country_code(client_ip: str) -> Optional[str]:
     """Lookup the 2-letter country code for an IP address.
 
     Uses ip-api.com (free tier, ~45k requests/month, no API key).
-    Results are cached in-memory with an LRU eviction policy. Failed
-    lookups (including private/IPv6 addresses) are cached as ``None``
+    Results are cached in a distributed cache (L1 in-memory + L2 PostgreSQL).
+    Failed lookups (including private/IPv6 addresses) are cached as ``None``
     to avoid repeated HTTP requests for the same IP.
 
     Args:
@@ -97,9 +93,9 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
     Returns:
         The 2-letter ISO country code, or ``None`` if lookup fails.
     """
-    if client_ip in _ip_country_cache:
-        _ip_country_cache.move_to_end(client_ip)
-        return _ip_country_cache[client_ip]
+    cached = await _ip_country_cache.get(client_ip)
+    if cached is not None:
+        return cached
 
     country_code: Optional[str] = None
     try:
@@ -110,9 +106,7 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
             ip = ipaddress.ip_address(client_ip)
             if not ip.is_global:
                 # Private, loopback, link-local, etc. — cache as None.
-                _ip_country_cache[client_ip] = None
-                _ip_country_cache.move_to_end(client_ip)
-                _ip_country_cache_evict()
+                await _ip_country_cache.set(client_ip, None, ttl=3600)
                 return None
         except ValueError:
             # Not a valid IP address (could be a hostname); proceed with lookup.
@@ -129,9 +123,7 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
     except Exception:
         logger.debug("Geolocation lookup failed for IP %s", client_ip)
 
-    _ip_country_cache[client_ip] = country_code
-    _ip_country_cache.move_to_end(client_ip)
-    _ip_country_cache_evict()
+    await _ip_country_cache.set(client_ip, country_code, ttl=3600)
     return country_code
 
 

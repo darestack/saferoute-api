@@ -1,44 +1,33 @@
 import asyncio
 import time
 from typing import Optional, Any, cast
-from collections import OrderedDict
 from fastapi import HTTPException
 
+from collections import OrderedDict
 from app.database import admin, execute_query
+from app.services.cache import DistributedCache
 
 _ROUTE_CACHE_TTL_SECONDS = 30
 _ROUTE_CACHE_MAX_SIZE = 500
 
-_route_cache: OrderedDict[str, tuple[dict, float]] = OrderedDict()
-_route_cache_lock = asyncio.Lock()
+_route_cache = DistributedCache(
+    max_size=_ROUTE_CACHE_MAX_SIZE,
+    default_ttl=_ROUTE_CACHE_TTL_SECONDS,
+)
 
 _ROUTE_CACHE_FILLS_MAX_ENTRIES = 1_000
-_route_cache_fills: OrderedDict[str, tuple[asyncio.Future, float]] = OrderedDict()
+_route_cache_fills: "OrderedDict[str, tuple[asyncio.Future, float]]" = OrderedDict()
 _route_cache_fills_lock = asyncio.Lock()
 
 
 async def get_cached_route(slug: str) -> Optional[dict]:
     """Return a cached active route dict if available and fresh."""
-    async with _route_cache_lock:
-        now = time.monotonic()
-        if slug in _route_cache:
-            route, expiry = _route_cache[slug]
-            if now < expiry:
-                _route_cache.move_to_end(slug)
-                return route
-            else:
-                del _route_cache[slug]
-        return None
+    return await _route_cache.get(slug)
 
 
 async def _cache_route(slug: str, route: dict) -> None:
     """Store a route in the cache with TTL and FIFO eviction."""
-    async with _route_cache_lock:
-        if slug in _route_cache:
-            _route_cache.move_to_end(slug)
-        _route_cache[slug] = (route, time.monotonic() + _ROUTE_CACHE_TTL_SECONDS)
-        while len(_route_cache) > _ROUTE_CACHE_MAX_SIZE:
-            _route_cache.popitem(last=False)
+    await _route_cache.set(slug, route, ttl=_ROUTE_CACHE_TTL_SECONDS)
 
 
 async def fill_route_cache(slug: str) -> dict:
@@ -92,10 +81,8 @@ async def fill_route_cache(slug: str) -> dict:
 
 async def invalidate_route_cache(slug: str) -> None:
     """Remove a route from the cache."""
-    async with _route_cache_lock:
-        _route_cache.pop(slug, None)
+    await _route_cache.delete(slug)
 
 
 async def clear_route_cache() -> None:
-    async with _route_cache_lock:
-        _route_cache.clear()
+    await _route_cache.clear()
