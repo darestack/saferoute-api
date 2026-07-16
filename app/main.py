@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
@@ -158,6 +159,17 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.get_allowed_hos
 # permits the CDN. In production, docs should be disabled or served from a
 # locked-down origin.
 _DOCS_PATHS = {"/docs", "/docs/", "/openapi.json", "/redoc"}
+_FRONTEND_PATHS = {
+    "/",
+    "/login.html",
+    "/dashboard.html",
+    "/auth/callback.html",
+    "/assets/css/styles.css",
+    "/assets/js/main.js",
+    "/assets/js/dashboard.js",
+    "/docs/api.md",
+}
+_ALLOWED_PATHS = _DOCS_PATHS | _FRONTEND_PATHS
 
 
 def _apply_security_headers(response: Response, path: str) -> None:
@@ -177,14 +189,15 @@ def _apply_security_headers(response: Response, path: str) -> None:
     # ``X-XSS-Protection`` is omitted on purpose: it is deprecated and can
     # introduce vulnerabilities in legacy browsers; modern browsers ignore
     # it in favour of CSP.
-    if path in _DOCS_PATHS:
+    if path in _ALLOWED_PATHS:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "img-src 'self' data: https:; "
             "script-src 'self' 'unsafe-inline' https://unpkg.com "
-            "https://cdn.jsdelivr.net; "
+            "https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
             "style-src 'self' https://unpkg.com https://cdn.jsdelivr.net "
-            "'unsafe-inline'; "
+            "https://fonts.googleapis.com 'unsafe-inline'; "
+            "font-src 'self' https://fonts.gstatic.com; "
             "connect-src 'self'"
         )
     else:
@@ -327,6 +340,9 @@ app.add_middleware(RequestSizeLimitMiddleware, max_size=_DEFAULT_MAX_BODY_BYTES)
 app.include_router(auth.router)
 app.include_router(oauth.router)
 app.include_router(proxy.router)
+
+# Note: StaticFiles mount removed to prevent interference with API routes.
+# The frontend/ directory is served separately in production deployments.
 
 logger.info("SafeRoute API initialized (environment=%s)", settings.ENVIRONMENT)
 
