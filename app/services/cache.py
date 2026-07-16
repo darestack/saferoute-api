@@ -20,7 +20,7 @@ import time
 from collections import OrderedDict
 from typing import Any, TypeVar
 
-from app.database import cache_cleanup, cache_delete, cache_get, cache_set
+# Database imports are lazy to avoid circular imports with app.database
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,8 @@ class DistributedCache:
 
         # L2 lookup (PostgreSQL)
         try:
-            raw = await cache_get(key)
+            from app.database import cache_get as _cache_get
+            raw = await _cache_get(key)
             if raw is not None:
                 value = json.loads(raw) if isinstance(raw, str) else raw
                 # Repopulate L1
@@ -100,7 +101,8 @@ class DistributedCache:
 
         # L2 store (fire-and-forget, don't block on DB errors)
         try:
-            await cache_set(key, value, ttl)
+            from app.database import cache_set as _cache_set
+            await _cache_set(key, value, ttl)
         except Exception:
             logger.exception("L2 cache set failed for key=%s", key)
 
@@ -116,7 +118,8 @@ class DistributedCache:
 
         # L2 delete
         try:
-            await cache_delete(key)
+            from app.database import cache_delete as _cache_delete
+            await _cache_delete(key)
         except Exception:
             logger.exception("L2 cache delete failed for key=%s", key)
 
@@ -127,7 +130,8 @@ class DistributedCache:
 
         # Clean up expired L2 entries
         try:
-            removed = await cache_cleanup()
+            from app.database import cache_cleanup as _cache_cleanup
+            removed = await _cache_cleanup()
             logger.debug("Cleaned up %d expired cache entries from L2", removed)
         except Exception:
             logger.exception("L2 cache cleanup failed")
@@ -148,7 +152,16 @@ class DistributedCache:
                 del self._cache[key]
 
         # L2 cleanup
-        return await cache_cleanup()
+        from app.database import cache_cleanup as _cache_cleanup
+        return await _cache_cleanup()
+
+    def __len__(self) -> int:
+        """Return the number of entries in the L1 cache."""
+        return len(self._cache)
+
+    def __contains__(self, key: object) -> bool:
+        """Check if a key exists in the L1 cache (ignores L2)."""
+        return key in self._cache
 
     def _evict(self) -> None:
         """Evict oldest entries if L1 exceeds max size."""
