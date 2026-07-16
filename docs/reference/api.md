@@ -213,11 +213,27 @@ Handle OAuth provider callback and exchange code for JWT.
 ### 15. Health Check
 **GET** `/health`
 
-Check API and database connectivity.
+Check API, database, and cache connectivity.
 
 **Responses:**
-- `200 OK`: Health status with database connectivity.
-- `503 Service Unavailable`: Database unreachable.
+- `200 OK`: Health status with database and cache connectivity.
+- `503 Service Unavailable`: Database or cache unreachable.
+
+**Response Body:**
+```json
+{
+  "status": "healthy",
+  "database": "connected",
+  "cache": "connected",
+  "cache_metrics": {
+    "user_cache": {"hits": 1234, "misses": 56, "hit_rate": 0.957, "l1_size": 450, "l1_max_size": 1000},
+    "route_cache": {"hits": 5678, "misses": 123, "hit_rate": 0.979, "l1_size": 320, "l1_max_size": 500},
+    "geolocation_cache": {"hits": 9012, "misses": 234, "hit_rate": 0.974, "l1_size": 2800, "l1_max_size": 4096},
+    "api_key_cache": {"hits": 3456, "misses": 78, "hit_rate": 0.978, "l1_size": 380, "l1_max_size": 500}
+  },
+  "service": "SafeRoute API"
+}
+```
 
 ### 16. Process Retries (Internal)
 **POST** `/internal/process-retries`
@@ -291,5 +307,40 @@ Verifies that the API can successfully make egress requests to the public intern
   "target": "https://www.google.com/generate_204",
   "status_code": 204,
   "duration_ms": 45
+}
+```
+
+### 19. Cache Statistics (Internal)
+**GET** `/internal/cache/stats`
+
+Return detailed metrics for all distributed caches (L1 in-memory + L2 PostgreSQL).
+
+**Headers:**
+- `X-Retry-Secret` (required): Shared secret matching `RETRY_ENDPOINT_SECRET`.
+
+**Responses:**
+- `200 OK`: Cache metrics for all cache layers.
+- `401 Unauthorized`: Invalid retry secret.
+- `500 Internal Server Error`: Failed to retrieve cache stats.
+
+**Response Body:**
+```json
+{
+  "caches": {
+    "user_cache": {"hits": 1234, "misses": 56, "hit_rate": 0.957, "l2_hits": 100, "l2_misses": 10, "l1_size": 450, "l1_max_size": 1000},
+    "route_cache": {"hits": 5678, "misses": 123, "hit_rate": 0.979, "l2_hits": 200, "l2_misses": 20, "l1_size": 320, "l1_max_size": 500},
+    "geolocation_cache": {"hits": 9012, "misses": 234, "hit_rate": 0.974, "l2_hits": 500, "l2_misses": 50, "l1_size": 2800, "l1_max_size": 4096},
+    "api_key_cache": {"hits": 3456, "misses": 78, "hit_rate": 0.978, "l2_hits": 150, "l2_misses": 15, "l1_size": 380, "l1_max_size": 500}
+  },
+  "aggregate": {
+    "total_hits": 19380,
+    "total_misses": 491,
+    "total_l2_hits": 950,
+    "total_l2_misses": 95,
+    "overall_hit_rate": 0.975,
+    "total_l1_size": 3950,
+    "total_l1_max_size": 6096,
+    "utilization_pct": 64.8
+  }
 }
 ```
