@@ -12,6 +12,7 @@ import asyncio
 import datetime
 import inspect
 import logging
+import secrets
 import time
 from typing import Optional
 from urllib.parse import urlencode, urljoin
@@ -42,7 +43,6 @@ _DEV_JWT_KEY: str = ""
 def _get_jwt_signing_key() -> str:
     global _DEV_JWT_KEY
     if not _DEV_JWT_KEY:
-        import secrets
         _DEV_JWT_KEY = secrets.token_urlsafe(32)
         logger.warning(
             "ENCRYPTION_KEY is not set. Using per-process random JWT signing key. "

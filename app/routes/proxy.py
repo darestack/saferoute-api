@@ -11,6 +11,7 @@ forwards payloads, and logs delivery results. Supports:
 """
 
 from __future__ import annotations
+import ipaddress
 import json
 import logging
 import re
@@ -100,7 +101,6 @@ async def _lookup_country_code(client_ip: str) -> Optional[str]:
     try:
         # Quick check: skip lookup for clearly non-public IPs to avoid
         # unnecessary HTTP requests to the geolocation service.
-        import ipaddress
         try:
             ip = ipaddress.ip_address(client_ip)
             if not ip.is_global:

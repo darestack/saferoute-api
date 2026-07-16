@@ -9,6 +9,7 @@ This module creates and exports two Supabase clients:
 
 from __future__ import annotations
 import hmac
+import json
 import logging
 import secrets
 from typing import Any, Optional, cast
@@ -270,7 +271,6 @@ async def cache_set(key: str, value: Any, ttl_seconds: int = 300) -> None:
         ttl_seconds: Time-to-live in seconds. Defaults to 300 (5 minutes).
     """
     try:
-        import json
         await execute_query(
             admin.rpc("cache_set", {
                 "p_key": key,
