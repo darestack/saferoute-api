@@ -47,23 +47,36 @@ Build a modern, conversion-optimized frontend for SafeRoute that establishes the
 
 ```
 frontend/
-├── index.html              # Marketing homepage
-├── dashboard.html          # App dashboard (authenticated)
+├── src/
+│   ├── main.ts              # Homepage entry
+│   ├── dashboard.ts         # Dashboard SPA entry
+│   ├── login.ts             # Login page logic
+│   ├── callback.ts          # OAuth callback handler
+│   ├── components/
+│   │   ├── DashboardShell.ts    # UI state, modals, notifications
+│   │   ├── DashboardCharts.ts   # Chart.js initialization
+│   │   └── DashboardTables.ts   # Routes, logs, payments tables
+│   ├── lib/
+│   │   ├── api.ts           # Typed fetch wrapper with JSON-safe parsing
+│   │   ├── auth.ts          # Token management utilities
+│   │   └── router.ts        # Hash-based SPA router
+│   ├── types/
+│   │   ├── index.ts         # TypeScript interfaces
+│   │   └── chart.d.ts       # Chart.js global type declaration
+│   └── global.css           # Custom animations, utilities
+├── public/
+│   └── images/              # Static assets (logo, favicon)
+├── tests/                   # Playwright E2E tests
+├── index.html               # Marketing homepage
+├── dashboard.html           # App dashboard (authenticated)
+├── login.html               # Auth entry point
 ├── auth/
-│   └── callback.html       # OAuth callback handler
-├── login.html              # Auth entry point
-├── assets/
-│   ├── css/
-│   │   └── styles.css      # Custom animations, utilities
-│   ├── js/
-│   │   ├── main.js         # Homepage interactions
-│   │   └── dashboard.js    # Dashboard logic, API calls
-│   └── images/
-│       ├── logo.png
-│       ├── favicon.png
-│       └── og-image.png
-└── docs/
-    └── api.md              # API reference
+│   └── callback.html        # OAuth callback handler
+├── docs/
+│   └── api.md               # API reference
+├── package.json             # Vite + TypeScript + Playwright
+├── tsconfig.json            # Strict TypeScript config
+└── vite.config.ts           # Multi-page Vite build config
 ```
 
 ---
@@ -177,12 +190,18 @@ frontend/
 - `dashboard.html` — Authenticated dashboard with sidebar, stats cards, routes/logs tables, create-route modal, Chart.js visualizations
 - `login.html` — OAuth entry point with Google and GitHub sign-in, auto-redirect for existing sessions
 - `auth/callback.html` — OAuth callback handler with popup close and parent redirect
-- `assets/js/main.js` — Homepage interactions (scroll animations, smooth scroll), dead code removed
-- `assets/js/dashboard.js` — Dashboard wired to real `/v1/*` API endpoints with Chart.js charts, XSS fixes, error handling improved
+- `src/main.ts` — Homepage interactions (scroll animations, smooth scroll)
+- `src/dashboard.ts` — Dashboard wired to real `/v1/*` API endpoints with Chart.js charts, XSS fixes, error handling improved
+- `src/login.ts` — Login page OAuth logic extracted from inline script
+- `src/callback.ts` — OAuth callback handler extracted from inline script
+- `src/lib/api.ts` — Typed fetch wrapper with JSON-safe parsing
+- `src/lib/auth.ts` — Token management utilities
+- `src/lib/router.ts` — Hash-based SPA router
+- `src/components/` — Modular dashboard components (shell, charts, tables)
+- `src/types/` — TypeScript interfaces and type declarations
+- `src/global.css` — Custom animations and utilities
 - `docs/api.md` — API reference covering all endpoints, Spam Shield, Turnstile, error codes, credit-based rate limits
-- `assets/css/styles.css` — Custom animations, unused CSS rules removed
-- `assets/images/` — favicon.png and logo.png (pre-existing)
-- `.github/workflows/frontend.yml` — GitHub Pages deployment workflow
+- `.github/workflows/frontend.yml` — GitHub Pages deployment workflow with Vite build
 - Playwright E2E tests: 13/13 passing
 
 ### Remaining

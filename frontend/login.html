@@ -34,13 +34,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/styles.css">
 </head>
 <body class="bg-safe-bg text-safe-text font-body antialiased min-h-screen flex items-center justify-center">
     <div class="max-w-md w-full mx-4">
         <div class="text-center mb-8">
             <div class="flex items-center justify-center gap-2 mb-4">
-                <img src="assets/images/logo.png" alt="SafeRoute" class="h-10 w-10" onerror="this.style.display='none'">
+                <img src="/images/logo.png" alt="SafeRoute" class="h-10 w-10" onerror="this.style.display='none'">
                 <span class="font-display font-bold text-2xl">SafeRoute</span>
             </div>
             <h1 class="font-display text-3xl font-bold mb-2">Welcome back</h1>
@@ -81,76 +80,6 @@
         </div>
     </div>
 
-    <script>
-        const API_BASE = window.location.origin;
-
-        function showAuthError(message) {
-            const errorEl = document.getElementById('auth-error');
-            errorEl.textContent = message;
-            errorEl.classList.remove('hidden');
-            setTimeout(() => errorEl.classList.add('hidden'), 5000);
-        }
-
-        async function signInWith(provider) {
-            try {
-                const response = await fetch(`${API_BASE}/auth/oauth/${provider}`);
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Failed to initiate OAuth');
-                }
-                const data = await response.json();
-                
-                const width = 500;
-                const height = 600;
-                const left = window.screenX + (window.outerWidth - width) / 2;
-                const top = window.screenY + (window.outerHeight - height) / 2;
-                
-                const popup = window.open(
-                    data.auth_url,
-                    'OAuth',
-                    `width=${width},height=${height},left=${left},top=${top}`
-                );
-                
-                if (!popup) {
-                    throw new Error('Popup blocked. Please allow popups for this site.');
-                }
-                
-                const pollTimer = setInterval(() => {
-                    if (popup.closed) {
-                        clearInterval(pollTimer);
-                        const token = localStorage.getItem('saferoute_token');
-                        if (token) {
-                            window.location.href = '/dashboard.html';
-                        }
-                    }
-                }, 500);
-            } catch (error) {
-                showAuthError(error.message);
-            }
-        }
-
-        // Redirect to dashboard if already authenticated
-        (async () => {
-            const token = localStorage.getItem('saferoute_token');
-            if (token) {
-                try {
-                    const response = await fetch(`${API_BASE}/v1/me`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-                    if (response.ok) {
-                        window.location.href = '/dashboard.html';
-                    }
-                } catch (e) {
-                    // Token invalid, stay on login page
-                }
-            }
-        })();
-
-        const params = new URLSearchParams(window.location.search);
-        const errorParam = params.get('error');
-        if (errorParam) {
-            showAuthError(decodeURIComponent(errorParam));
-        }
-    </script>
+    <script type="module" src="/src/login.ts"></script>
 </body>
 </html>

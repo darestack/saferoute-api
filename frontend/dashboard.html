@@ -34,7 +34,6 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/styles.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body class="bg-safe-bg text-safe-text font-body antialiased">
@@ -44,7 +43,7 @@
         <aside class="sidebar fixed inset-y-0 left-0 z-40 w-64 bg-safe-surface border-r border-safe-border transform -translate-x-full md:translate-x-0 transition-transform duration-300">
             <div class="p-6">
                 <div class="flex items-center gap-2 mb-8">
-                    <img src="assets/images/logo.png" alt="SafeRoute" class="h-8 w-8" onerror="this.style.display='none'">
+                    <img src="/images/logo.png" alt="SafeRoute" class="h-8 w-8" onerror="this.style.display='none'">
                     <span class="font-display font-bold text-xl">SafeRoute</span>
                 </div>
                 
@@ -360,7 +359,7 @@
         </div>
     </div>
 
-    <script src="assets/js/dashboard.js"></script>
+    <script type="module" src="/src/dashboard.ts"></script>
     <script>
         function toggleSidebar() {
             document.querySelector('.sidebar').classList.toggle('-translate-x-full');

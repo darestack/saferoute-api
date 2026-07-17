@@ -28,45 +28,6 @@
         <p class="text-safe-muted">Please wait while we complete authentication.</p>
     </div>
 
-    <script>
-        (async () => {
-            const params = new URLSearchParams(window.location.search);
-            const code = params.get('code');
-            const error = params.get('error');
-            
-            if (error) {
-                window.location.href = `/login.html?error=${encodeURIComponent(error)}`;
-                return;
-            }
-            
-            if (!code) {
-                window.location.href = '/login.html?error=no_code';
-                return;
-            }
-            
-            try {
-                const response = await fetch('https://saferoute-api.vercel.app/auth/callback', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code })
-                });
-                
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Authentication failed');
-                }
-                
-                const data = await response.json();
-                localStorage.setItem('saferoute_token', data.access_token);
-                if (window.opener && !window.opener.closed) {
-                    window.opener.location.href = '/dashboard.html';
-                }
-                window.close();
-                window.location.href = '/dashboard.html';
-            } catch (err) {
-                window.location.href = `/login.html?error=${encodeURIComponent(err.message)}`;
-            }
-        })();
-    </script>
+    <script type="module" src="/src/callback.ts"></script>
 </body>
 </html>
