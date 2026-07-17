@@ -37,6 +37,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body class="bg-safe-bg text-safe-text font-body antialiased">
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-safe-accent focus:text-white focus:rounded-lg">Skip to main content</a>
 
     <div class="flex min-h-screen">
         <!-- Sidebar -->
@@ -94,7 +95,7 @@
         </aside>
 
         <!-- Main Content -->
-        <main class="flex-1 md:ml-64">
+        <main class="flex-1 md:ml-64" id="main-content">
             <!-- Top Bar -->
             <header class="sticky top-0 z-30 bg-safe-bg/80 backdrop-blur-md border-b border-safe-border/50">
                 <div class="flex items-center justify-between h-16 px-4 sm:px-6 lg:px-8">
@@ -334,11 +335,11 @@
     </div>
 
     <!-- Create Route Modal -->
-    <div id="create-route-modal" class="fixed inset-0 z-50 hidden">
+    <div id="create-route-modal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-labelledby="create-route-title">
         <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" id="modal-backdrop"></div>
         <div class="relative min-h-screen flex items-center justify-center p-4">
             <div class="bg-safe-card rounded-2xl border border-safe-border p-8 max-w-md w-full">
-                <h3 class="font-display text-2xl font-bold mb-6">Create New Route</h3>
+                <h3 id="create-route-title" class="font-display text-2xl font-bold mb-6">Create New Route</h3>
                 <form id="create-route-form">
                     <div class="space-y-4">
                         <div>

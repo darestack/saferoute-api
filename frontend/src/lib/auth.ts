@@ -1,5 +1,7 @@
 const TOKEN_KEY = 'saferoute_token';
 
+let verifyTokenPromise: Promise<boolean> | null = null;
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -20,14 +22,20 @@ export async function verifyToken(): Promise<boolean> {
   const token = getToken();
   if (!token) return false;
 
-  try {
-    const response = await fetch('/v1/me', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    return response.ok;
-  } catch {
-    return false;
+  if (verifyTokenPromise) {
+    return verifyTokenPromise;
   }
+
+  verifyTokenPromise = fetch('/v1/me', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+    .then((response) => response.ok)
+    .catch(() => false)
+    .finally(() => {
+      verifyTokenPromise = null;
+    });
+
+  return verifyTokenPromise;
 }
 
 export async function logout(): Promise<void> {

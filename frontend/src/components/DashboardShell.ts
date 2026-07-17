@@ -60,9 +60,46 @@ export function toggleSidebar(): void {
 }
 
 export function showCreateRouteModal(): void {
-  document.getElementById('create-route-modal')?.classList.remove('hidden');
+  const modal = document.getElementById('create-route-modal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    const firstInput = modal.querySelector('input');
+    if (firstInput instanceof HTMLElement) {
+      setTimeout(() => firstInput.focus(), 100);
+    }
+
+    const focusableElements = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const firstElement = focusableElements[0] as HTMLElement;
+    const lastElement = focusableElements[focusableElements.length - 1] as HTMLElement;
+
+    function trapFocus(e: KeyboardEvent) {
+      if (e.key !== 'Tab') return;
+
+      if (e.shiftKey) {
+        if (document.activeElement === firstElement) {
+          e.preventDefault();
+          lastElement.focus();
+        }
+      } else {
+        if (document.activeElement === lastElement) {
+          e.preventDefault();
+          firstElement.focus();
+        }
+      }
+    }
+
+    modal.addEventListener('keydown', trapFocus);
+  }
 }
 
 export function hideCreateRouteModal(): void {
-  document.getElementById('create-route-modal')?.classList.add('hidden');
+  const modal = document.getElementById('create-route-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+    const focusableElements = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const firstElement = focusableElements[0] as HTMLElement;
+    if (firstElement) {
+      firstElement.focus();
+    }
+  }
 }
