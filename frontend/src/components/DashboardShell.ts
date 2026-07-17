@@ -11,10 +11,10 @@ export function showSection(sectionId: string): void {
   }
 }
 
-export function updateLoadingState(): void {
-  const isLoading = document.querySelector('[data-loading]');
-  if (isLoading) {
-    isLoading.classList.toggle('hidden', false);
+export function updateLoadingState(isLoading: boolean): void {
+  const loadingEl = document.querySelector('[data-loading]');
+  if (loadingEl) {
+    loadingEl.classList.toggle('hidden', !isLoading);
   }
 }
 

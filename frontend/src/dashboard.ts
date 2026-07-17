@@ -2,9 +2,8 @@
 
 import { User, Route, Payment, LogEntry } from './types';
 import { apiRequest } from './lib/api';
-import { getToken, isAuthenticated } from './lib/auth';
-import { router } from './lib/router';
-import { showSection, updateLoadingState, showError, showSuccess, escapeHtml, formatDate } from './components/DashboardShell';
+import { getToken, isAuthenticated, logout } from './lib/auth';
+import { showSection, updateLoadingState, showError, showSuccess, escapeHtml, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
 import { updateRoutesUI, updateLogsUI, renderPaymentHistory } from './components/DashboardTables';
 import { initCharts } from './components/DashboardCharts';
 
@@ -12,7 +11,7 @@ const state = {
   user: null as User | null,
   routes: [] as Route[],
   logs: [] as LogEntry[],
-  stats: {} as Record<string, number>,
+  payments: [] as Payment[],
   isLoading: false,
 };
 
@@ -54,11 +53,108 @@ function setupEventListeners(): void {
       link.classList.add('bg-safe-accent/10', 'text-safe-accent');
     });
   });
+
+  const createRouteForm = document.getElementById('create-route-form');
+  if (createRouteForm) {
+    createRouteForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = createRouteForm as HTMLFormElement;
+      const formData = new FormData(form);
+      const routeData = {
+        name: (formData.get('name') as string).trim(),
+        destination_url: (formData.get('destination_url') as string).trim(),
+      };
+
+      try {
+        await createRoute(routeData);
+        hideCreateRouteModal();
+        form.reset();
+      } catch (error) {
+        console.error('Failed to create route:', error);
+      }
+    });
+  }
+
+  const cancelCreateRouteBtn = document.getElementById('cancel-create-route-btn');
+  if (cancelCreateRouteBtn) {
+    cancelCreateRouteBtn.addEventListener('click', () => {
+      hideCreateRouteModal();
+    });
+  }
+
+  const modalBackdrop = document.getElementById('modal-backdrop');
+  if (modalBackdrop) {
+    modalBackdrop.addEventListener('click', () => {
+      hideCreateRouteModal();
+    });
+  }
+
+  const quickCreateRouteBtn = document.getElementById('quick-create-route-btn');
+  if (quickCreateRouteBtn) {
+    quickCreateRouteBtn.addEventListener('click', () => {
+      showCreateRouteModal();
+    });
+  }
+
+  const routesCreateBtn = document.getElementById('routes-create-btn');
+  if (routesCreateBtn) {
+    routesCreateBtn.addEventListener('click', () => {
+      showCreateRouteModal();
+    });
+  }
+
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await logout();
+      } catch (error) {
+        console.error('Logout failed:', error);
+      }
+    });
+  }
+
+  const refreshBtn = document.getElementById('refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      await refreshData();
+    });
+  }
+
+  const quickRefreshBtn = document.getElementById('quick-refresh-btn');
+  if (quickRefreshBtn) {
+    quickRefreshBtn.addEventListener('click', async () => {
+      await refreshData();
+    });
+  }
+
+  const logsRefreshBtn = document.getElementById('logs-refresh-btn');
+  if (logsRefreshBtn) {
+    logsRefreshBtn.addEventListener('click', async () => {
+      await refreshData();
+    });
+  }
+
+  const toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
+  if (toggleSidebarBtn) {
+    toggleSidebarBtn.addEventListener('click', () => {
+      toggleSidebar();
+    });
+  }
+
+  document.querySelectorAll('[data-purchase-tier]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tier = btn.getAttribute('data-purchase-tier');
+      if (tier) {
+        purchaseCredits(tier);
+      }
+    });
+  });
 }
 
 async function loadDashboardData(): Promise<void> {
   state.isLoading = true;
-  updateLoadingState();
+  updateLoadingState(true);
 
   try {
     const token = getToken();
@@ -71,7 +167,6 @@ async function loadDashboardData(): Promise<void> {
 
     if (routes) {
       state.routes = routes;
-      await loadRoutesData();
       updateRoutesUI(state.routes);
       initCharts(state.routes);
     }
@@ -80,27 +175,34 @@ async function loadDashboardData(): Promise<void> {
       state.user = user;
       updateUserUI();
     }
+
+    await loadPaymentHistory();
   } catch (error) {
     console.error('Failed to load dashboard data:', error);
     showError('Failed to load dashboard data');
   } finally {
     state.isLoading = false;
-    updateLoadingState();
+    updateLoadingState(false);
   }
 }
 
-async function loadRoutesData(): Promise<void> {
-  // Load additional route data if needed
-}
+async function loadPaymentHistory(): Promise<void> {
+  const token = getToken();
+  if (!token) return;
 
-function updateStatsUI(): void {
-  const totalRequests = state.routes.reduce((sum, r) => sum + r.requests_count, 0);
-  const el = document.getElementById('total-requests');
-  if (el) el.textContent = totalRequests.toLocaleString();
+  try {
+    const response = await fetch('/v1/payments/history', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-  const successRate = state.stats.success_rate ?? 0;
-  const rateEl = document.getElementById('success-rate');
-  if (rateEl) rateEl.textContent = `${successRate.toFixed(1)}%`;
+    if (response.ok) {
+      const payments = await response.json();
+      state.payments = payments;
+      renderPaymentHistory(payments);
+    }
+  } catch (error) {
+    console.error('Failed to load payment history:', error);
+  }
 }
 
 function updateUserUI(): void {
@@ -113,12 +215,8 @@ function updateUserUI(): void {
   if (nameEl) nameEl.textContent = state.user.full_name || 'User';
   if (emailEl) emailEl.textContent = state.user.email || '';
   if (initialsEl && state.user.full_name) {
-    initialsEl.textContent = state.user.full_name
-      .split(' ')
-      .map((n) => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2);
+    const nameParts = state.user.full_name.trim().split(/\s+/);
+    initialsEl.textContent = nameParts.map((n) => n[0]).join('').toUpperCase().slice(0, 2);
   }
 }
 
@@ -149,7 +247,8 @@ async function checkPaymentResult(): Promise<void> {
       }
 
       if (response.ok && data.status === 'success') {
-        showSuccess(`Payment successful! ${data.credits_added.toLocaleString()} credits added to your account.`);
+        const creditsAdded = data.credits_added ?? 0;
+        showSuccess(`Payment successful! ${creditsAdded.toLocaleString()} credits added to your account.`);
       } else {
         showError(data.detail || 'Payment verification failed');
       }
@@ -257,33 +356,11 @@ async function purchaseCredits(tier: string): Promise<void> {
   }
 }
 
-async function loadPaymentHistory(): Promise<void> {
-  const token = getToken();
-  if (!token) return;
-
-  try {
-    const response = await fetch('/v1/payments/history', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (response.ok) {
-      const payments = await response.json();
-      renderPaymentHistory(payments);
-    }
-  } catch (error) {
-    console.error('Failed to load payment history:', error);
-  }
-}
-
 async function refreshData(): Promise<void> {
   await loadDashboardData();
-  initCharts(state.routes);
 }
 
-document.addEventListener('DOMContentLoaded', initApp);
-
-(window as any).SafeRoute = {
-  state,
+const SafeRouteApi = {
   createRoute,
   editRoute,
   deleteRoute,
@@ -291,6 +368,12 @@ document.addEventListener('DOMContentLoaded', initApp);
   formatDate,
   loadDashboardData,
   loadPaymentHistory,
-  initCharts,
   refreshData,
+  get state() {
+    return state;
+  },
 };
+
+document.addEventListener('DOMContentLoaded', initApp);
+
+(window as any).SafeRoute = SafeRouteApi;

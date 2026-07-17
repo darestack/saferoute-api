@@ -45,12 +45,21 @@ export function updateRoutesUI(routes: Route[]): void {
           <td class="px-6 py-4 text-sm">${route.requests_count.toLocaleString()}</td>
           <td class="px-6 py-4 text-sm text-safe-muted">${formatDate(route.updated_at)}</td>
           <td class="px-6 py-4 text-right">
-            <button onclick="window.SafeRoute.editRoute('${route.id}')" class="text-safe-muted hover:text-safe-text text-sm">Edit</button>
+            <button data-route-id="${escapeHtml(route.id)}" class="edit-route-btn text-safe-muted hover:text-safe-text text-sm">Edit</button>
           </td>
         </tr>
       `
     )
     .join('');
+
+  tbody.querySelectorAll('.edit-route-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const routeId = btn.getAttribute('data-route-id');
+      if (routeId) {
+        (window as any).SafeRoute.editRoute(routeId);
+      }
+    });
+  });
 }
 
 export function updateLogsUI(logs: LogEntry[]): void {
@@ -80,12 +89,22 @@ export function updateLogsUI(logs: LogEntry[]): void {
           <td class="px-6 py-4 text-sm text-safe-muted">${formatDate(log.created_at)}</td>
           <td class="px-6 py-4 text-sm">${log.duration_ms || '—'}ms</td>
           <td class="px-6 py-4 text-right">
-            <button onclick="window.SafeRoute.replayLog('${log.route_id}', ${log.id})" class="text-safe-muted hover:text-safe-text text-sm">Replay</button>
+            <button data-route-id="${escapeHtml(log.route_id)}" data-log-id="${log.id}" class="replay-log-btn text-safe-muted hover:text-safe-text text-sm">Replay</button>
           </td>
         </tr>
       `;
     })
     .join('');
+
+  tbody.querySelectorAll('.replay-log-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const routeId = btn.getAttribute('data-route-id');
+      const logId = btn.getAttribute('data-log-id');
+      if (routeId && logId) {
+        (window as any).SafeRoute.replayLog(routeId, parseInt(logId, 10));
+      }
+    });
+  });
 }
 
 export function renderPaymentHistory(payments: Payment[]): void {

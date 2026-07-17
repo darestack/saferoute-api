@@ -84,7 +84,7 @@
                         <div class="font-medium truncate" id="user-name">John Doe</div>
                         <div class="text-sm text-safe-muted truncate" id="user-email">john@example.com</div>
                     </div>
-                    <button onclick="logout()" class="p-2 text-safe-muted hover:text-safe-danger transition-colors" title="Sign out">
+                    <button id="logout-btn" class="p-2 text-safe-muted hover:text-safe-danger transition-colors" title="Sign out">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
                         </svg>
@@ -98,13 +98,13 @@
             <!-- Top Bar -->
             <header class="sticky top-0 z-30 bg-safe-bg/80 backdrop-blur-md border-b border-safe-border/50">
                 <div class="flex items-center justify-between h-16 px-4 sm:px-6 lg:px-8">
-                    <button class="md:hidden p-2 text-safe-muted hover:text-safe-text" onclick="toggleSidebar()">
+                    <button id="toggle-sidebar-btn" class="md:hidden p-2 text-safe-muted hover:text-safe-text">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
                         </svg>
                     </button>
                     <div class="flex items-center gap-4 ml-auto">
-                        <button onclick="refreshData()" class="p-2 text-safe-muted hover:text-safe-text transition-colors" title="Refresh data">
+                        <button id="refresh-btn" class="p-2 text-safe-muted hover:text-safe-text transition-colors" title="Refresh data">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                             </svg>
@@ -174,10 +174,10 @@
                 <div class="bg-safe-card rounded-xl p-6 border border-safe-border mb-8">
                     <h3 class="font-display text-lg font-bold mb-4">Quick Actions</h3>
                     <div class="flex flex-wrap gap-3">
-                        <button onclick="showCreateRouteModal()" class="btn-primary px-4 py-2 text-white rounded-lg font-medium text-sm">
+                        <button id="quick-create-route-btn" class="btn-primary px-4 py-2 text-white rounded-lg font-medium text-sm">
                             Create New Route
                         </button>
-                        <button onclick="refreshData()" class="px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium text-sm">
+                        <button id="quick-refresh-btn" class="px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium text-sm">
                             Refresh Data
                         </button>
                     </div>
@@ -188,17 +188,17 @@
                     <h3 class="font-display text-lg font-bold mb-4">Buy Credits</h3>
                     <p class="text-safe-muted text-sm mb-4">Top up your credit balance to process more form submissions.</p>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-                        <button onclick="purchaseCredits('starter')" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
+                        <button data-purchase-tier="starter" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
                             <div class="font-display font-bold text-lg">Starter</div>
                             <div class="text-safe-accent font-bold">1,000 credits</div>
                             <div class="text-safe-muted text-sm">~$5</div>
                         </button>
-                        <button onclick="purchaseCredits('builder')" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
+                        <button data-purchase-tier="builder" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
                             <div class="font-display font-bold text-lg">Builder</div>
                             <div class="text-safe-accent font-bold">10,000 credits</div>
                             <div class="text-safe-muted text-sm">~$25</div>
                         </button>
-                        <button onclick="purchaseCredits('agency')" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
+                        <button data-purchase-tier="agency" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
                             <div class="font-display font-bold text-lg">Agency</div>
                             <div class="text-safe-accent font-bold">50,000 credits</div>
                             <div class="text-safe-muted text-sm">~$75</div>
@@ -261,7 +261,7 @@
                         <h1 class="font-display text-3xl font-bold mb-2">Routes</h1>
                         <p class="text-safe-muted">Manage your form endpoints and webhooks.</p>
                     </div>
-                    <button onclick="showCreateRouteModal()" class="btn-primary px-4 py-2 text-white rounded-lg font-medium text-sm">
+                    <button id="routes-create-btn" class="btn-primary px-4 py-2 text-white rounded-lg font-medium text-sm">
                         Create Route
                     </button>
                 </div>
@@ -302,7 +302,7 @@
                         <h1 class="font-display text-3xl font-bold mb-2">Logs</h1>
                         <p class="text-safe-muted">Recent webhook delivery history.</p>
                     </div>
-                    <button onclick="refreshData()" class="px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium text-sm">
+                    <button id="logs-refresh-btn" class="px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium text-sm">
                         Refresh
                     </button>
                 </div>
@@ -335,11 +335,11 @@
 
     <!-- Create Route Modal -->
     <div id="create-route-modal" class="fixed inset-0 z-50 hidden">
-        <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" onclick="hideCreateRouteModal()"></div>
+        <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" id="modal-backdrop"></div>
         <div class="relative min-h-screen flex items-center justify-center p-4">
             <div class="bg-safe-card rounded-2xl border border-safe-border p-8 max-w-md w-full">
                 <h3 class="font-display text-2xl font-bold mb-6">Create New Route</h3>
-                <form onsubmit="handleCreateRoute(event)">
+                <form id="create-route-form">
                     <div class="space-y-4">
                         <div>
                             <label class="block text-sm font-medium mb-2">Route Name</label>
@@ -351,7 +351,7 @@
                         </div>
                     </div>
                     <div class="flex gap-3 mt-6">
-                        <button type="button" onclick="hideCreateRouteModal()" class="flex-1 px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium">Cancel</button>
+                        <button type="button" id="cancel-create-route-btn" class="flex-1 px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium">Cancel</button>
                         <button type="submit" class="flex-1 btn-primary px-4 py-2 text-white rounded-lg font-medium">Create</button>
                     </div>
                 </form>
@@ -360,45 +360,5 @@
     </div>
 
     <script type="module" src="/src/dashboard.ts"></script>
-    <script>
-        function toggleSidebar() {
-            document.querySelector('.sidebar').classList.toggle('-translate-x-full');
-        }
-
-        function showCreateRouteModal() {
-            document.getElementById('create-route-modal').classList.remove('hidden');
-        }
-
-        function hideCreateRouteModal() {
-            document.getElementById('create-route-modal').classList.add('hidden');
-        }
-
-        async function handleCreateRoute(event) {
-            event.preventDefault();
-            const form = event.target;
-            const routeData = {
-                name: form.name.value,
-                destination_url: form.destination_url.value
-            };
-            
-            try {
-                await SafeRoute.createRoute(routeData);
-                hideCreateRouteModal();
-                form.reset();
-            } catch (error) {
-                console.error('Failed to create route:', error);
-            }
-        }
-
-        async function logout() {
-            localStorage.removeItem('saferoute_token');
-            window.location.href = 'login.html';
-        }
-
-        async function refreshData() {
-            await SafeRoute.loadDashboardData();
-            SafeRoute.initCharts();
-        }
-    </script>
 </body>
 </html>

@@ -17,12 +17,13 @@ function initScrollAnimations(): void {
     });
   }, observerOptions);
 
-  document.querySelectorAll('section > div').forEach((el) => {
+  const elements = document.querySelectorAll('section > div');
+  elements.forEach((el) => {
     observer.observe(el);
   });
 
   setTimeout(() => {
-    document.querySelectorAll('section > div').forEach((el) => {
+    elements.forEach((el) => {
       (el as HTMLElement).style.opacity = '';
     });
   }, 2000);

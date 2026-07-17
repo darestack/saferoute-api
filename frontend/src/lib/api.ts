@@ -6,10 +6,15 @@ function getAuthHeader(): Record<string, string> {
 }
 
 async function parseJsonSafe(response: Response): Promise<any> {
+  if (response.status === 204) {
+    return null;
+  }
+
   const contentType = response.headers.get('content-type');
   if (contentType && contentType.includes('application/json')) {
     return response.json();
   }
+
   throw new Error(`Server error (${response.status})`);
 }
 
@@ -39,11 +44,5 @@ export async function apiRequest<T>(
     throw new Error(error.detail || error.message || `HTTP ${response.status}`);
   }
 
-  if (response.status === 204) {
-    return null as T;
-  }
-
   return parseJsonSafe(response);
 }
-
-export { API_BASE, getAuthHeader };

@@ -1,11 +1,22 @@
 // Dashboard charts using Chart.js
 
-export function initCharts(routes: any[]): void {
-  initRequestVolumeChart(routes);
-  initResponseStatusChart(routes);
+let requestVolumeChartInstance: any = null;
+let responseStatusChartInstance: any = null;
+
+export function initCharts(_routes: any[]): void {
+  initRequestVolumeChart();
+  initResponseStatusChart();
 }
 
-function initRequestVolumeChart(routes: any[]): void {
+function destroyChart(instance: any): void {
+  if (instance) {
+    instance.destroy();
+  }
+}
+
+function initRequestVolumeChart(): void {
+  destroyChart(requestVolumeChartInstance);
+
   const canvas = document.getElementById('requestVolumeChart');
   if (!(canvas instanceof HTMLCanvasElement)) return;
 
@@ -18,7 +29,7 @@ function initRequestVolumeChart(routes: any[]): void {
     return d.toLocaleDateString('en-US', { weekday: 'short' });
   });
 
-  new Chart(ctx, {
+  requestVolumeChartInstance = new Chart(ctx, {
     type: 'bar',
     data: {
       labels,
@@ -52,14 +63,16 @@ function initRequestVolumeChart(routes: any[]): void {
   });
 }
 
-function initResponseStatusChart(routes: any[]): void {
+function initResponseStatusChart(): void {
+  destroyChart(responseStatusChartInstance);
+
   const canvas = document.getElementById('responseStatusChart');
   if (!(canvas instanceof HTMLCanvasElement)) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  new Chart(ctx, {
+  responseStatusChartInstance = new Chart(ctx, {
     type: 'doughnut',
     data: {
       labels: ['2xx Success', '4xx Client Error', '5xx Server Error'],

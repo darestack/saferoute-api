@@ -81,14 +81,25 @@ function initErrorFromQuery(): void {
   const params = new URLSearchParams(window.location.search);
   const error = params.get('error');
   if (error) {
-    showAuthError(decodeURIComponent(error));
+    try {
+      showAuthError(decodeURIComponent(error));
+    } catch {
+      showAuthError('An unknown error occurred');
+    }
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   checkExistingSession();
   initErrorFromQuery();
-});
 
-(window as any).signInWith = signInWith;
-(window as any).showAuthError = showAuthError;
+  const googleBtn = document.getElementById('google-signin-btn');
+  if (googleBtn) {
+    googleBtn.addEventListener('click', () => signInWith('google'));
+  }
+
+  const githubBtn = document.getElementById('github-signin-btn');
+  if (githubBtn) {
+    githubBtn.addEventListener('click', () => signInWith('github'));
+  }
+});
