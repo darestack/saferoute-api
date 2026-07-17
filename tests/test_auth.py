@@ -194,6 +194,26 @@ class TestJwtAuth:
             assert user.created_at is None  # Optional now accepts None
 
 
+class TestRootEndpoint:
+    """Tests for API root endpoint."""
+
+    def test_root_returns_api_info(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        response = client.get("/")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["service"] == "SafeRoute API"
+        assert data["version"] == "0.7.0"
+        assert data["status"] == "running"
+        assert data["docs"] == "/docs"
+        assert data["health"] == "/health"
+        assert "dashboard" in data
+        assert "endpoints" in data
+
+
 class TestHealthEndpoint:
     """Tests for health check endpoint."""
 

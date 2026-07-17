@@ -368,6 +368,28 @@ async def shutdown_event() -> None:
         logger.warning("JWKS client shutdown failed", exc_info=True)
 
 
+@app.get("/")
+async def root() -> JSONResponse:
+    """API root with links to documentation and health check."""
+    return JSONResponse(
+        status_code=200,
+        content={
+            "service": "SafeRoute API",
+            "version": settings.APP_VERSION,
+            "status": "running",
+            "docs": "/docs",
+            "health": "/health",
+            "dashboard": "https://darestack.github.io/saferoute-api/",
+            "endpoints": {
+                "routes": "/v1/routes",
+                "proxy": "/v1/r/{slug}",
+                "payments": "/v1/payments",
+                "webhooks": "/v1/webhooks/paystack",
+            },
+        },
+    )
+
+
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """Check API, database, and cache connectivity.
