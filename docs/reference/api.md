@@ -344,3 +344,142 @@ Return detailed metrics for all distributed caches (L1 in-memory + L2 PostgreSQL
   }
 }
 ```
+
+### 20. Initialize Payment
+**POST** `/v1/payments/initialize`
+
+Create a Paystack payment for a credit pack purchase.
+
+**Headers:**
+- `Authorization: Bearer <supabase-access-token>` (required)
+
+**Request Body:**
+```json
+{
+  "tier": "starter",
+  "email": "user@example.com"
+}
+```
+
+**Responses:**
+- `200 OK`: Paystack checkout URL and transaction reference.
+- `401 Unauthorized`: Invalid or missing JWT.
+- `500 Internal Server Error`: Payment system not configured or initialization failed.
+
+**Response Body:**
+```json
+{
+  "authorization_url": "https://checkout.paystack.com/...",
+  "reference": "sr_user-123_starter",
+  "amount": 250000,
+  "currency": "NGN"
+}
+```
+
+### 21. Verify Payment
+**GET** `/v1/payments/verify/{reference}`
+
+Verify a Paystack payment and credit the user's account.
+
+**Headers:**
+- `Authorization: Bearer <supabase-access-token>` (required)
+
+**Responses:**
+- `200 OK`: Payment verification result with credits added.
+- `401 Unauthorized`: Invalid or missing JWT.
+- `404 Not Found`: Transaction not found.
+- `500 Internal Server Error`: Payment verification failed.
+
+**Response Body:**
+```json
+{
+  "status": "success",
+  "reference": "sr_user-123_starter",
+  "amount": 250000,
+  "credits_added": 1000,
+  "new_balance": 1100
+}
+```
+
+### 22. Payment History
+**GET** `/v1/payments/history`
+
+List payment transactions for the authenticated user.
+
+**Headers:**
+- `Authorization: Bearer <supabase-access-token>` (required)
+
+**Query Parameters:**
+- `limit` (optional): Number of results per page (default: 20, max: 100).
+- `offset` (optional): Number of results to skip (default: 0).
+
+**Responses:**
+- `200 OK`: List of payment transactions.
+- `401 Unauthorized`: Invalid or missing JWT.
+
+**Response Body:**
+```json
+[
+  {
+    "id": "tx-uuid",
+    "reference": "sr_user-123_starter",
+    "amount": 250000,
+    "currency": "NGN",
+    "tier": "starter",
+    "credits_to_add": 1000,
+    "status": "success",
+    "created_at": "2026-07-17T10:00:00Z"
+  }
+]
+```
+
+### 23. Paystack Webhook
+**POST** `/v1/webhooks/paystack`
+
+Handle Paystack webhook events. Verifies webhook signature using HMAC-SHA512.
+
+**Headers:**
+- `X-Paystack-Signature` (required): HMAC-SHA512 signature of request body.
+
+**Request Body:**
+```json
+{
+  "event": "charge.success",
+  "data": {
+    "reference": "sr_user-123_starter",
+    "status": "success",
+    "amount": 250000
+  }
+}
+```
+
+**Responses:**
+- `200 OK`: Webhook processed.
+- `401 Unauthorized`: Invalid webhook signature.
+
+### 24. Admin Credit Adjustment
+**POST** `/v1/admin/credits/adjust`
+
+Manually adjust a user's credit balance. Admin-only endpoint.
+
+**Headers:**
+- `X-Admin-Secret` (required): Shared secret matching `ADMIN_SECRET_KEY`.
+
+**Query Parameters:**
+- `user_id` (required): User UUID to adjust credits for.
+- `amount` (required): Amount to add (positive) or subtract (negative).
+- `reason` (optional): Reason for adjustment (default: "Manual adjustment by admin").
+
+**Responses:**
+- `200 OK`: Adjustment result with new balance.
+- `401 Unauthorized`: Invalid admin secret.
+
+**Response Body:**
+```json
+{
+  "user_id": "user-uuid",
+  "amount": 1000,
+  "new_balance": 1100,
+  "reason": "Manual adjustment by admin"
+}
+```
