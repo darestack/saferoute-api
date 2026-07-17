@@ -27,7 +27,7 @@ supabase migration up
 
 1. Open your Supabase project dashboard
 2. Go to **SQL Editor**
-3. Copy the contents of `migrations/013_add_distributed_cache.sql`
+3. Copy the contents of `schema.sql`
 4. Paste into the SQL Editor
 5. Click **Run**
 

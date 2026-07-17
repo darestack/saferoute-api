@@ -317,7 +317,7 @@ async def deduct_user_credits(user_id: str, amount: int = 1) -> bool:
     """Atomically deduct credits from a user's profile.
 
     Uses the ``deduct_user_credits`` SQL function defined in
-    ``migrations/014_add_user_credits.sql``. Creates a profile with
+    ``schema.sql``. Creates a profile with
     default credits if one does not exist yet.
 
     Args:

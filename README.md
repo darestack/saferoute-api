@@ -73,7 +73,6 @@ SafeRoute gives you a backend without the backend:
 │   ├── login.html           # OAuth login
 │   ├── index.html           # Marketing homepage
 │   └── assets/              # CSS, JS, images
-├── migrations/              # Supabase SQL migrations
 ├── requirements.txt
 ├── schema.sql               # Supabase tables + RLS policies
 └── tests/                   # Test suite
@@ -96,6 +95,75 @@ SafeRoute gives you a backend without the backend:
 - [x] Bulk log cleanup endpoint
 - [x] Email notifications via Resend
 - [x] Standardized API responses with Pydantic models
+- [x] Credit-based usage system with atomic deduction
+- [x] Paystack payment integration for credit pack purchases
+- [x] Payment webhook verification and automatic credit top-up
+- [x] Admin manual credit adjustment endpoint
+- [x] Frontend dashboard with OAuth login, route management, and payment UI
+- [x] GitHub Pages deployment for frontend
+- [x] Sentry error tracking and OpenTelemetry tracing support
+
+## Deployment
+
+### Vercel (recommended for backend)
+
+1. Clone and install dependencies
+2. Set environment variables in Vercel dashboard
+3. Deploy with `vercel --prod`
+
+Required env vars: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `API_KEY_SALT`, `ENCRYPTION_KEY`, `ALLOWED_HOSTS`, `WEBHOOK_SECRET`, `RETRY_ENDPOINT_SECRET`
+
+### Docker
+
+```bash
+docker build -t saferoute-api .
+docker run -p 8000:8000 --env-file .env saferoute-api
+```
+
+### GitHub Pages (frontend only)
+
+The frontend dashboard is automatically deployed to GitHub Pages via the included workflow. Enable GitHub Pages in your repository settings and push to `main`.
+
+## Example Form HTML
+
+### Plain HTML
+
+```html
+<form action="https://saferoute-api.vercel.app/v1/r/contact-form" method="POST">
+  <input type="text" name="name" required>
+  <input type="email" name="email" required>
+  <textarea name="message" required></textarea>
+  <button type="submit">Send</button>
+</form>
+```
+
+### With Cloudflare Turnstile
+
+```html
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<form action="https://saferoute-api.vercel.app/v1/r/contact-form" method="POST">
+  <input type="text" name="name" required>
+  <input type="email" name="email" required>
+  <div class="cf-turnstile" data-sitekey="your-site-key"></div>
+  <button type="submit">Send</button>
+</form>
+```
+
+### With fetch() API
+
+```javascript
+const form = document.querySelector('#contact-form');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const response = await fetch('https://saferoute-api.vercel.app/v1/r/contact-form', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'John', email: 'john@example.com', message: 'Hello' }),
+  });
+  const result = await response.json();
+  console.log(result);
+});
+```
 
 ## What's missing
 

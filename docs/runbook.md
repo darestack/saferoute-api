@@ -32,7 +32,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 See [deployment.md](deployment.md) for complete deployment instructions.
 
 Quick checklist:
-1. Apply migration 013: `python migrate.py` or paste `migrations/013_add_distributed_cache.sql` into Supabase SQL Editor
+1. Apply schema: paste `schema.sql` into Supabase SQL Editor
 2. Set environment variables (see `.env.example`)
 3. Deploy application code
 4. Verify with `curl https://your-api.com/health`
@@ -106,7 +106,7 @@ To clear all caches (use during debugging or after configuration changes):
 - **Cause**: The `cache_entries` table or RPC functions are missing from the database (migration 013 not applied).
 - **Action**: 
   1. Verify migration 013 is applied: check for `cache_entries` table in Supabase SQL Editor
-  2. If missing, apply: `python migrate.py` or paste `migrations/013_add_distributed_cache.sql`
+  2. If missing, apply: paste `schema.sql` into Supabase SQL Editor
   3. Restart workers to clear stale in-memory caches
   4. Monitor `/health` endpoint for `"cache": "connected"`
 

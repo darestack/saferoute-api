@@ -144,7 +144,7 @@ The distributed cache requires migration 013:
 .venv/bin/python migrate.py
 
 # Option 2: Apply via Supabase SQL Editor
-# Copy contents of migrations/013_add_distributed_cache.sql
+# Copy contents of schema.sql
 ```
 
 ### Environment Variables
