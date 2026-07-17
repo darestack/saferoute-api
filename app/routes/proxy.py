@@ -51,6 +51,7 @@ from app.utils.email import (
 )  # noqa: E402
 
 _EMAIL_RE: re.Pattern[str] = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 from app.monitoring import add_breadcrumb  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -1004,7 +1005,9 @@ async def proxy_webhook(
         next_retry_at = calculate_next_retry(0)
 
     # --- Credit deduction ---
-    if status_code < 400:
+    # Only deduct for successful (2xx) deliveries. 3xx redirects and other
+    # non-error non-success responses must not consume credits.
+    if 200 <= status_code < 300:
         user_id = route.get("user_id")
         if user_id:
             await deduct_user_credits(user_id, 1)

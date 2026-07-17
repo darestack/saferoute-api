@@ -11,6 +11,7 @@ import httpx
 
 
 from app.config import settings
+from app.database import get_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ async def verify_turnstile_token(token: str, secret_key: str, client_ip: str) ->
         return False
 
     try:
-        client = httpx.AsyncClient(timeout=5.0)
+        client = get_http_client()
         response = await client.post(
             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
             data={
@@ -38,14 +39,13 @@ async def verify_turnstile_token(token: str, secret_key: str, client_ip: str) ->
                 "response": token,
                 "remoteip": client_ip,
             },
+            timeout=5.0,
         )
         if response.status_code == 200:
             result = response.json()
             return bool(result.get("success"))
     except Exception:
-        logger.exception("Turnstile verification failed")
-    finally:
-        await client.aclose()
+        logger.exception("Turnstile verification failed for IP %s", client_ip)
 
     return False
 
@@ -65,7 +65,7 @@ async def verify_recaptcha_token(token: str, secret_key: str, client_ip: str) ->
         return False
 
     try:
-        client = httpx.AsyncClient(timeout=5.0)
+        client = get_http_client()
         response = await client.post(
             settings.RECAPTCHA_VERIFY_URL,
             data={
@@ -73,14 +73,13 @@ async def verify_recaptcha_token(token: str, secret_key: str, client_ip: str) ->
                 "response": token,
                 "remoteip": client_ip,
             },
+            timeout=5.0,
         )
         if response.status_code == 200:
             result = response.json()
             return bool(result.get("success")) and result.get("score", 0) >= 0.5
     except Exception:
-        logger.exception("reCAPTCHA verification failed")
-    finally:
-        await client.aclose()
+        logger.exception("reCAPTCHA verification failed for IP %s", client_ip)
 
     return False
 
