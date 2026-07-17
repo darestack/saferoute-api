@@ -174,7 +174,7 @@ Get aggregated delivery statistics for a route.
 List exhausted webhook delivery failures for a route. Uses cursor-based pagination.
 
 **Query Parameters:**
-- `cursor` (optional): Pagination cursor (ISO 8601 timestamp of the last item from the previous page).
+- `cursor` (optional): Pagination cursor returned by a previous request. Format is `created_at|id` (composite key to ensure stable ordering when multiple failures share the same timestamp).
 - `limit` (optional): Maximum number of failures to return (default: 20).
 
 **Responses:**

@@ -129,7 +129,7 @@ The frontend dashboard is automatically deployed to GitHub Pages via the include
 ### Plain HTML
 
 ```html
-<form action="https://saferoute-api.vercel.app/v1/r/contact-form" method="POST">
+<form action="/v1/r/contact-form" method="POST">
   <input type="text" name="name" required>
   <input type="email" name="email" required>
   <textarea name="message" required></textarea>
@@ -141,7 +141,7 @@ The frontend dashboard is automatically deployed to GitHub Pages via the include
 
 ```html
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-<form action="https://saferoute-api.vercel.app/v1/r/contact-form" method="POST">
+<form action="/v1/r/contact-form" method="POST">
   <input type="text" name="name" required>
   <input type="email" name="email" required>
   <div class="cf-turnstile" data-sitekey="your-site-key"></div>
@@ -155,7 +155,7 @@ The frontend dashboard is automatically deployed to GitHub Pages via the include
 const form = document.querySelector('#contact-form');
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const response = await fetch('https://saferoute-api.vercel.app/v1/r/contact-form', {
+  const response = await fetch('/v1/r/contact-form', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'John', email: 'john@example.com', message: 'Hello' }),
@@ -167,7 +167,6 @@ form.addEventListener('submit', async (e) => {
 
 ## What's missing
 
-- [ ] Dashboard UI
 - [ ] Managed network egress controls
 
 ## Documentation
