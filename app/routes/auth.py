@@ -17,6 +17,7 @@ import jwt
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from hmac import compare_digest
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -36,6 +37,10 @@ from app.routes.proxy import (
 )
 from app.services.retry_processor import rebuild_retry_body
 from app.models import (
+    PaymentInitializeRequest,
+    PaymentInitializeResponse,
+    PaymentTransactionResponse,
+    PaymentVerifyResponse,
     RouteCreate,
     RouteResponse,
     RouteUpdate,
@@ -462,6 +467,74 @@ async def paystack_webhook(request: Request):
     await process_webhook(event, data)
 
     return JSONResponse(content={"status": "ok"})
+
+
+@router.get("/payments/history", response_model=list[PaymentTransactionResponse])
+async def list_payment_history(
+    current_user: User = Depends(get_current_user_from_jwt),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """List payment transactions for the authenticated user."""
+    result = await execute_query(
+        admin.table("payment_transactions")
+        .select("*")
+        .eq("user_id", current_user.id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+    )
+    return [PaymentTransactionResponse(**row) for row in result.data]
+
+
+@router.post("/admin/credits/adjust")
+async def admin_adjust_credits(
+    user_id: str = Query(..., description="User ID to adjust credits for"),
+    amount: int = Query(..., description="Amount to add (positive) or subtract (negative)"),
+    reason: str = Query("Manual adjustment by admin"),
+    x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
+):
+    """Manually adjust a user's credit balance.
+
+    Admin-only endpoint protected by ADMIN_SECRET_KEY.
+    """
+    if not settings.ADMIN_SECRET_KEY or not compare_digest(
+        x_admin_secret or "", settings.ADMIN_SECRET_KEY
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin secret",
+        )
+
+    if amount > 0:
+        await execute_query(
+            admin.rpc("add_user_credits", {
+                "p_user_id": user_id,
+                "p_amount": amount,
+            })
+        )
+    else:
+        await execute_query(
+            admin.rpc("deduct_user_credits", {
+                "p_user_id": user_id,
+                "p_amount": abs(amount),
+            })
+        )
+
+    # Fetch new balance
+    result = await execute_query(
+        admin.table("user_profiles")
+        .select("credits, tier")
+        .eq("id", user_id)
+        .limit(1)
+    )
+    new_credits = result.data[0]["credits"] if result.data else 0
+
+    return {
+        "user_id": user_id,
+        "amount": amount,
+        "new_balance": new_credits,
+        "reason": reason,
+    }
 
 
 # ---------------------------------------------------------------------------

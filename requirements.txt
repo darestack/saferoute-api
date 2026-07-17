@@ -11,3 +11,4 @@ cryptography==44.0.3
 psycopg2-binary==2.9.9
 resend==0.8.0
 python-dotenv==1.0.1
+tenacity==9.0.0

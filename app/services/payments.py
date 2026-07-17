@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 from typing import Any, Optional
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 import httpx
 from fastapi import HTTPException, status
@@ -101,10 +102,19 @@ async def initialize_payment(
             "tier": tier,
             "credits": credits,
         },
-        "callback_url": f"{settings.FRONTEND_URL}/dashboard.html",
+        "callback_url": settings.FRONTEND_URL + "/dashboard.html",
     }
 
     try:
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
+            reraise=True,
+        )
+        async def _post_with_retry(client, url, json):
+            return await client.post(url, json=json)
+
         client = httpx.AsyncClient(
             headers={
                 "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
@@ -112,9 +122,10 @@ async def initialize_payment(
             },
             timeout=10.0,
         )
-        response = await client.post(
+        response = await _post_with_retry(
+            client,
             f"{settings.PAYSTACK_BASE_URL}/transaction/initialize",
-            json=payload,
+            payload,
         )
         await client.aclose()
 
@@ -206,14 +217,24 @@ async def verify_payment(reference: str) -> dict[str, Any]:
         }
 
     try:
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
+            reraise=True,
+        )
+        async def _get_with_retry(client, url):
+            return await client.get(url)
+
         client = httpx.AsyncClient(
             headers={
                 "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
             },
             timeout=10.0,
         )
-        response = await client.get(
-            f"{settings.PAYSTACK_BASE_URL}/transaction/verify/{reference}"
+        response = await _get_with_retry(
+            client,
+            f"{settings.PAYSTACK_BASE_URL}/transaction/verify/{reference}",
         )
         await client.aclose()
 
@@ -247,12 +268,11 @@ async def verify_payment(reference: str) -> dict[str, Any]:
 
         if is_success:
             # Credit the user's account
-            from app.database import deduct_user_credits
-            # Add credits instead of deducting
             await execute_query(
-                admin.table("user_profiles")
-                .update({"credits": admin.raw("credits + " + str(tx["credits_to_add"]))})
-                .eq("id", tx["user_id"])
+                admin.rpc("add_user_credits", {
+                    "p_user_id": tx["user_id"],
+                    "p_amount": tx["credits_to_add"],
+                })
             )
             # Update tier
             await execute_query(
@@ -308,6 +328,9 @@ async def process_webhook(event: str, data: dict[str, Any]) -> None:
         event: Event type (charge.success, charge.failed, etc.).
         data: Event data payload.
     """
+    webhook_url = getattr(settings, "PAYSTACK_WEBHOOK_URL", "")
+    if webhook_url:
+        logger.debug("Processing Paystack webhook from %s", webhook_url)
     reference = data.get("reference")
     if not reference:
         logger.warning("Paystack webhook missing reference")
@@ -334,9 +357,10 @@ async def process_webhook(event: str, data: dict[str, Any]) -> None:
                     .eq("reference", reference)
                 )
                 await execute_query(
-                    admin.table("user_profiles")
-                    .update({"credits": admin.raw("credits + " + str(tx["credits_to_add"]))})
-                    .eq("id", tx["user_id"])
+                    admin.rpc("add_user_credits", {
+                        "p_user_id": tx["user_id"],
+                        "p_amount": tx["credits_to_add"],
+                    })
                 )
                 await execute_query(
                     admin.table("user_profiles")

@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     TURNSTILE_SECRET_KEY: str = ""
     PAYSTACK_SECRET_KEY: str = ""
     PAYSTACK_BASE_URL: str = "https://api.paystack.co"
+    PAYSTACK_WEBHOOK_URL: str = ""
+    ADMIN_SECRET_KEY: str = ""
 
     @property
     def is_production(self) -> bool:

@@ -17,7 +17,39 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initApp() {
     await checkAuth();
     setupEventListeners();
+    await checkPaymentResult();
     await loadDashboardData();
+}
+
+async function checkPaymentResult() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const status = urlParams.get('status');
+    const reference = urlParams.get('reference');
+    const trxref = urlParams.get('trxref');
+
+    if (status && (reference || trxref)) {
+        const ref = reference || trxref;
+        const token = localStorage.getItem('saferoute_token');
+
+        try {
+            const response = await fetch(`${API_BASE}/v1/payments/verify/${encodeURIComponent(ref)}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.status === 'success') {
+                showSuccess(`Payment successful! ${data.credits_added.toLocaleString()} credits added to your account.`);
+            } else {
+                showError(data.detail || 'Payment verification failed');
+            }
+        } catch (error) {
+            console.error('Payment verification error:', error);
+        }
+
+        // Clean URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
 }
 
 async function checkAuth() {
@@ -134,13 +166,14 @@ async function loadRoutesData() {
     state.routes.forEach((route, i) => {
         route.stats = statsResults[i] || null;
     });
-    
+
     const allLogs = logsResults.flat();
     allLogs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     state.logs = allLogs.slice(0, 20);
-    
+
     updateStatsUI();
     updateLogsUI();
+    await loadPaymentHistory();
 }
 
 function updateStatsUI() {
@@ -624,6 +657,51 @@ async function purchaseCredits(tier) {
     }
 }
 
+async function loadPaymentHistory() {
+    const token = localStorage.getItem('saferoute_token');
+    if (!token) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/v1/payments/history`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (response.ok) {
+            const payments = await response.json();
+            renderPaymentHistory(payments);
+        }
+    } catch (error) {
+        console.error('Failed to load payment history:', error);
+    }
+}
+
+function renderPaymentHistory(payments) {
+    const tbody = document.getElementById('payment-history-body');
+    if (!tbody) return;
+
+    if (payments.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="px-6 py-8 text-center text-safe-muted">No payment history yet.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = payments.map(payment => `
+        <tr class="hover:bg-safe-surface/50">
+            <td class="px-6 py-4 text-sm font-mono">${payment.reference}</td>
+            <td class="px-6 py-4 text-sm capitalize">${payment.tier}</td>
+            <td class="px-6 py-4 text-sm">${(payment.amount / 100).toLocaleString()} NGN</td>
+            <td class="px-6 py-4 text-sm">${payment.credits_to_add.toLocaleString()}</td>
+            <td class="px-6 py-4">
+                <span class="px-2 py-1 text-xs rounded-full ${
+                    payment.status === 'success' ? 'bg-safe-accent/20 text-safe-accent' :
+                    payment.status === 'failed' ? 'bg-safe-danger/20 text-safe-danger' :
+                    'bg-safe-warning/20 text-safe-warning'
+                }">${payment.status}</span>
+            </td>
+            <td class="px-6 py-4 text-sm text-safe-muted">${formatDate(payment.created_at)}</td>
+        </tr>
+    `).join('');
+}
+
 window.SafeRoute = {
     state,
     createRoute,
@@ -632,5 +710,6 @@ window.SafeRoute = {
     replayLog,
     formatDate,
     loadDashboardData,
+    loadPaymentHistory,
     initCharts
 };

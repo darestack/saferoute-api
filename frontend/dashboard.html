@@ -55,6 +55,12 @@
                         </svg>
                         Dashboard
                     </a>
+                    <a href="#payments-section" class="nav-link flex items-center gap-3 px-3 py-2 rounded-lg text-safe-muted hover:bg-safe-card hover:text-safe-text transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                        </svg>
+                        Payments
+                    </a>
                     <a href="#routes-section" class="nav-link flex items-center gap-3 px-3 py-2 rounded-lg text-safe-muted hover:bg-safe-card hover:text-safe-text transition-colors">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m7.778-7.778a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.101-1.102"/>
@@ -219,6 +225,33 @@
                             <canvas id="responseStatusChart"></canvas>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Payment History Section -->
+            <section id="payments-section" class="p-4 sm:p-6 lg:p-8 hidden">
+                <div class="mb-8">
+                    <h1 class="font-display text-3xl font-bold mb-2">Payment History</h1>
+                    <p class="text-safe-muted">Your credit pack purchases.</p>
+                </div>
+                <div class="bg-safe-card rounded-xl border border-safe-border overflow-hidden">
+                    <table class="w-full">
+                        <thead class="bg-safe-surface">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-safe-muted uppercase tracking-wider">Reference</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-safe-muted uppercase tracking-wider">Tier</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-safe-muted uppercase tracking-wider">Amount</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-safe-muted uppercase tracking-wider">Credits</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-safe-muted uppercase tracking-wider">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-safe-muted uppercase tracking-wider">Date</th>
+                            </tr>
+                        </thead>
+                        <tbody id="payment-history-body" class="divide-y divide-safe-border">
+                            <tr>
+                                <td colspan="6" class="px-6 py-8 text-center text-safe-muted">Loading payment history...</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
 

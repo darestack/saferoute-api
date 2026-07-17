@@ -36,3 +36,17 @@ create trigger update_payment_transactions_updated_at
     before update on public.payment_transactions
     for each row
     execute function public.update_updated_at();
+
+-- Atomically add credits to a user's profile.
+create or replace function public.add_user_credits(
+    p_user_id uuid,
+    p_amount integer
+)
+returns void as $$
+begin
+    insert into public.user_profiles (id, credits, tier)
+    values (p_user_id, p_amount, 'free')
+    on conflict (id) do update
+    set credits = public.user_profiles.credits + p_amount;
+end;
+$$ language plpgsql;
