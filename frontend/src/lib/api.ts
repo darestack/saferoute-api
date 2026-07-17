@@ -46,3 +46,5 @@ export async function apiRequest<T>(
 
   return parseJsonSafe(response);
 }
+
+export { API_BASE };

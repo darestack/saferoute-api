@@ -2,6 +2,7 @@
 
 // CSS is loaded via global import in main.ts / dashboard.ts
 
+import { API_BASE } from './lib/api';
 import { API_ENDPOINTS } from './lib/constants';
 
 async function handleCallback(): Promise<void> {
@@ -20,7 +21,7 @@ async function handleCallback(): Promise<void> {
   }
 
   try {
-    const response = await fetch(API_ENDPOINTS.CALLBACK, {
+    const response = await fetch(`${API_BASE}${API_ENDPOINTS.CALLBACK}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),

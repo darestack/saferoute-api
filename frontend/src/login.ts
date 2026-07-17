@@ -2,6 +2,7 @@
 
 // CSS is loaded via global import in main.ts / dashboard.ts
 
+import { API_BASE } from './lib/api';
 import { API_ENDPOINTS } from './lib/constants';
 
 function showAuthError(message: string): void {
@@ -15,7 +16,7 @@ function showAuthError(message: string): void {
 
 async function signInWith(provider: 'google' | 'github'): Promise<void> {
   try {
-    const response = await fetch(API_ENDPOINTS.OAUTH(provider));
+    const response = await fetch(`${API_BASE}${API_ENDPOINTS.OAUTH(provider)}`);
     if (!response.ok) {
       let errorMessage = 'Failed to initiate OAuth';
       const contentType = response.headers.get('content-type');
@@ -68,7 +69,7 @@ async function checkExistingSession(): Promise<void> {
   if (!token) return;
 
   try {
-    const response = await fetch(API_ENDPOINTS.ME, {
+    const response = await fetch(`${API_BASE}${API_ENDPOINTS.ME}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (response.ok) {

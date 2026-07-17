@@ -379,15 +379,13 @@ async function purchaseCredits(tier: string): Promise<void> {
   if (errorEl) errorEl.classList.add('hidden');
 
   try {
-    const currency = (document.getElementById('currency-select') as HTMLSelectElement)?.value || 'USD';
-
     const response = await fetch(API_ENDPOINTS.PAYMENTS_INITIALIZE, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${getToken()}`,
       },
-      body: JSON.stringify({ tier, email: state.user?.email, currency }),
+      body: JSON.stringify({ tier, email: state.user?.email }),
     });
 
     if (!response.ok) {
@@ -416,6 +414,7 @@ async function purchaseCredits(tier: string): Promise<void> {
     }
   }
 }
+
 
 async function refreshData(): Promise<void> {
   await loadDashboardData();
