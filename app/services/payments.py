@@ -30,10 +30,10 @@ _TIER_CREDITS = {
     "builder": 10000,
     "agency": 50000,
 }
-_TIER_AMOUNTS_NGN_KOBO = {
-    "starter": 2500_00,
-    "builder": 12500_00,
-    "agency": 37500_00,
+_TIER_AMOUNTS_USD = {
+    "starter": 5.00,
+    "builder": 25.00,
+    "agency": 75.00,
 }
 
 
@@ -45,12 +45,40 @@ def get_tier_credits(tier: str) -> int:
     return _TIER_CREDITS[tier]
 
 
-def get_tier_amount_kobo(tier: str) -> int:
-    """Return the amount in kobo for a given tier."""
+def get_tier_amount_usd(tier: str) -> float:
+    """Return the amount in USD for a given tier."""
     tier = tier.lower()
-    if tier not in _TIER_AMOUNTS_NGN_KOBO:
+    if tier not in _TIER_AMOUNTS_USD:
         raise ValueError(f"Invalid tier: {tier}")
-    return _TIER_AMOUNTS_NGN_KOBO[tier]
+    return _TIER_AMOUNTS_USD[tier]
+
+
+async def _convert_usd_to_ngn_kobo(usd_amount: float) -> int:
+    """Convert USD amount to NGN kobo for Paystack.
+
+    Uses the exchange rate service with a hardcoded fallback to ensure
+    payments never break due to external API unavailability.
+
+    Args:
+        usd_amount: Amount in USD.
+
+    Returns:
+        Amount in kobo (NGN smallest unit).
+    """
+    # Hardcoded fallback rate (~1 USD = 1500 NGN as of mid-2024).
+    # The exchange rate service will override this when available.
+    fallback_rate = 1500.0
+    rate = fallback_rate
+
+    try:
+        from app.services.exchange_rates import get_exchange_rate
+        fetched = await get_exchange_rate("NGN")
+        if fetched and fetched > 0:
+            rate = fetched
+    except Exception:
+        logger.warning("Exchange rate fetch failed; using fallback rate %.2f", fallback_rate)
+
+    return int(round(usd_amount * rate * 100))
 
 
 async def initialize_payment(
@@ -77,7 +105,8 @@ async def initialize_payment(
             detail="Payment system not configured",
         )
 
-    amount = get_tier_amount_kobo(tier)
+    usd_amount = get_tier_amount_usd(tier)
+    amount_kobo = await _convert_usd_to_ngn_kobo(usd_amount)
     credits = get_tier_credits(tier)
     reference = f"sr_{user_id[:8]}_{tier}"
 
@@ -95,13 +124,14 @@ async def initialize_payment(
 
     payload = {
         "email": email,
-        "amount": amount,
+        "amount": amount_kobo,
         "currency": "NGN",
         "reference": reference,
         "metadata": {
             "user_id": user_id,
             "tier": tier,
             "credits": credits,
+            "usd_amount": usd_amount,
         },
         "callback_url": settings.FRONTEND_URL + "/dashboard.html",
     }
@@ -158,7 +188,7 @@ async def initialize_payment(
                 {
                     "user_id": user_id,
                     "reference": reference,
-                    "amount": amount,
+                    "amount": amount_kobo,
                     "currency": "NGN",
                     "tier": tier,
                     "credits_to_add": credits,
@@ -175,7 +205,8 @@ async def initialize_payment(
             data={
                 "user_id": user_id,
                 "tier": tier,
-                "amount": amount,
+                "amount_kobo": amount_kobo,
+                "usd_amount": usd_amount,
                 "reference": reference,
             },
         )
@@ -183,8 +214,10 @@ async def initialize_payment(
         return {
             "authorization_url": data["data"]["authorization_url"],
             "reference": reference,
-            "amount": amount,
+            "amount": amount_kobo,
             "currency": "NGN",
+            "usd_amount": usd_amount,
+            "display_currency": "USD",
         }
 
     except HTTPException:

@@ -364,14 +364,18 @@ class PaymentInitializeResponse(BaseModel):
     Attributes:
         authorization_url: Paystack checkout URL.
         reference: Unique transaction reference.
-        amount: Amount in kobo.
-        currency: Currency code, always ``"NGN"``.
+        amount: Amount in kobo (NGN).
+        currency: Currency code for Paystack (always ``"NGN"``).
+        usd_amount: Original USD amount.
+        display_currency: User's preferred currency.
     """
 
     authorization_url: str
     reference: str
     amount: int
     currency: str = "NGN"
+    usd_amount: Optional[float] = None
+    display_currency: str = "USD"
 
 
 class PaymentVerifyResponse(BaseModel):

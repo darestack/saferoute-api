@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from app.services.payments import (
     get_tier_credits,
-    get_tier_amount_kobo,
+    get_tier_amount_usd,
     initialize_payment,
     verify_payment,
     verify_webhook_signature,
@@ -39,14 +39,14 @@ class TestTierHelpers:
         with pytest.raises(ValueError, match="Invalid tier"):
             get_tier_credits("invalid")
 
-    def test_get_tier_amount_kobo_starter(self):
-        assert get_tier_amount_kobo("starter") == 250000
+    def test_get_tier_amount_usd_starter(self):
+        assert get_tier_amount_usd("starter") == 5.00
 
-    def test_get_tier_amount_kobo_builder(self):
-        assert get_tier_amount_kobo("builder") == 1250000
+    def test_get_tier_amount_usd_builder(self):
+        assert get_tier_amount_usd("builder") == 25.00
 
-    def test_get_tier_amount_kobo_agency(self):
-        assert get_tier_amount_kobo("agency") == 3750000
+    def test_get_tier_amount_usd_agency(self):
+        assert get_tier_amount_usd("agency") == 75.00
 
 
 class TestInitializePayment:
@@ -57,6 +57,7 @@ class TestInitializePayment:
         with (
             patch("app.services.payments.settings") as mock_settings,
             patch("app.services.payments.execute_query") as mock_execute_query,
+            patch("app.services.exchange_rates.get_exchange_rate", return_value=500.0),
         ):
             mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
             mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
@@ -99,6 +100,8 @@ class TestInitializePayment:
             assert result["reference"] == "sr_user-123_starter"
             assert result["amount"] == 250000
             assert result["currency"] == "NGN"
+            assert result["usd_amount"] == 5.00
+            assert result["display_currency"] == "USD"
 
     @pytest.mark.asyncio
     async def test_initialize_payment_no_secret_key(self):

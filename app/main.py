@@ -14,7 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from typing import Callable, Awaitable, Any, MutableMapping, TypeAlias
-from fastapi import FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
@@ -342,6 +342,23 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_size=_DEFAULT_MAX_BODY_BYTES)
 
 # Mount routers.
+from app.services.exchange_rates import get_exchange_rate
+
+rates_router = APIRouter(tags=["Rates"])
+
+@rates_router.get("/rates")
+async def get_rates(base: str = "USD", symbols: str = "NGN"):
+    """Get exchange rates from base currency to target currencies."""
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    rates = {}
+    for symbol in symbol_list:
+        try:
+            rates[symbol] = await get_exchange_rate(symbol)
+        except Exception:
+            rates[symbol] = 1.0
+    return {"base": base.upper(), "rates": rates}
+
+app.include_router(rates_router)
 app.include_router(auth.router)
 app.include_router(oauth.router)
 app.include_router(proxy.router)

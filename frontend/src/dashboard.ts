@@ -4,7 +4,7 @@ import { User, Route, Payment, LogEntry } from './types';
 import { apiRequest } from './lib/api';
 import { getToken, isAuthenticated, logout } from './lib/auth';
 import { API_ENDPOINTS } from './lib/constants';
-import { showSection, updateLoadingState, showError, showSuccess, escapeHtml, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
+import { showSection, updateLoadingState, showError, showSuccess, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
 import { updateRoutesUI, updateLogsUI, renderPaymentHistory } from './components/DashboardTables';
 import { initCharts } from './components/DashboardCharts';
 
@@ -20,6 +20,7 @@ async function initApp(): Promise<void> {
   await checkAuth();
   setupEventListeners();
   await checkPaymentResult();
+  await loadExchangeRates();
   await loadDashboardData();
 }
 
@@ -333,6 +334,43 @@ async function replayLog(routeId: string, logId: number): Promise<void> {
   }
 }
 
+let exchangeRates: Record<string, number> = {};
+
+async function loadExchangeRates(): Promise<void> {
+  try {
+    const response = await fetch('/v1/rates?base=USD&symbols=NGN,EUR,GBP,ZAR,KES,GHS,CAD,AUD');
+    if (response.ok) {
+      const data = await response.json();
+      exchangeRates = data.rates || {};
+      updatePrices();
+    }
+  } catch (error) {
+    console.error('Failed to load exchange rates:', error);
+  }
+}
+
+function updatePrices(): void {
+  const currency = (document.getElementById('currency-select') as HTMLSelectElement)?.value || 'USD';
+  const priceDisplays = document.querySelectorAll('.price-display');
+
+  priceDisplays.forEach((el) => {
+    const usd = parseFloat(el.getAttribute('data-usd') || '0');
+    const ngn = parseFloat(el.getAttribute('data-ngn') || '0');
+
+    if (currency === 'NGN') {
+      el.textContent = `₦${ngn.toLocaleString()}`;
+    } else if (currency === 'USD') {
+      el.textContent = `$${usd.toFixed(2)}`;
+    } else {
+      const rate = exchangeRates[currency] || 1;
+      const converted = usd * rate;
+      const symbols: Record<string, string> = { EUR: '€', GBP: '£', ZAR: 'R', KES: 'KSh', GHS: 'GH₵', CAD: 'C$', AUD: 'A$' };
+      const symbol = symbols[currency] || currency + ' ';
+      el.textContent = `${symbol}${converted.toFixed(2)}`;
+    }
+  });
+}
+
 async function purchaseCredits(tier: string): Promise<void> {
   const loadingEl = document.getElementById('payment-loading');
   const errorEl = document.getElementById('payment-error');
@@ -341,13 +379,15 @@ async function purchaseCredits(tier: string): Promise<void> {
   if (errorEl) errorEl.classList.add('hidden');
 
   try {
+    const currency = (document.getElementById('currency-select') as HTMLSelectElement)?.value || 'USD';
+
     const response = await fetch(API_ENDPOINTS.PAYMENTS_INITIALIZE, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${getToken()}`,
       },
-      body: JSON.stringify({ tier, email: state.user?.email }),
+      body: JSON.stringify({ tier, email: state.user?.email, currency }),
     });
 
     if (!response.ok) {
