@@ -128,6 +128,7 @@ _ALLOWED_HEADERS_PRODUCTION = [
     "Content-Type",
     "X-API-Key",
     "Idempotency-Key",
+    "X-Request-ID",
 ]
 
 

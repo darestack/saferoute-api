@@ -45,10 +45,10 @@ from app.utils.security import (
 )
 from app.utils.transform import parse_payload, render_template
 from app.utils.email import (
-        send_submission_email,
-        is_disposable_email,
-        _ensure_disposable_domains_loaded,
-    )  # noqa: E402
+    send_submission_email,
+    is_disposable_email,
+    _ensure_disposable_domains_loaded,
+)  # noqa: E402
 
 _EMAIL_RE: re.Pattern[str] = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 from app.monitoring import add_breadcrumb  # noqa: E402
@@ -170,6 +170,7 @@ async def _verify_turnstile_token(
         logger.exception("Turnstile verification failed for IP %s", client_ip)
 
     return False
+
 
 # Tunables — sourced from app.config.settings so they are runtime-overridable
 # without code changes. The module-level names remain for backward compatibility
@@ -896,6 +897,8 @@ async def proxy_webhook(
     if isinstance(payload, dict):
         payload.pop("honeypot_field", None)
         payload.pop("_gotcha", None)
+        payload.pop("website", None)
+        payload.pop("url", None)
 
     # Look up the route by public slug.
     route = await get_cached_route(slug)
@@ -950,6 +953,9 @@ async def proxy_webhook(
 
         claimed = await claim_idempotency(route["id"], idempotency_key)
         if not claimed:
+            # Another request already claimed this key. Wait for it to finish
+            # and return the cached result so the caller sees a consistent
+            # response without triggering a duplicate delivery.
             cached = await _wait_for_idempotency_result(route["id"], idempotency_key)
             if cached:
                 return JSONResponse(
@@ -1024,16 +1030,16 @@ async def proxy_webhook(
         f"Proxy delivery complete: {status_code}",
         category="proxy",
         level="info" if status_code < 400 else "error",
-        data={"route_id": route["id"], "status_code": status_code, "duration_ms": duration_ms},
+        data={
+            "route_id": route["id"],
+            "status_code": status_code,
+            "duration_ms": duration_ms,
+        },
     )
 
     # --- Email notification ---
     email_config = route.get("email_notifications") or {}
-    if (
-        status_code < 400
-        and email_config.get("enabled")
-        and email_config.get("to")
-    ):
+    if status_code < 400 and email_config.get("enabled") and email_config.get("to"):
         await send_submission_email(
             to=email_config["to"],
             subject=email_config.get("subject")
@@ -1214,10 +1220,14 @@ async def cache_stats(
                     "total_misses": total_misses,
                     "total_l2_hits": total_l2_hits,
                     "total_l2_misses": total_l2_misses,
-                    "overall_hit_rate": total_hits / (total_hits + total_misses) if (total_hits + total_misses) > 0 else 0.0,
+                    "overall_hit_rate": total_hits / (total_hits + total_misses)
+                    if (total_hits + total_misses) > 0
+                    else 0.0,
                     "total_l1_size": total_size,
                     "total_l1_max_size": total_max,
-                    "utilization_pct": round(total_size / total_max * 100, 1) if total_max > 0 else 0.0,
+                    "utilization_pct": round(total_size / total_max * 100, 1)
+                    if total_max > 0
+                    else 0.0,
                 },
             },
         )

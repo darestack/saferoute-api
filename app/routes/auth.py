@@ -50,7 +50,6 @@ from app.models import (
     RouteStatsResponse,
     RetryQueuedResponse,
     User,
-    UserCreate,
     WebhookLogResponse,
     WebhookFailureResponse,
     WebhookFailuresResponse,
@@ -78,23 +77,23 @@ _JWKS_CACHE_TTL_SECONDS = 300
 _jwks_cache: Optional[dict] = None
 _jwks_cache_expiry: float = 0.0
 _jwks_lock = asyncio.Lock()
-_jjwks_client: Optional[httpx.AsyncClient] = None
+_jwks_client: Optional[httpx.AsyncClient] = None
 
 
 def _get_jwks_client() -> httpx.AsyncClient:
     """Return the shared JWKS HTTP client, creating it on first call."""
-    global _jjwks_client
-    if _jjwks_client is None or _jjwks_client.is_closed:
-        _jjwks_client = httpx.AsyncClient(timeout=5.0)
-    return _jjwks_client
+    global _jwks_client
+    if _jwks_client is None or _jwks_client.is_closed:
+        _jwks_client = httpx.AsyncClient(timeout=5.0)
+    return _jwks_client
 
 
 async def close_jwks_client() -> None:
     """Close the shared JWKS HTTP client on application shutdown."""
-    global _jjwks_client
-    if _jjwks_client is not None and not _jjwks_client.is_closed:
-        await _jjwks_client.aclose()
-        _jjwks_client = None
+    global _jwks_client
+    if _jwks_client is not None and not _jwks_client.is_closed:
+        await _jwks_client.aclose()
+        _jwks_client = None
 
 
 async def _get_cached_jwks() -> dict:
@@ -224,15 +223,29 @@ async def _fetch_and_cache_user(user_id: str) -> User:
         tier = "free"
         try:
             profile_result = await asyncio.to_thread(
-                lambda: admin.table("user_profiles")
-                .select("credits, tier")
-                .eq("id", user_id)
-                .limit(1)
-                .execute()
+                lambda: (
+                    admin.table("user_profiles")
+                    .select("credits, tier")
+                    .eq("id", user_id)
+                    .limit(1)
+                    .execute()
+                )
             )
-            if profile_result.data and isinstance(profile_result.data, list) and len(profile_result.data) > 0:
-                credits = profile_result.data[0].get("credits", 0) if isinstance(profile_result.data[0], dict) else 0
-                tier = profile_result.data[0].get("tier", "free") if isinstance(profile_result.data[0], dict) else "free"
+            if (
+                profile_result.data
+                and isinstance(profile_result.data, list)
+                and len(profile_result.data) > 0
+            ):
+                credits = (
+                    profile_result.data[0].get("credits", 0)
+                    if isinstance(profile_result.data[0], dict)
+                    else 0
+                )
+                tier = (
+                    profile_result.data[0].get("tier", "free")
+                    if isinstance(profile_result.data[0], dict)
+                    else "free"
+                )
         except Exception:
             logger.debug("Failed to fetch user profile for user_id=%s", user_id)
 
@@ -254,9 +267,7 @@ async def _fetch_and_cache_user(user_id: str) -> User:
             fut.set_result(user)
             return user
 
-        await _user_cache.set(
-            user.id, _user_to_dict(user), ttl=_USER_CACHE_TTL_SECONDS
-        )
+        await _user_cache.set(user.id, _user_to_dict(user), ttl=_USER_CACHE_TTL_SECONDS)
         fut.set_result(user)
         return user
     except Exception as exc:
@@ -366,7 +377,7 @@ async def get_current_user_from_jwt(
 # Deprecated email/password auth
 # ---------------------------------------------------------------------------
 @router.post("/register", status_code=status.HTTP_410_GONE)
-async def register_user(credentials: UserCreate):
+async def register_user():
     """Register (deprecated). Use OAuth instead."""
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
@@ -376,7 +387,7 @@ async def register_user(credentials: UserCreate):
 
 
 @router.post("/login", status_code=status.HTTP_410_GONE)
-async def login_user(credentials: UserCreate):
+async def login_user():
     """Login (deprecated). Use OAuth instead."""
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
@@ -404,6 +415,7 @@ from app.services.payments import (  # noqa: E402
     verify_webhook_signature,
     process_webhook,
 )
+
 
 @router.post("/payments/initialize", response_model=PaymentInitializeResponse)
 async def initialize_payment_endpoint(
@@ -532,7 +544,9 @@ async def list_payment_history(
 @router.post("/admin/credits/adjust")
 async def admin_adjust_credits(
     user_id: str = Query(..., description="User ID to adjust credits for"),
-    amount: int = Query(..., description="Amount to add (positive) or subtract (negative)"),
+    amount: int = Query(
+        ..., description="Amount to add (positive) or subtract (negative)"
+    ),
     reason: str = Query("Manual adjustment by admin"),
     x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
 ):
@@ -559,25 +573,28 @@ async def admin_adjust_credits(
 
     if amount > 0:
         await execute_query(
-            admin.rpc("add_user_credits", {
-                "p_user_id": user_id,
-                "p_amount": amount,
-            })
+            admin.rpc(
+                "add_user_credits",
+                {
+                    "p_user_id": user_id,
+                    "p_amount": amount,
+                },
+            )
         )
     else:
         await execute_query(
-            admin.rpc("deduct_user_credits", {
-                "p_user_id": user_id,
-                "p_amount": abs(amount),
-            })
+            admin.rpc(
+                "deduct_user_credits",
+                {
+                    "p_user_id": user_id,
+                    "p_amount": abs(amount),
+                },
+            )
         )
 
     # Fetch new balance
     result = await execute_query(
-        admin.table("user_profiles")
-        .select("credits, tier")
-        .eq("id", user_id)
-        .limit(1)
+        admin.table("user_profiles").select("credits, tier").eq("id", user_id).limit(1)
     )
     new_credits = result.data[0]["credits"] if result.data else 0
 
@@ -992,15 +1009,22 @@ async def list_route_failures(
         .select("*")
         .eq("route_id", route_id)
         .order("created_at", desc=True)
+        .order("id", desc=True)
         .limit(limit + 1)
     )
 
     if cursor:
-        # Results are ordered newest-first (desc). The cursor is the
-        # ``created_at`` of the last item returned on the previous page, so the
-        # next page must fetch items *strictly older* than the cursor. Using
-        # ``<=`` would re-include (and duplicate) that boundary row.
-        query = query.lt("created_at", cursor)
+        # Results are ordered newest-first by (created_at, id). The cursor
+        # encodes both fields so pagination is stable even when multiple
+        # failures share the same created_at timestamp.
+        try:
+            cursor_ts, cursor_id = cursor.split("|", 1)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid cursor format",
+            )
+        query = query.lt("created_at", cursor_ts)
 
     result = await execute_query(query)
 
@@ -1009,7 +1033,11 @@ async def list_route_failures(
     if has_next:
         failures = failures[:limit]
 
-    next_cursor = failures[-1]["created_at"] if has_next and failures else None
+    next_cursor = (
+        f"{failures[-1]['created_at']}|{failures[-1]['id']}"
+        if has_next and failures
+        else None
+    )
 
     return WebhookFailuresResponse(
         route_id=route_id,
@@ -1155,9 +1183,7 @@ async def replay_webhook_log(
     destination = route["destination_url"]
     headers = route.get("headers", {})
     content_type = log_entry.get("content_type", "")
-    if content_type and not any(
-        key.lower() == "content-type" for key in headers
-    ):
+    if content_type and not any(key.lower() == "content-type" for key in headers):
         headers["Content-Type"] = content_type
 
     status_code, response_body, response_headers = await forward_payload(

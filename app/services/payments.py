@@ -7,8 +7,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import secrets
 from typing import Any
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 import httpx
 from fastapi import HTTPException, status
@@ -24,17 +30,10 @@ _TIER_CREDITS = {
     "builder": 10000,
     "agency": 50000,
 }
-_TIER_AMOUNTS_KOBO = {
-    "starter": 500_00,  # 5.00 USD in kobo (assuming USD, will adjust for NGN)
-    "builder": 2500_00,  # 25.00 USD
-    "agency": 7500_00,  # 75.00 USD
-}
-
-# Paystack amounts in kobo (NGN)
 _TIER_AMOUNTS_NGN_KOBO = {
-    "starter": 2500_00,  # ₦2,500 (~$5 at ~₦500/$)
-    "builder": 12500_00,  # ₦12,500 (~$25)
-    "agency": 37500_00,  # ₦37,500 (~$75)
+    "starter": 2500_00,
+    "builder": 12500_00,
+    "agency": 37500_00,
 }
 
 
@@ -82,7 +81,8 @@ async def initialize_payment(
     credits = get_tier_credits(tier)
     reference = f"sr_{user_id[:8]}_{tier}"
 
-    # Ensure reference is unique
+    # Ensure reference is unique. Use a short random suffix to avoid collisions
+    # when the same user re-initializes the same tier in the same second.
     existing = await execute_query(
         admin.table("payment_transactions")
         .select("reference")
@@ -90,7 +90,8 @@ async def initialize_payment(
         .limit(1)
     )
     if existing.data:
-        reference = f"sr_{user_id[:8]}_{tier}_{int(hashlib.sha256(email.encode()).hexdigest()[:8], 16) % 10000}"
+        unique_suffix = secrets.token_hex(4)
+        reference = f"sr_{user_id[:8]}_{tier}_{unique_suffix}"
 
     payload = {
         "email": email,
@@ -106,6 +107,7 @@ async def initialize_payment(
     }
 
     try:
+
         @retry(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -152,23 +154,30 @@ async def initialize_payment(
 
         # Store pending transaction
         await execute_query(
-            admin.table("payment_transactions").insert({
-                "user_id": user_id,
-                "reference": reference,
-                "amount": amount,
-                "currency": "NGN",
-                "tier": tier,
-                "credits_to_add": credits,
-                "status": "pending",
-                "paystack_response": data,
-            })
+            admin.table("payment_transactions").insert(
+                {
+                    "user_id": user_id,
+                    "reference": reference,
+                    "amount": amount,
+                    "currency": "NGN",
+                    "tier": tier,
+                    "credits_to_add": credits,
+                    "status": "pending",
+                    "paystack_response": data,
+                }
+            )
         )
 
         add_breadcrumb(
             f"Payment initialized: {tier} pack",
             category="payment",
             level="info",
-            data={"user_id": user_id, "tier": tier, "amount": amount, "reference": reference},
+            data={
+                "user_id": user_id,
+                "tier": tier,
+                "amount": amount,
+                "reference": reference,
+            },
         )
 
         return {
@@ -237,6 +246,7 @@ async def verify_payment(reference: str, user_id: str | None = None) -> dict[str
         }
 
     try:
+
         @retry(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -284,20 +294,25 @@ async def verify_payment(reference: str, user_id: str | None = None) -> dict[str
         # Update transaction
         await execute_query(
             admin.table("payment_transactions")
-            .update({
-                "status": "success" if is_success else "failed",
-                "paystack_response": data,
-            })
+            .update(
+                {
+                    "status": "success" if is_success else "failed",
+                    "paystack_response": data,
+                }
+            )
             .eq("reference", reference)
         )
 
         if is_success:
             # Credit the user's account
             await execute_query(
-                admin.rpc("add_user_credits", {
-                    "p_user_id": tx["user_id"],
-                    "p_amount": tx["credits_to_add"],
-                })
+                admin.rpc(
+                    "add_user_credits",
+                    {
+                        "p_user_id": tx["user_id"],
+                        "p_amount": tx["credits_to_add"],
+                    },
+                )
             )
             # Update tier
             await execute_query(
@@ -375,30 +390,41 @@ async def process_webhook(event: str, data: dict[str, Any]) -> None:
             if tx["status"] != "success":
                 await execute_query(
                     admin.table("payment_transactions")
-                    .update({
-                        "status": "success",
-                        "paystack_response": data,
-                    })
+                    .update(
+                        {
+                            "status": "success",
+                            "paystack_response": data,
+                        }
+                    )
                     .eq("reference", reference)
                 )
                 await execute_query(
-                    admin.rpc("add_user_credits", {
-                        "p_user_id": tx["user_id"],
-                        "p_amount": tx["credits_to_add"],
-                    })
+                    admin.rpc(
+                        "add_user_credits",
+                        {
+                            "p_user_id": tx["user_id"],
+                            "p_amount": tx["credits_to_add"],
+                        },
+                    )
                 )
                 await execute_query(
                     admin.table("user_profiles")
                     .update({"tier": tx["tier"]})
                     .eq("id", tx["user_id"])
                 )
-                logger.info("Credited %s credits to user %s via webhook", tx["credits_to_add"], tx["user_id"])
+                logger.info(
+                    "Credited %s credits to user %s via webhook",
+                    tx["credits_to_add"],
+                    tx["user_id"],
+                )
     elif event == "charge.failed":
         await execute_query(
             admin.table("payment_transactions")
-            .update({
-                "status": "failed",
-                "paystack_response": data,
-            })
+            .update(
+                {
+                    "status": "failed",
+                    "paystack_response": data,
+                }
+            )
             .eq("reference", reference)
         )
