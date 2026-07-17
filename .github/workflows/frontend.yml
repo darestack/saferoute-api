@@ -1,24 +1,22 @@
-name: Deploy Frontend to GitHub Pages
+name: Frontend CI
 
 on:
   push:
     branches: [main]
     paths:
       - 'frontend/**'
-      - '.github/workflows/frontend.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'frontend/**'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -30,16 +28,8 @@ jobs:
       - name: Install dependencies
         run: cd frontend && npm ci
 
-      - name: Build frontend
-        run: cd frontend && npm run build
+      - name: TypeScript check
+        run: cd frontend && npx tsc --noEmit
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./frontend/dist
-          publish_branch_name: gh-pages
-          keep_files: false
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
-          commit_message: 'deploy: frontend ${{ github.sha }}'
+      - name: Unit tests
+        run: cd frontend && npm run test:unit
