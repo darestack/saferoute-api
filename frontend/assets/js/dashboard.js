@@ -588,6 +588,42 @@ async function replayLog(routeId, logId) {
     }
 }
 
+async function purchaseCredits(tier) {
+    const statusEl = document.getElementById('payment-status');
+    const loadingEl = document.getElementById('payment-loading');
+    const errorEl = document.getElementById('payment-error');
+
+    statusEl.classList.remove('hidden');
+    loadingEl.classList.remove('hidden');
+    errorEl.classList.add('hidden');
+
+    try {
+        const response = await fetch(`${API_BASE}/v1/payments/initialize`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('saferoute_token')}`
+            },
+            body: JSON.stringify({
+                tier: tier,
+                email: state.user.email
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || 'Payment initialization failed');
+        }
+
+        // Redirect to Paystack
+        window.location.href = data.authorization_url;
+    } catch (error) {
+        loadingEl.classList.add('hidden');
+        errorEl.textContent = error.message;
+        errorEl.classList.remove('hidden');
+    }
+}
+
 window.SafeRoute = {
     state,
     createRoute,

@@ -178,6 +178,33 @@
                     </div>
                 </div>
 
+                <!-- Buy Credits -->
+                <div class="bg-safe-card rounded-xl p-6 border border-safe-border mb-8">
+                    <h3 class="font-display text-lg font-bold mb-4">Buy Credits</h3>
+                    <p class="text-safe-muted text-sm mb-4">Top up your credit balance to process more form submissions.</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                        <button onclick="purchaseCredits('starter')" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
+                            <div class="font-display font-bold text-lg">Starter</div>
+                            <div class="text-safe-accent font-bold">1,000 credits</div>
+                            <div class="text-safe-muted text-sm">~$5</div>
+                        </button>
+                        <button onclick="purchaseCredits('builder')" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
+                            <div class="font-display font-bold text-lg">Builder</div>
+                            <div class="text-safe-accent font-bold">10,000 credits</div>
+                            <div class="text-safe-muted text-sm">~$25</div>
+                        </button>
+                        <button onclick="purchaseCredits('agency')" class="p-4 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors text-left">
+                            <div class="font-display font-bold text-lg">Agency</div>
+                            <div class="text-safe-accent font-bold">50,000 credits</div>
+                            <div class="text-safe-muted text-sm">~$75</div>
+                        </button>
+                    </div>
+                    <div id="payment-status" class="hidden">
+                        <div id="payment-loading" class="text-safe-muted">Initializing payment...</div>
+                        <div id="payment-error" class="hidden text-safe-danger"></div>
+                    </div>
+                </div>
+
                 <!-- Charts -->
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
                     <div class="bg-safe-card rounded-xl p-6 border border-safe-border">

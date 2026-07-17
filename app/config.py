@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = "noreply@saferoute.dev"
     EMAIL_REPLY_TO: str = ""
     TURNSTILE_SECRET_KEY: str = ""
+    PAYSTACK_SECRET_KEY: str = ""
+    PAYSTACK_BASE_URL: str = "https://api.paystack.co"
 
     @property
     def is_production(self) -> bool:

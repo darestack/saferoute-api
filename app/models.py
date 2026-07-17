@@ -339,3 +339,80 @@ class Token(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+# ---------------------------------------------------------------------------
+# Payment models
+# ---------------------------------------------------------------------------
+class PaymentInitializeRequest(BaseModel):
+    """Schema for initializing a credit pack purchase.
+
+    Attributes:
+        tier: The pricing tier (starter/builder/agency).
+        email: Customer email for Paystack receipt.
+    """
+
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
+
+    tier: str = Field(..., pattern="^(starter|builder|agency)$")
+    email: str = Field(..., pattern="^[^@]+@[^@]+\\.[^@]+$")
+
+
+class PaymentInitializeResponse(BaseModel):
+    """Schema returned after initializing a payment.
+
+    Attributes:
+        authorization_url: Paystack checkout URL.
+        reference: Unique transaction reference.
+        amount: Amount in kobo.
+        currency: Currency code, always ``"NGN"``.
+    """
+
+    authorization_url: str
+    reference: str
+    amount: int
+    currency: str = "NGN"
+
+
+class PaymentVerifyResponse(BaseModel):
+    """Schema returned after verifying a payment.
+
+    Attributes:
+        status: Transaction status.
+        reference: Transaction reference.
+        amount: Amount paid in kobo.
+        credits_added: Credits added to user account.
+        new_balance: New credit balance after top-up.
+    """
+
+    status: str
+    reference: str
+    amount: int
+    credits_added: int
+    new_balance: int
+
+
+class PaymentTransactionResponse(BaseModel):
+    """Schema for a payment transaction record.
+
+    Attributes:
+        id: Transaction UUID.
+        reference: Paystack transaction reference.
+        amount: Amount in kobo.
+        currency: Currency code.
+        tier: Purchased tier.
+        credits_to_add: Credits that were/are to be added.
+        status: Transaction status.
+        created_at: ISO 8601 timestamp.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    reference: str
+    amount: int
+    currency: str
+    tier: str
+    credits_to_add: int
+    status: str
+    created_at: datetime

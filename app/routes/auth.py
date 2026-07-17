@@ -388,6 +388,83 @@ async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
 
 
 # ---------------------------------------------------------------------------
+# Payments
+# ---------------------------------------------------------------------------
+from app.services.payments import (  # noqa: E402
+    initialize_payment,
+    verify_payment,
+    verify_webhook_signature,
+    process_webhook,
+)
+from app.models import PaymentInitializeRequest, PaymentInitializeResponse, PaymentVerifyResponse  # noqa: E402
+
+
+@router.post("/payments/initialize", response_model=PaymentInitializeResponse)
+async def initialize_payment_endpoint(
+    request: PaymentInitializeRequest,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Initialize a Paystack payment for a credit pack.
+
+    Creates a Paystack transaction and returns the checkout URL.
+    The user will be redirected to Paystack to complete payment.
+    """
+    result = await initialize_payment(
+        user_id=current_user.id,
+        tier=request.tier,
+        email=request.email,
+    )
+    return PaymentInitializeResponse(**result)
+
+
+@router.get("/payments/verify/{reference}", response_model=PaymentVerifyResponse)
+async def verify_payment_endpoint(
+    reference: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Verify a Paystack payment and credit the user's account.
+
+    Call this after the user returns from Paystack checkout.
+    """
+    result = await verify_payment(reference)
+    # Invalidate user cache so next /v1/me returns updated credits
+    from app.routes.auth import _user_cache
+    await _user_cache.delete(current_user.id)
+    return PaymentVerifyResponse(**result)
+
+
+@router.post("/webhooks/paystack")
+async def paystack_webhook(request: Request):
+    """Handle Paystack webhook events.
+
+    Verifies the webhook signature and processes charge.success/failed events.
+    """
+    body = await request.body()
+    signature = request.headers.get("x-paystack-signature", "")
+
+    if not verify_webhook_signature(body, signature):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook signature",
+        )
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON payload",
+        )
+
+    event = payload.get("event", "")
+    data = payload.get("data", {})
+
+    await process_webhook(event, data)
+
+    return JSONResponse(content={"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
 # Route CRUD
 # ---------------------------------------------------------------------------
 @router.post(

@@ -234,3 +234,63 @@ X-RateLimit-Limit: 100
 X-RateLimit-Remaining: 99
 X-RateLimit-Reset: 1704067200
 ```
+
+## Payments
+
+### Initialize Payment
+
+Initialize a Paystack payment for a credit pack purchase.
+
+```http
+POST /v1/payments/initialize
+Authorization: Bearer <supabase-access-token>
+```
+
+**Request Body:**
+```json
+{
+  "tier": "starter",
+  "email": "user@example.com"
+}
+```
+
+**Response:**
+```json
+{
+  "authorization_url": "https://checkout.paystack.com/...",
+  "reference": "sr_user123_starter",
+  "amount": 250000,
+  "currency": "NGN"
+}
+```
+
+### Verify Payment
+
+Verify a payment after the user returns from Paystack checkout.
+
+```http
+GET /v1/payments/verify/{reference}
+Authorization: Bearer <supabase-access-token>
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "reference": "sr_user123_starter",
+  "amount": 250000,
+  "credits_added": 1000,
+  "new_balance": 1100
+}
+```
+
+### Paystack Webhook
+
+Paystack webhook endpoint for asynchronous payment notifications.
+
+```http
+POST /v1/webhooks/paystack
+X-Paystack-Signature: <signature>
+```
+
+The webhook verifies the signature and processes `charge.success` and `charge.failed` events.
