@@ -436,6 +436,216 @@ end;
 $$ language plpgsql stable;
 
 -- ========================================
+-- Distributed Cache Table (L2 - PostgreSQL)
+-- ========================================
+-- Shared cache accessible to all workers/processes via PostgreSQL.
+-- Used as L2 fallback when L1 in-memory cache misses or evicts.
+
+create table public.cache_entries (
+    key text primary key,
+    value jsonb not null,
+    expires_at timestamp with time zone not null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_cache_entries_expires_at on public.cache_entries(expires_at);
+
+-- Service role full access only (no user-level access needed for cache)
+alter table public.cache_entries enable row level security;
+
+create policy "Service role full access cache_entries"
+    on public.cache_entries for all
+    to service_role
+    using (true);
+
+-- ========================================
+-- Cache RPC Functions
+-- ========================================
+
+-- Get a cached value by key. Returns NULL if not found or expired.
+create or replace function public.cache_get(p_key text)
+returns jsonb as $$
+begin
+    return (
+        select value
+        from public.cache_entries
+        where key = p_key
+          and expires_at > timezone('utc'::text, now())
+        limit 1
+    );
+end;
+$$ language plpgsql stable;
+
+-- Set a cached value with TTL in seconds.
+-- Uses ON CONFLICT (upsert) for atomic updates.
+create or replace function public.cache_set(
+    p_key text,
+    p_value jsonb,
+    p_ttl_seconds integer default 300
+)
+returns void as $$
+begin
+    insert into public.cache_entries (key, value, expires_at)
+    values (
+        p_key,
+        p_value,
+        timezone('utc'::text, now()) + (p_ttl_seconds || ' seconds')::interval
+    )
+    on conflict (key) do update
+    set value = excluded.value,
+        expires_at = excluded.expires_at;
+end;
+$$ language plpgsql;
+
+-- Delete a cached value by key.
+create or replace function public.cache_delete(p_key text)
+returns void as $$
+begin
+    delete from public.cache_entries where key = p_key;
+end;
+$$ language plpgsql;
+
+-- Clean up expired cache entries. Returns the number of rows removed.
+create or replace function public.cache_cleanup()
+returns integer as $$
+declare
+    v_removed integer;
+begin
+    with removed as (
+        delete from public.cache_entries
+        where expires_at <= timezone('utc'::text, now())
+        returning 1
+    )
+    select count(*) into v_removed from removed;
+
+    return v_removed;
+end;
+$$ language plpgsql;
+
+-- ========================================
+-- User Profiles Table
+-- ========================================
+create table public.user_profiles (
+    id uuid primary key references auth.users(id) on delete cascade,
+    credits integer not null default 100,
+    tier text not null default 'free',
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_user_profiles_id on public.user_profiles(id);
+
+alter table public.user_profiles enable row level security;
+
+create policy "Users can view own profile"
+    on public.user_profiles for select
+    to authenticated
+    using (auth.uid() = id);
+
+create policy "Users can update own profile"
+    on public.user_profiles for update
+    to authenticated
+    using (auth.uid() = id)
+    with check (auth.uid() = id);
+
+create policy "Service role full access user_profiles"
+    on public.user_profiles for all
+    to service_role
+    using (true);
+
+create trigger update_user_profiles_updated_at
+    before update on public.user_profiles
+    for each row
+    execute function public.update_updated_at();
+
+-- ========================================
+-- Credit Helper Functions
+-- ========================================
+-- Atomically deduct credits from a user's profile.
+create or replace function public.deduct_user_credits(
+    p_user_id uuid,
+    p_amount integer default 1
+)
+returns boolean as $$
+declare
+    v_current_credits integer;
+begin
+    select credits into v_current_credits
+    from public.user_profiles
+    where id = p_user_id
+    for update;
+
+    if v_current_credits is null then
+        insert into public.user_profiles (id, credits, tier)
+        values (p_user_id, 100, 'free')
+        on conflict (id) do nothing;
+        v_current_credits := 100;
+    end if;
+
+    if v_current_credits >= p_amount then
+        update public.user_profiles
+        set credits = credits - p_amount
+        where id = p_user_id;
+        return true;
+    else
+        return false;
+    end if;
+end;
+$$ language plpgsql;
+
+-- Atomically add credits to a user's profile.
+create or replace function public.add_user_credits(
+    p_user_id uuid,
+    p_amount integer
+)
+returns void as $$
+begin
+    insert into public.user_profiles (id, credits, tier)
+    values (p_user_id, p_amount, 'free')
+    on conflict (id) do update
+    set credits = public.user_profiles.credits + p_amount;
+end;
+$$ language plpgsql;
+
+-- ========================================
+-- Payment Transactions Table
+-- ========================================
+create table public.payment_transactions (
+    id uuid default uuid_generate_v4() primary key,
+    user_id uuid not null references auth.users(id) on delete cascade,
+    reference text not null unique,
+    amount integer not null,
+    currency text not null default 'NGN',
+    tier text not null,
+    credits_to_add integer not null,
+    status text not null default 'pending' check (status in ('pending', 'success', 'failed')),
+    paystack_response jsonb default '{}'::jsonb,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_payment_transactions_user_id on public.payment_transactions(user_id);
+create index idx_payment_transactions_reference on public.payment_transactions(reference);
+create index idx_payment_transactions_status on public.payment_transactions(status);
+
+alter table public.payment_transactions enable row level security;
+
+create policy "Users can view own payment transactions"
+    on public.payment_transactions for select
+    to authenticated
+    using (auth.uid() = user_id);
+
+create policy "Service role full access payment_transactions"
+    on public.payment_transactions for all
+    to service_role
+    using (true);
+
+create trigger update_payment_transactions_updated_at
+    before update on public.payment_transactions
+    for each row
+    execute function public.update_updated_at();
+
+-- ========================================
 -- Cleanup jobs (optional, run via pg_cron)
 -- ========================================
 -- select cron.schedule('cleanup-old-logs', '0 0 * * *', $$

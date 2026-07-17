@@ -5,13 +5,14 @@
 [![Supabase](https://img.shields.io/badge/Supabase-Ready-3ECF8E)](https://supabase.com/)
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors/darestack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Status: Beta](https://img.shields.io/badge/status-beta-blue)](https://github.com/darestack/saferoute-api)
+[![Status: Stable](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/darestack/saferoute-api)
 
 **Add a secure backend to any static website in under 60 seconds.**
 
 SafeRoute is a form backend for static sites. Point your HTML form at a SafeRoute endpoint, and we handle validation, spam filtering, email notifications, and secure delivery to your inbox or webhook.
 
 **Live demo:** https://saferoute-api.vercel.app
+**Dashboard:** https://darestack.github.io/saferoute-api/
 
 ## Quick start
 
@@ -61,11 +62,18 @@ SafeRoute gives you a backend without the backend:
 │   ├── models.py            # Request/response schemas
 │   ├── repositories/        # Data access layer
 │   ├── routes/              # HTTP route handlers
-│   │   ├── auth.py          # JWT auth, route CRUD, API key management
+│   │   ├── auth.py          # JWT auth, route CRUD, payments, admin
 │   │   ├── oauth.py         # Google/GitHub OAuth flows
 │   │   └── proxy.py         # Webhook forwarding engine
 │   ├── services/            # Business logic layer
+│   │   └── payments.py      # Paystack integration
 │   └── utils/               # Shared helpers
+├── frontend/                # Static dashboard (GitHub Pages)
+│   ├── dashboard.html       # Authenticated dashboard
+│   ├── login.html           # OAuth login
+│   ├── index.html           # Marketing homepage
+│   └── assets/              # CSS, JS, images
+├── migrations/              # Supabase SQL migrations
 ├── requirements.txt
 ├── schema.sql               # Supabase tables + RLS policies
 └── tests/                   # Test suite
