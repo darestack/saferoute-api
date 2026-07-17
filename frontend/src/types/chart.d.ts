@@ -1,1 +1,1 @@
-declare const Chart: any;
+declare const Chart: import('chart.js').Chart;

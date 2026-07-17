@@ -1,0 +1,14 @@
+export const API_ENDPOINTS = {
+  ME: '/v1/me',
+  ROUTES: '/v1/routes',
+  ROUTES_LIMIT: '/v1/routes?limit=100',
+  CREATE_ROUTE: '/v1/routes',
+  UPDATE_ROUTE: (id: string) => `/v1/routes/${id}`,
+  DELETE_ROUTE: (id: string) => `/v1/routes/${id}`,
+  REPLAY_LOG: (routeId: string, logId: number) => `/v1/routes/${routeId}/logs/${logId}/replay`,
+  PAYMENTS_INITIALIZE: '/v1/payments/initialize',
+  PAYMENTS_VERIFY: (ref: string) => `/v1/payments/verify/${encodeURIComponent(ref)}`,
+  PAYMENTS_HISTORY: '/v1/payments/history',
+  OAUTH: (provider: 'google' | 'github') => `/auth/oauth/${provider}`,
+  CALLBACK: '/auth/callback',
+} as const;

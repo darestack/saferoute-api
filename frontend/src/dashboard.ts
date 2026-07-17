@@ -3,6 +3,7 @@
 import { User, Route, Payment, LogEntry } from './types';
 import { apiRequest } from './lib/api';
 import { getToken, isAuthenticated, logout } from './lib/auth';
+import { API_ENDPOINTS } from './lib/constants';
 import { showSection, updateLoadingState, showError, showSuccess, escapeHtml, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
 import { updateRoutesUI, updateLogsUI, renderPaymentHistory } from './components/DashboardTables';
 import { initCharts } from './components/DashboardCharts';
@@ -29,7 +30,7 @@ async function checkAuth(): Promise<void> {
   }
 
   try {
-    const user = await apiRequest<User>('/v1/me');
+    const user = await apiRequest<User>(API_ENDPOINTS.ME);
     state.user = user;
     updateUserUI();
   } catch {
@@ -60,9 +61,29 @@ function setupEventListeners(): void {
       e.preventDefault();
       const form = createRouteForm as HTMLFormElement;
       const formData = new FormData(form);
+      const name = (formData.get('name') as string).trim();
+      const destinationUrl = (formData.get('destination_url') as string).trim();
+
+      if (name.length < 2) {
+        showError('Route name must be at least 2 characters');
+        return;
+      }
+
+      if (name.length > 100) {
+        showError('Route name must be less than 100 characters');
+        return;
+      }
+
+      try {
+        new URL(destinationUrl);
+      } catch {
+        showError('Please enter a valid URL (e.g., https://example.com/webhook)');
+        return;
+      }
+
       const routeData = {
-        name: (formData.get('name') as string).trim(),
-        destination_url: (formData.get('destination_url') as string).trim(),
+        name,
+        destination_url: destinationUrl,
       };
 
       try {
@@ -161,8 +182,8 @@ async function loadDashboardData(): Promise<void> {
     const headers = { Authorization: `Bearer ${token}` };
 
     const [routes, user] = await Promise.all([
-      apiRequest<Route[]>('/v1/routes?limit=100', { headers }),
-      apiRequest<User>('/v1/me', { headers }),
+      apiRequest<Route[]>(API_ENDPOINTS.ROUTES_LIMIT, { headers }),
+      apiRequest<User>(API_ENDPOINTS.ME, { headers }),
     ]);
 
     if (routes) {
@@ -191,7 +212,7 @@ async function loadPaymentHistory(): Promise<void> {
   if (!token) return;
 
   try {
-    const response = await fetch('/v1/payments/history', {
+    const response = await fetch(API_ENDPOINTS.PAYMENTS_HISTORY, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -234,7 +255,7 @@ async function checkPaymentResult(): Promise<void> {
 
     try {
       const authHeader = `Bearer ${token}`;
-      const response = await fetch(`/v1/payments/verify/${encodeURIComponent(ref)}`, {
+      const response = await fetch(API_ENDPOINTS.PAYMENTS_VERIFY(ref), {
         headers: { Authorization: authHeader },
       });
 
@@ -261,7 +282,7 @@ async function checkPaymentResult(): Promise<void> {
 }
 
 async function createRoute(routeData: { name: string; destination_url: string }): Promise<void> {
-  const route = await apiRequest<Route>('/v1/routes', {
+  const route = await apiRequest<Route>(API_ENDPOINTS.CREATE_ROUTE, {
     method: 'POST',
     body: JSON.stringify(routeData),
   });
@@ -277,7 +298,7 @@ async function editRoute(routeId: string): Promise<void> {
   const newName = prompt('Route name:', route.name);
   if (newName && newName !== route.name) {
     try {
-      const updated = await apiRequest<Route>(`/v1/routes/${routeId}`, {
+      const updated = await apiRequest<Route>(API_ENDPOINTS.UPDATE_ROUTE(routeId), {
         method: 'PUT',
         body: JSON.stringify({ name: newName }),
       });
@@ -294,7 +315,7 @@ async function deleteRoute(routeId: string): Promise<void> {
   if (!confirm('Are you sure you want to delete this route?')) return;
 
   try {
-    await apiRequest(`/v1/routes/${routeId}`, { method: 'DELETE' });
+    await apiRequest(API_ENDPOINTS.DELETE_ROUTE(routeId), { method: 'DELETE' });
     state.routes = state.routes.filter((r) => r.id !== routeId);
     updateRoutesUI(state.routes);
     showSuccess('Route deleted successfully');
@@ -305,7 +326,7 @@ async function deleteRoute(routeId: string): Promise<void> {
 
 async function replayLog(routeId: string, logId: number): Promise<void> {
   try {
-    await apiRequest(`/v1/routes/${routeId}/logs/${logId}/replay`, { method: 'POST' });
+    await apiRequest(API_ENDPOINTS.REPLAY_LOG(routeId, logId), { method: 'POST' });
     showSuccess('Replay queued');
   } catch (error) {
     showError(error instanceof Error ? error.message : 'Failed to replay log');
@@ -320,7 +341,7 @@ async function purchaseCredits(tier: string): Promise<void> {
   if (errorEl) errorEl.classList.add('hidden');
 
   try {
-    const response = await fetch(`/v1/payments/initialize`, {
+    const response = await fetch(API_ENDPOINTS.PAYMENTS_INITIALIZE, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

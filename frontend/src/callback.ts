@@ -2,6 +2,8 @@
 
 // CSS is loaded via global import in main.ts / dashboard.ts
 
+import { API_ENDPOINTS } from './lib/constants';
+
 async function handleCallback(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
@@ -18,7 +20,7 @@ async function handleCallback(): Promise<void> {
   }
 
   try {
-    const response = await fetch('/auth/callback', {
+    const response = await fetch(API_ENDPOINTS.CALLBACK, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
