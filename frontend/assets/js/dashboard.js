@@ -149,13 +149,13 @@ async function loadRoutesData() {
     const statsPromises = state.routes.slice(0, 10).map(route =>
         fetch(`${API_BASE}/v1/routes/${route.id}/stats`, { headers })
             .then(res => res.ok ? res.json() : null)
-            .catch(() => null)
+            .catch((err) => { console.error('Failed to load route stats:', err); return null; })
     );
     
     const logsPromises = state.routes.slice(0, 5).map(route =>
         fetch(`${API_BASE}/v1/routes/${route.id}/logs?limit=5`, { headers })
             .then(res => res.ok ? res.json() : [])
-            .catch(() => [])
+            .catch((err) => { console.error('Failed to load route logs:', err); return []; })
     );
     
     const [statsResults, logsResults] = await Promise.all([
@@ -466,6 +466,11 @@ async function apiCall(endpoint, options = {}) {
         });
         
         if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                localStorage.removeItem('saferoute_token');
+                window.location.href = '/login.html';
+                return;
+            }
             const error = await response.json().catch(() => ({ message: 'Request failed' }));
             throw new Error(error.detail || error.message || `HTTP ${response.status}`);
         }

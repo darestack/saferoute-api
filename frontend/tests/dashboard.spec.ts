@@ -107,4 +107,63 @@ test.describe('Dashboard', () => {
     await page.getByRole('button', { name: 'Create New Route' }).click();
     await expect(page.getByRole('heading', { name: 'Create New Route' })).toBeVisible();
   });
+
+  test('shows Buy Credits section', async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem('saferoute_token', 'test-token'));
+    
+    await page.route('/v1/me', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'test-user', email: 'test@example.com', full_name: 'Test User', credits: 100, tier: 'free' })
+      });
+    });
+    
+    await page.route('/v1/routes', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([])
+      });
+    });
+    
+    await page.goto('/dashboard.html');
+    await expect(page.getByText('Buy Credits')).toBeVisible();
+    await expect(page.getByText('Starter')).toBeVisible();
+    await expect(page.getByText('Builder')).toBeVisible();
+    await expect(page.getByText('Agency')).toBeVisible();
+  });
+
+  test('clicking Buy Credits button initializes payment', async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem('saferoute_token', 'test-token'));
+    
+    await page.route('/v1/me', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'test-user', email: 'test@example.com', full_name: 'Test User', credits: 100, tier: 'free' })
+      });
+    });
+    
+    await page.route('/v1/routes', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([])
+      });
+    });
+    
+    await page.route('/v1/payments/initialize', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authorization_url: 'https://checkout.paystack.com/test', reference: 'sr_test_starter', amount: 250000, currency: 'NGN' })
+      });
+    });
+    
+    await page.goto('/dashboard.html');
+    await page.getByRole('button', { name: 'Starter' }).click();
+    
+    await page.waitForURL('https://checkout.paystack.com/test', { timeout: 5000 });
+  });
 });

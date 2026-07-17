@@ -37,6 +37,7 @@ from app.routes.proxy import (
     log_delivery,
 )
 from app.services.retry_processor import rebuild_retry_body
+from app.monitoring import add_breadcrumb  # noqa: E402
 from app.models import (
     PaymentInitializeRequest,
     PaymentInitializeResponse,
@@ -223,11 +224,11 @@ async def _fetch_and_cache_user(user_id: str) -> User:
         tier = "free"
         try:
             profile_result = await asyncio.to_thread(
-                admin.table("user_profiles")
+                lambda: admin.table("user_profiles")
                 .select("credits, tier")
                 .eq("id", user_id)
                 .limit(1)
-                .execute
+                .execute()
             )
             if profile_result.data and isinstance(profile_result.data, list) and len(profile_result.data) > 0:
                 credits = profile_result.data[0].get("credits", 0) if isinstance(profile_result.data[0], dict) else 0
@@ -390,6 +391,7 @@ async def login_user(credentials: UserCreate):
 @router.get("/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user_from_jwt)):
     """Return the currently authenticated user's profile."""
+    add_breadcrumb("User profile fetched", category="auth", level="info")
     return current_user
 
 
@@ -430,9 +432,8 @@ async def verify_payment_endpoint(
 
     Call this after the user returns from Paystack checkout.
     """
-    result = await verify_payment(reference)
+    result = await verify_payment(reference, user_id=current_user.id)
     # Invalidate user cache so next /v1/me returns updated credits
-    from app.routes.auth import _user_cache
     await _user_cache.delete(current_user.id)
     return PaymentVerifyResponse(**result)
 
@@ -442,6 +443,7 @@ async def paystack_webhook(request: Request):
     """Handle Paystack webhook events.
 
     Verifies the webhook signature and processes charge.success/failed events.
+    Failed processing is stored in webhook_failures for retry.
     """
     body = await request.body()
     signature = request.headers.get("x-paystack-signature", "")
@@ -466,6 +468,48 @@ async def paystack_webhook(request: Request):
     await process_webhook(event, data)
 
     return JSONResponse(content={"status": "ok"})
+
+
+@router.post("/webhooks/paystack/retry")
+async def retry_failed_webhooks(
+    x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
+):
+    """Retry failed payment webhooks.
+
+    Admin-only endpoint protected by ADMIN_SECRET_KEY.
+    Processes webhook_failures entries for payment events.
+    """
+    if not settings.ADMIN_SECRET_KEY or not compare_digest(
+        x_admin_secret or "", settings.ADMIN_SECRET_KEY
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin secret",
+        )
+
+    # Find failed payment webhooks
+    result = await execute_query(
+        admin.table("webhook_failures")
+        .select("*")
+        .eq("route_id", None)  # Payment webhooks have no route_id
+        .eq("retry_count", 0)
+        .limit(10)
+    )
+
+    retried = 0
+    for failure in result.data:
+        try:
+            body = failure["request_body"]
+            if body:
+                payload = json.loads(body)
+                event = payload.get("event", "")
+                data = payload.get("data", {})
+                await process_webhook(event, data)
+                retried += 1
+        except Exception:
+            pass
+
+    return {"retried": retried}
 
 
 @router.get("/payments/history", response_model=list[PaymentTransactionResponse])
@@ -503,6 +547,15 @@ async def admin_adjust_credits(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin secret",
         )
+
+    MAX_ADMIN_ADJUSTMENT = 100_000
+    if abs(amount) > MAX_ADMIN_ADJUSTMENT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Adjustment amount exceeds maximum allowed",
+        )
+
+    reason = reason.replace("\n", " ").replace("\r", " ")[:200]
 
     if amount > 0:
         await execute_query(
@@ -980,7 +1033,7 @@ async def list_route_failures(
 @router.post("/routes/{route_id}/failures/{log_id}/retry")
 async def retry_failed_webhook(
     route_id: str,
-    log_id: str,
+    log_id: int,
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Manually retry a failed webhook delivery.
@@ -1034,13 +1087,13 @@ async def retry_failed_webhook(
         .eq("id", log_id)
     )
 
-    return RetryQueuedResponse(status="queued", log_id=int(log_id))
+    return RetryQueuedResponse(status="queued", log_id=log_id)
 
 
 @router.post("/routes/{route_id}/logs/{log_id}/replay")
 async def replay_webhook_log(
     route_id: str,
-    log_id: str,
+    log_id: int,
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Manually replay a webhook delivery from a log entry.

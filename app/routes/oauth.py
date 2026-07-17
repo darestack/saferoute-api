@@ -113,7 +113,7 @@ def _generate_pkce_pair() -> tuple[str, str]:
 
 
 async def _store_pkce_verifier(
-    code_challenge: str, code_verifier: str, state: Optional[str] = None
+    code_challenge: str, code_verifier: str
 ) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
     await store_pkce_verifier(admin, code_challenge, code_verifier)
@@ -194,7 +194,7 @@ async def oauth_redirect(provider: str):
     )
 
     try:
-        await _store_pkce_verifier(code_challenge, code_verifier, state=state)
+        await _store_pkce_verifier(code_challenge, code_verifier)
     except Exception:
         raise HTTPException(
             status_code=500,

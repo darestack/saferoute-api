@@ -44,7 +44,14 @@ from app.utils.security import (
     validate_destination_url_async,
 )
 from app.utils.transform import parse_payload, render_template
-from app.utils.email import send_submission_email  # noqa: E402
+from app.utils.email import (
+        send_submission_email,
+        is_disposable_email,
+        _ensure_disposable_domains_loaded,
+    )  # noqa: E402
+
+_EMAIL_RE: re.Pattern[str] = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+from app.monitoring import add_breadcrumb  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -686,18 +693,12 @@ def _validate_form_schema(payload: dict, form_schema: dict) -> None:
 
         field_type = rules.get("type", "string")
         if field_type == "email":
-            email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-            if not isinstance(value, str) or not email_re.match(value):
+            if not isinstance(value, str) or not _EMAIL_RE.match(value):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid email: {field_name}",
                 )
             if rules.get("reject_disposable"):
-                from app.utils.email import (
-                    is_disposable_email,
-                    _ensure_disposable_domains_loaded,
-                )
-
                 # Ensure the domain list is loaded before checking.
                 _ensure_disposable_domains_loaded()
 
@@ -996,6 +997,12 @@ async def proxy_webhook(
         retry_status = "pending"
         next_retry_at = calculate_next_retry(0)
 
+    # --- Credit deduction ---
+    if status_code < 400:
+        user_id = route.get("user_id")
+        if user_id:
+            await deduct_user_credits(user_id, 1)
+
     # --- Log delivery ---
     await log_delivery(
         route_id=route["id"],
@@ -1012,11 +1019,13 @@ async def proxy_webhook(
         next_retry_at=next_retry_at,
     )
 
-    # --- Credit deduction ---
-    if status_code < 400:
-        user_id = route.get("user_id")
-        if user_id:
-            await deduct_user_credits(user_id, 1)
+    # --- Monitoring ---
+    add_breadcrumb(
+        f"Proxy delivery complete: {status_code}",
+        category="proxy",
+        level="info" if status_code < 400 else "error",
+        data={"route_id": route["id"], "status_code": status_code, "duration_ms": duration_ms},
+    )
 
     # --- Email notification ---
     email_config = route.get("email_notifications") or {}
@@ -1034,18 +1043,20 @@ async def proxy_webhook(
             reply_to=email_config.get("reply_to") or "",
         )
 
-    # --- Store idempotency result ---
+    # --- Store idempotency result + update metrics in parallel ---
     if idempotency_key and status_code < 400:
-        await store_idempotency(
-            route["id"],
-            idempotency_key,
-            status_code,
-            response_body,
-            response_headers,
+        await asyncio.gather(
+            store_idempotency(
+                route["id"],
+                idempotency_key,
+                status_code,
+                response_body,
+                response_headers,
+            ),
+            bump_route_metrics_atomic(route["id"]),
         )
-
-    # --- Update route metrics ---
-    await bump_route_metrics_atomic(route["id"])
+    else:
+        await bump_route_metrics_atomic(route["id"])
 
     # Compute rate-limit metadata for response headers.
     # Align reset with the fixed 60s bucket boundary used by the
@@ -1163,8 +1174,16 @@ async def outbound_health_check(
     summary="Cache statistics",
     description="Return detailed metrics for all distributed caches.",
 )
-async def cache_stats(request: Request) -> JSONResponse:
+async def cache_stats(
+    request: Request,
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+) -> JSONResponse:
     """Return cache statistics for monitoring and debugging."""
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         from app.routes.auth import _user_cache
         from app.services.route_cache import _route_cache

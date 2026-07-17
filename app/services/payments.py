@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 
 from app.config import settings
 from app.database import admin, execute_query
+from app.monitoring import add_breadcrumb  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ async def initialize_payment(
         .limit(1)
     )
     if existing.data:
-        reference = f"sr_{user_id[:8]}_{tier}_{abs(hash(email)) % 10000}"
+        reference = f"sr_{user_id[:8]}_{tier}_{int(hashlib.sha256(email.encode()).hexdigest()[:8], 16) % 10000}"
 
     payload = {
         "email": email,
@@ -125,12 +126,14 @@ async def initialize_payment(
             },
             timeout=10.0,
         )
-        response = await _post_with_retry(
-            client,
-            f"{settings.PAYSTACK_BASE_URL}/transaction/initialize",
-            payload,
-        )
-        await client.aclose()
+        try:
+            response = await _post_with_retry(
+                client,
+                f"{settings.PAYSTACK_BASE_URL}/transaction/initialize",
+                payload,
+            )
+        finally:
+            await client.aclose()
 
         if response.status_code != 200:
             logger.error("Paystack initialize failed: %s", response.text)
@@ -161,6 +164,13 @@ async def initialize_payment(
             })
         )
 
+        add_breadcrumb(
+            f"Payment initialized: {tier} pack",
+            category="payment",
+            level="info",
+            data={"user_id": user_id, "tier": tier, "amount": amount, "reference": reference},
+        )
+
         return {
             "authorization_url": data["data"]["authorization_url"],
             "reference": reference,
@@ -178,17 +188,19 @@ async def initialize_payment(
         ) from exc
 
 
-async def verify_payment(reference: str) -> dict[str, Any]:
+async def verify_payment(reference: str, user_id: str | None = None) -> dict[str, Any]:
     """Verify a Paystack payment and credit the user's account if successful.
 
     Args:
         reference: Paystack transaction reference.
+        user_id: Optional owner user ID for access control.
 
     Returns:
         Dict with verification status and credit details.
 
     Raises:
-        HTTPException: 404 if transaction not found, 500 if verification fails.
+        HTTPException: 404 if transaction not found or not owned by caller,
+            500 if verification fails.
     """
     if not settings.PAYSTACK_SECRET_KEY:
         raise HTTPException(
@@ -210,6 +222,11 @@ async def verify_payment(reference: str) -> dict[str, Any]:
         )
 
     tx = tx_result.data[0]
+    if user_id is not None and tx.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction not found",
+        )
     if tx["status"] == "success":
         return {
             "status": "success",
@@ -238,11 +255,13 @@ async def verify_payment(reference: str) -> dict[str, Any]:
             },
             timeout=10.0,
         )
-        response = await _get_with_retry(
-            client,
-            f"{settings.PAYSTACK_BASE_URL}/transaction/verify/{reference}",
-        )
-        await client.aclose()
+        try:
+            response = await _get_with_retry(
+                client,
+                f"{settings.PAYSTACK_BASE_URL}/transaction/verify/{reference}",
+            )
+        finally:
+            await client.aclose()
 
         if response.status_code != 200:
             logger.error("Paystack verify failed: %s", response.text)

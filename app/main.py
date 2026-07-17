@@ -23,9 +23,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.logging_config import configure_logging, request_id_var
+from app.monitoring import init_monitoring  # noqa: E402
 
 # Configure logging before any other imports that use loggers.
 configure_logging(environment=settings.ENVIRONMENT)
+
+# Initialize monitoring backends (Sentry, OpenTelemetry).
+init_monitoring()
 
 from app.routes import auth, oauth, proxy  # noqa: E402
 from app.routes.auth import close_jwks_client  # noqa: E402
@@ -373,7 +377,6 @@ async def health_check() -> JSONResponse:
     """
     db_ok = False
     cache_ok = False
-    cache_metrics = {}
     try:
         from app.database import admin, execute_query
 
@@ -391,19 +394,6 @@ async def health_check() -> JSONResponse:
         test_key = "__health_check__"
         await cache_get(test_key)
         cache_ok = True
-
-        # Collect cache metrics from known caches
-        from app.routes.auth import _user_cache
-        from app.services.route_cache import _route_cache
-        from app.routes.proxy import _ip_country_cache
-        from app.database import _api_key_cache
-
-        cache_metrics = {
-            "user_cache": _user_cache.get_metrics(),
-            "route_cache": _route_cache.get_metrics(),
-            "geolocation_cache": _ip_country_cache.get_metrics(),
-            "api_key_cache": _api_key_cache.get_metrics(),
-        }
     except Exception as exc:
         logger.error("Health check cache probe failed: %s", exc)
 
@@ -415,7 +405,6 @@ async def health_check() -> JSONResponse:
             "status": "healthy" if overall_ok else "unhealthy",
             "database": "connected" if db_ok else "disconnected",
             "cache": "connected" if cache_ok else "disconnected",
-            "cache_metrics": cache_metrics,
             "service": "SafeRoute API",
         },
     )
@@ -424,7 +413,6 @@ async def health_check() -> JSONResponse:
 # Serve frontend files in development/test environments.
 # Mount AFTER all API routes so they take precedence.
 if settings.ENVIRONMENT != "production":
-    import os
     frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
     if os.path.isdir(frontend_path):
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

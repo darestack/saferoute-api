@@ -15,6 +15,8 @@ from app.utils.security import verify_webhook_signature, get_client_ip
 from app.utils.transform import parse_payload, render_template, resolve_dot_path
 from app.utils.retry import should_retry, calculate_next_retry
 from app.main import app
+import math
+import time as time_module
 
 client = TestClient(app)
 
@@ -1692,7 +1694,6 @@ class TestRateLimitResetAlignment:
 
     def test_rate_limit_reset_aligns_with_bucket_boundary(self):
         """X-RateLimit-Reset should align with the fixed 60s bucket boundary."""
-        import math
         from app.routes.proxy import _RATE_LIMIT_WINDOW_SECONDS
 
         now = time.time()
@@ -1714,7 +1715,6 @@ class TestFillRouteCacheSingleFlight:
             fill_route_cache as _fill_route_cache,
             _route_cache_fills,
         )
-        import time as time_module
 
         route_row = {
             "id": "route-1",

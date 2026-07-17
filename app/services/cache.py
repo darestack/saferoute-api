@@ -18,13 +18,12 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, TypeVar
+from typing import Any
 
 # Database imports are lazy to avoid circular imports with app.database
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
 
 
 class DistributedCache:

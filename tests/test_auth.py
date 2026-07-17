@@ -7,6 +7,8 @@ import pytest
 
 from app.models import User
 from app.utils.security import generate_slug
+import app.routes.oauth as oauth_module
+
 from app.routes.auth import (
     _cache_user,
     _fetch_and_cache_user,
@@ -265,7 +267,6 @@ class TestOAuthJwtFallbackKey:
 
     def test_different_processes_get_different_keys(self):
         """Each process should get a unique random key."""
-        import app.routes.oauth as oauth_module
 
         # Reset the cached key to simulate a new process
         oauth_module._DEV_JWT_KEY = ""
@@ -464,7 +465,7 @@ class TestManualRetryEndpoint:
             response = asyncio.run(
                 retry_failed_webhook(
                     route_id="route-1",
-                    log_id="1",
+                    log_id=1,
                     current_user=mock_user,
                 )
             )
@@ -491,7 +492,7 @@ class TestManualRetryEndpoint:
                 asyncio.run(
                     retry_failed_webhook(
                         route_id="route-1",
-                        log_id="log-1",
+                        log_id=1,
                         current_user=mock_user,
                     )
                 )
@@ -537,7 +538,7 @@ class TestReplayWebhookLog:
             response = asyncio.run(
                 replay_webhook_log(
                     route_id="route-1",
-                    log_id="log-1",
+                    log_id=1,
                     current_user=mock_user,
                 )
             )
@@ -564,7 +565,7 @@ class TestReplayWebhookLog:
                 asyncio.run(
                     replay_webhook_log(
                         route_id="route-1",
-                        log_id="missing-log",
+                        log_id=999,
                         current_user=mock_user,
                     )
                 )
@@ -602,7 +603,7 @@ class TestReplayWebhookLog:
                 asyncio.run(
                     replay_webhook_log(
                         route_id="route-1",
-                        log_id="log-1",
+                        log_id=1,
                         current_user=mock_user,
                     )
                 )

@@ -16,7 +16,6 @@ import os
 import re
 from typing import Any, Optional
 
-import httpx
 from resend import Resend
 from resend.exceptions import ResendError
 
@@ -42,64 +41,6 @@ _DISPOSABLE_EMAIL_LIST_URL = os.environ.get(
     "https://raw.githubusercontent.com/ivolo/disposable-email-domains/master/index.json",
 )
 """Source for disposable email domains. Set to empty string to disable."""
-
-
-async def _load_disposable_email_domains() -> None:
-    """Load disposable email domains from embedded JSON file or external source."""
-    global _DISPOSABLE_EMAIL_DOMAINS
-
-    # Primary source: embedded JSON file (no network required).
-    try:
-        from pathlib import Path
-        json_path = Path(__file__).with_name("disposable_domains.json")
-        if json_path.exists():
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                _DISPOSABLE_EMAIL_DOMAINS = {
-                    domain.strip().lower()
-                    for domain in data
-                    if isinstance(domain, str) and domain.strip()
-                }
-                logger.info(
-                    "Loaded %d disposable email domains from embedded file",
-                    len(_DISPOSABLE_EMAIL_DOMAINS),
-                )
-                return
-    except Exception:
-        logger.exception("Failed to load embedded disposable email domains")
-
-    # Fallback: fetch from external URL if configured.
-    if _DISPOSABLE_EMAIL_LIST_URL:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(_DISPOSABLE_EMAIL_LIST_URL)
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list):
-                        _DISPOSABLE_EMAIL_DOMAINS = {
-                            domain.strip().lower()
-                            for domain in data
-                            if isinstance(domain, str) and domain.strip()
-                        }
-                        logger.info(
-                            "Loaded %d disposable email domains from %s",
-                            len(_DISPOSABLE_EMAIL_DOMAINS),
-                            _DISPOSABLE_EMAIL_LIST_URL,
-                        )
-                        return
-        except Exception:
-            logger.exception(
-                "Failed to load disposable email domains from %s",
-                _DISPOSABLE_EMAIL_LIST_URL,
-            )
-
-    # Last resort: empty set (no disposable detection).
-    _DISPOSABLE_EMAIL_DOMAINS = set()
-    logger.warning(
-        "No disposable email domains loaded; disposable check will be ineffective"
-    )
-
 
 def _load_disposable_domains_sync() -> None:
     """Synchronously load disposable email domains from the embedded JSON file.
@@ -248,7 +189,7 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
 
     for attempt in range(1, _EMAIL_RETRY_ATTEMPTS + 1):
         try:
-            result = client.emails.send(email)
+            result = await asyncio.to_thread(client.emails.send, email)
             logger.info(
                 "Submission email sent",
                 extra={

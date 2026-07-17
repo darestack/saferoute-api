@@ -226,7 +226,7 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
         if transform_headers:
             outbound_headers.update(transform_headers)
 
-        status_code, response_body, response_headers = await forward_payload_fn(
+        status_code, response_body, _ = await forward_payload_fn(
             method=route_info.get("method", "POST"),
             url=destination_url,
             body=forward_body,

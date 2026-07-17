@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+import app.crypto as crypto
+
 from app.crypto import (
     decrypt_webhook_secret,
     encrypt_webhook_secret,
@@ -68,7 +70,6 @@ class TestEncryptDecryptWebhookSecret:
             mock_settings.ENVIRONMENT = "development"
 
             # Force re-creation of fernet instance
-            import app.crypto as crypto
 
             crypto._fernet = None
 
@@ -120,7 +121,6 @@ class TestClearFernetCache:
             mock_settings.ENVIRONMENT = "development"
 
             # Force fresh state.
-            import app.crypto as crypto
 
             crypto._fernet = None
 

@@ -1,6 +1,4 @@
 """Integration tests for the proxy webhook endpoints using FastAPI TestClient."""
-
-import asyncio
 import pytest
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,6 +7,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
+import asyncio
 
 client = TestClient(app)
 
@@ -69,7 +68,6 @@ class TestOutboundHealthCheckReal:
     @pytest.mark.integration
     def test_outbound_health_check_reachable(self):
         """Verify the health check can reach the public internet."""
-        import asyncio
 
         async def _check() -> None:
             mock_response = MagicMock()
@@ -112,7 +110,6 @@ class TestProxyWebhookIntegration:
             assert body["status"] == "healthy"
             assert body["database"] == "connected"
             assert body["cache"] == "connected"
-            assert "cache_metrics" in body
             assert body["service"] == "SafeRoute API"
 
     def test_missing_route_returns_404(self):

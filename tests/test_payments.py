@@ -1,6 +1,10 @@
 """Tests for Paystack payment integration."""
 
 from __future__ import annotations
+
+import hashlib
+import hmac
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -197,8 +201,6 @@ class TestWebhookSignature:
     def test_verify_webhook_signature_valid(self, mock_settings):
         mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
         payload = b'{"event": "charge.success"}'
-        import hashlib
-        import hmac
         signature = hmac.new(
             b"sk_test_123", payload, hashlib.sha512
         ).hexdigest()
