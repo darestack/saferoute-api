@@ -106,9 +106,8 @@ def parse_payload(body: bytes, content_type: str) -> Any:
     if "application/x-www-form-urlencoded" in content_type:
         try:
             decoded = body.decode("utf-8", errors="replace")
-            return {
-                k: v[0] for k, v in parse_qs(decoded, keep_blank_values=True).items()
-            }
+            parsed = parse_qs(decoded, keep_blank_values=True)
+            return {k: v[0] if v else "" for k, v in parsed.items()}
         except Exception as exc:
             logger.warning("Failed to decode form payload: %s", exc)
             return {}
@@ -122,7 +121,8 @@ def parse_payload(body: bytes, content_type: str) -> Any:
     # Fallback to form data for unknown content types
     try:
         decoded = body.decode("utf-8", errors="replace")
-        return {k: v[0] for k, v in parse_qs(decoded, keep_blank_values=True).items()}
+        parsed = parse_qs(decoded, keep_blank_values=True)
+        return {k: v[0] if v else "" for k, v in parsed.items()}
     except Exception as exc:
         logger.warning("Failed to decode fallback payload: %s", exc)
         return {}

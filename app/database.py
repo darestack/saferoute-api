@@ -252,9 +252,7 @@ async def cache_get(key: str) -> Any | None:
         Cached value, or ``None`` if not found or expired.
     """
     try:
-        result = await execute_query(
-            admin.rpc("cache_get", {"p_key": key})
-        )
+        result = await execute_query(admin.rpc("cache_get", {"p_key": key}))
         if result.data and result.data[0] is not None:
             return result.data[0]
     except Exception:
@@ -272,11 +270,14 @@ async def cache_set(key: str, value: Any, ttl_seconds: int = 300) -> None:
     """
     try:
         await execute_query(
-            admin.rpc("cache_set", {
-                "p_key": key,
-                "p_value": json.dumps(value),
-                "p_ttl_seconds": ttl_seconds,
-            })
+            admin.rpc(
+                "cache_set",
+                {
+                    "p_key": key,
+                    "p_value": json.dumps(value),
+                    "p_ttl_seconds": ttl_seconds,
+                },
+            )
         )
     except Exception:
         logger.exception("Distributed cache set failed for key=%s", key)
@@ -289,9 +290,7 @@ async def cache_delete(key: str) -> None:
         key: Cache key to delete.
     """
     try:
-        await execute_query(
-            admin.rpc("cache_delete", {"p_key": key})
-        )
+        await execute_query(admin.rpc("cache_delete", {"p_key": key}))
     except Exception:
         logger.exception("Distributed cache delete failed for key=%s", key)
 
@@ -303,9 +302,7 @@ async def cache_cleanup() -> int:
         Number of expired entries removed.
     """
     try:
-        result = await execute_query(
-            admin.rpc("cache_cleanup")
-        )
+        result = await execute_query(admin.rpc("cache_cleanup"))
         if result.data and result.data[0] is not None:
             return int(result.data[0])
     except Exception:
@@ -330,10 +327,13 @@ async def deduct_user_credits(user_id: str, amount: int = 1) -> bool:
     """
     try:
         result = await execute_query(
-            admin.rpc("deduct_user_credits", {
-                "p_user_id": user_id,
-                "p_amount": amount,
-            })
+            admin.rpc(
+                "deduct_user_credits",
+                {
+                    "p_user_id": user_id,
+                    "p_amount": amount,
+                },
+            )
         )
         if result.data and len(result.data) > 0:
             return bool(result.data[0])

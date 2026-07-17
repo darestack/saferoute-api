@@ -324,7 +324,7 @@ class UserCreate(BaseModel):
 
     model_config = ConfigDict(strict=True, str_strip_whitespace=True)
 
-    email: str = Field(..., pattern="^[^@]+@[^@]+\\.[^@]+$")
+    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(..., min_length=8, max_length=128)
     full_name: Optional[str] = Field(None, max_length=100)
 
@@ -355,7 +355,7 @@ class PaymentInitializeRequest(BaseModel):
     model_config = ConfigDict(strict=True, str_strip_whitespace=True)
 
     tier: str = Field(..., pattern="^(starter|builder|agency)$")
-    email: str = Field(..., pattern="^[^@]+@[^@]+\\.[^@]+$")
+    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class PaymentInitializeResponse(BaseModel):

@@ -42,6 +42,7 @@ _DISPOSABLE_EMAIL_LIST_URL = os.environ.get(
 )
 """Source for disposable email domains. Set to empty string to disable."""
 
+
 def _load_disposable_domains_sync() -> None:
     """Synchronously load disposable email domains from the embedded JSON file.
 
@@ -54,6 +55,7 @@ def _load_disposable_domains_sync() -> None:
         return
     try:
         from pathlib import Path
+
         json_path = Path(__file__).with_name("disposable_domains.json")
         if json_path.exists():
             with open(json_path, "r", encoding="utf-8") as f:

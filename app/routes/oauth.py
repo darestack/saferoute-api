@@ -40,6 +40,7 @@ router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
 # development and testing while keeping the app runnable.
 _DEV_JWT_KEY: str = ""
 
+
 def _get_jwt_signing_key() -> str:
     global _DEV_JWT_KEY
     if not _DEV_JWT_KEY:
@@ -49,6 +50,7 @@ def _get_jwt_signing_key() -> str:
             "OAuth state tokens will not survive process restarts."
         )
     return _DEV_JWT_KEY
+
 
 __all__ = [
     "router",
@@ -112,9 +114,7 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return generate_pkce_pair()
 
 
-async def _store_pkce_verifier(
-    code_challenge: str, code_verifier: str
-) -> None:
+async def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
     await store_pkce_verifier(admin, code_challenge, code_verifier)
 
@@ -178,7 +178,6 @@ async def oauth_redirect(provider: str):
             status_code=400,
             detail=(f"Unsupported provider: {provider}. Use 'google' or 'github'."),
         )
-
 
     code_verifier, code_challenge = _generate_pkce_pair()
 
@@ -259,7 +258,6 @@ async def oauth_callback_post(
             status_code=400,
             detail="Missing state parameter",
         )
-
 
     try:
         payload = jwt.decode(

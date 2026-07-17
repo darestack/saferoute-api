@@ -19,6 +19,10 @@ _MAX_LOG_BODY_BYTES = settings.MAX_LOG_BODY_BYTES
 
 async def reap_stale_retries() -> None:
     """Reset entries stranded in 'retrying' back to 'pending'."""
+    # Safety net for crashed workers: if a worker claimed a retry but died
+    # mid-flight, the row stays in 'retrying' forever. The reaper resets
+    # any claim older than the staleness threshold so another worker can
+    # pick it up.
     reaper_cutoff = (
         datetime.now(timezone.utc) - timedelta(seconds=_RETRY_CLAIM_STALE_SECONDS)
     ).isoformat()
@@ -195,6 +199,9 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
             )
             continue
 
+        # Atomic claim: only one worker can transition a row from 'pending'
+        # to 'retrying'. If another worker already claimed it, this UPDATE
+        # affects 0 rows and we skip to avoid duplicate delivery.
         claim_result = await execute_query(
             admin.table("webhook_logs")
             .update({"retry_status": "retrying"})

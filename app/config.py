@@ -152,7 +152,6 @@ class Settings(BaseSettings):
                     "TURNSTILE_SECRET_KEY must be at least 16 chars in production"
                 )
         elif not self.ENCRYPTION_KEY.strip():
-
             warnings.warn(
                 "Running without ENCRYPTION_KEY. "
                 "Webhook secrets will be stored in plain text.",

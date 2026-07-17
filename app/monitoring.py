@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _sentry_available = False
 try:
     import sentry_sdk
+
     _sentry_available = True
 except ImportError:
     logger.warning("sentry-sdk not installed; Sentry monitoring disabled")
@@ -23,6 +24,7 @@ try:
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
     _otel_available = True
 except ImportError:
     logger.warning("opentelemetry packages not installed; tracing disabled")
@@ -77,7 +79,9 @@ def init_monitoring() -> None:
     init_opentelemetry()
 
 
-def capture_exception_safe(exc: Exception, context: dict[str, Any] | None = None) -> None:
+def capture_exception_safe(
+    exc: Exception, context: dict[str, Any] | None = None
+) -> None:
     """Capture an exception to Sentry with optional context."""
     if not _sentry_available:
         return
@@ -100,7 +104,7 @@ def capture_message_safe(message: str, level: str = "info") -> None:
         return
 
     try:
-        sentry_sdk.capture_message(message, level=level)
+        sentry_sdk.capture_message(message, level=level)  # type: ignore[arg-type]
     except Exception:
         pass
 
@@ -111,7 +115,7 @@ def set_user_context(user_id: str, email: str | None = None) -> None:
         return
 
     try:
-        user_data = {"id": user_id}
+        user_data: dict[str, str] = {"id": user_id}
         if email:
             user_data["email"] = email
         sentry_sdk.set_user(user_data)
@@ -119,7 +123,12 @@ def set_user_context(user_id: str, email: str | None = None) -> None:
         pass
 
 
-def add_breadcrumb(message: str, category: str = "custom", level: str = "info", data: dict | None = None) -> None:
+def add_breadcrumb(
+    message: str,
+    category: str = "custom",
+    level: str = "info",
+    data: dict[str, Any] | None = None,
+) -> None:
     """Add a breadcrumb to Sentry for debugging."""
     if not _sentry_available:
         return
