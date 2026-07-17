@@ -16,14 +16,18 @@ import os
 import re
 from typing import Any, Optional
 
-from resend import Resend
+import resend
 from resend.exceptions import ResendError
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_resend_client = None
+# ---------------------------------------------------------------------------
+# Resend email client (v2.x API)
+# ---------------------------------------------------------------------------
+if settings.RESEND_API_KEY:
+    resend.api_key = settings.RESEND_API_KEY
 
 # ---------------------------------------------------------------------------
 # Disposable email detection
@@ -104,14 +108,9 @@ def is_disposable_email(email: str) -> bool:
 # ---------------------------------------------------------------------------
 # Resend email client
 # ---------------------------------------------------------------------------
-def _get_resend_client() -> Optional[Resend]:
-    """Lazily initialize and return the Resend client."""
-    global _resend_client
-    if _resend_client is None:
-        if not settings.RESEND_API_KEY:
-            return None
-        _resend_client = Resend(api_key=settings.RESEND_API_KEY)
-    return _resend_client
+def _is_resend_configured() -> bool:
+    """Return True if Resend API key is configured."""
+    return bool(settings.RESEND_API_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +184,14 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
     Returns:
         ``True`` if the email was accepted by Resend, ``False`` otherwise.
     """
-    client = _get_resend_client()
-    if client is None:
+    if not _is_resend_configured():
         return False
 
     for attempt in range(1, _EMAIL_RETRY_ATTEMPTS + 1):
         try:
-            result = await asyncio.to_thread(client.emails.send, email)
+            # Resend 2.x SDK uses module-level functions; run in thread pool
+            # to avoid blocking the event loop.
+            result = await asyncio.to_thread(resend.Emails.send, email)
             logger.info(
                 "Submission email sent",
                 extra={
@@ -275,7 +275,7 @@ async def send_submission_email(
     Returns:
         ``True`` if the email was accepted by Resend, ``False`` otherwise.
     """
-    if not settings.RESEND_API_KEY:
+    if not _is_resend_configured():
         return False
 
     # Basic email format validation to avoid wasting Resend API calls.

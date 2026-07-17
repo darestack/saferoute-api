@@ -2366,39 +2366,44 @@ class TestEmailNotifications:
             def __init__(self):
                 super().__init__("401", "authentication_error", "Invalid API key")
 
-        with patch("app.utils.email._get_resend_client") as mock_client:
-            mock_resend = MagicMock()
-            mock_resend.emails.send.side_effect = FakeResendError()
-            mock_client.return_value = mock_resend
+        with (
+            patch("app.utils.email.settings.RESEND_API_KEY", "test-key"),
+            patch("app.utils.email.resend.Emails.send") as mock_send,
+        ):
+            mock_send.side_effect = FakeResendError()
 
             result = asyncio.run(_send_with_retry({"to": "test@example.com"}))
             assert result is False
             # Should be called exactly once (no retries on 4xx)
-            assert mock_resend.emails.send.call_count == 1
+            assert mock_send.call_count == 1
 
     def test_send_with_retry_retries_on_transient_error(self):
         """Transient errors should be retried up to the limit."""
         from app.utils.email import _send_with_retry
 
-        with patch("app.utils.email._get_resend_client") as mock_client:
-            mock_resend = MagicMock()
-            mock_resend.emails.send.side_effect = [
+        with (
+            patch("app.utils.email.settings.RESEND_API_KEY", "test-key"),
+            patch("app.utils.email.resend.Emails.send") as mock_send,
+        ):
+            mock_send.side_effect = [
                 Exception("Network timeout"),
                 Exception("Network timeout"),
                 Exception("Network timeout"),
             ]
-            mock_client.return_value = mock_resend
 
             result = asyncio.run(_send_with_retry({"to": "test@example.com"}))
             assert result is False
             # Should retry 3 times (default _EMAIL_RETRY_ATTEMPTS)
-            assert mock_resend.emails.send.call_count == 3
+            assert mock_send.call_count == 3
 
     def test_send_submission_email_validates_recipient(self):
         """Invalid recipient email addresses should be rejected early."""
         from app.utils.email import send_submission_email
 
-        with patch("app.utils.email._get_resend_client") as mock_client:
+        with (
+            patch("app.utils.email.settings.RESEND_API_KEY", "test-key"),
+            patch("app.utils.email.resend.Emails.send") as mock_send,
+        ):
             result = asyncio.run(
                 send_submission_email(
                     to="not-an-email",
@@ -2408,7 +2413,7 @@ class TestEmailNotifications:
                 )
             )
             assert result is False
-            mock_client.assert_not_called()
+            mock_send.assert_not_called()
 
     def test_skips_email_on_failed_delivery(self):
         """When delivery fails (status >= 400), send_submission_email should not be called."""
