@@ -149,8 +149,72 @@ class TestDistributedCache:
             time.sleep(1.5)
 
             # Mock L2 cleanup to avoid DB dependency
-            with patch("app.database.cache_cleanup", new_callable=AsyncMock) as mock_cleanup:
+            with patch(
+                "app.database.cache_cleanup", new_callable=AsyncMock
+            ) as mock_cleanup:
                 mock_cleanup.return_value = 0
+                removed = await cache.cleanup()
+                assert removed == 0
+
+            assert len(cache) == 0
+
+        asyncio.run(run())
+
+    def test_l2_get_exception_returns_none(self) -> None:
+        """When L2 get raises, get() should return None without crashing."""
+        cache = DistributedCache(max_size=10, default_ttl=300)
+
+        async def run() -> None:
+            with patch("app.database.cache_get", new_callable=AsyncMock) as mock_get:
+                mock_get.side_effect = RuntimeError("L2 is down")
+                result = await cache.get("missing_key")
+                assert result is None
+
+        asyncio.run(run())
+
+    def test_l2_set_exception_does_not_crash(self) -> None:
+        """When L2 set raises, set() should still store in L1."""
+        cache = DistributedCache(max_size=10, default_ttl=300)
+
+        async def run() -> None:
+            with patch("app.database.cache_set", new_callable=AsyncMock) as mock_set:
+                mock_set.side_effect = RuntimeError("L2 is down")
+                await cache.set("key1", "value1")
+                assert await cache.get("key1") == "value1"
+                mock_set.assert_called_once()
+
+        asyncio.run(run())
+
+    def test_l2_delete_exception_does_not_crash(self) -> None:
+        """When L2 delete raises, delete() should still remove from L1."""
+        cache = DistributedCache(max_size=10, default_ttl=300)
+
+        async def run() -> None:
+            await cache.set("key1", "value1")
+            with patch(
+                "app.database.cache_delete", new_callable=AsyncMock
+            ) as mock_delete:
+                mock_delete.side_effect = RuntimeError("L2 is down")
+                await cache.delete("key1")
+                assert await cache.get("key1") is None
+                mock_delete.assert_called_once()
+
+        asyncio.run(run())
+
+    def test_l2_cleanup_exception_returns_zero(self) -> None:
+        """When L2 cleanup raises, cleanup() should return 0 and keep L1 clean."""
+        cache = DistributedCache(max_size=10, default_ttl=1)
+
+        async def run() -> None:
+            await cache.set("key1", "value1", ttl=1)
+            assert len(cache) == 1
+
+            time.sleep(1.5)
+
+            with patch(
+                "app.database.cache_cleanup", new_callable=AsyncMock
+            ) as mock_cleanup:
+                mock_cleanup.side_effect = RuntimeError("L2 is down")
                 removed = await cache.cleanup()
                 assert removed == 0
 

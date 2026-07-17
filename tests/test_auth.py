@@ -353,22 +353,26 @@ class TestRouteFailuresPagination:
             # The failures query still uses admin directly.
             s = mock_admin.table.return_value.select.return_value
             e1 = s.eq.return_value
-            e1.order.return_value.limit.return_value.execute.return_value.data = []
+            # Two order() calls (created_at, id) before limit().
+            e1.order.return_value.order.return_value.limit.return_value.execute.return_value.data = []
 
             user = User(id="u1", email="e@e.com", created_at=None)
             asyncio.run(
                 list_route_failures(
                     route_id="r1",
-                    cursor="2026-01-01T00:00:00Z",
+                    cursor="2026-01-01T00:00:00Z|550e8400-e29b-41d4-a716-446655440000",
                     limit=20,
                     current_user=user,
                 )
             )
 
-            # The failures query branches on e1.order(...).limit(...).
-            tail = e1.order.return_value.limit.return_value
+            # The failures query branches on e1.order(...).order(...).limit(...).
+            tail = e1.order.return_value.order.return_value.limit.return_value
             assert tail.lt.called
-            assert not tail.lte.called
+            # lt is called with (column, value) — the value is the cursor timestamp.
+            lt_args = tail.lt.call_args[0]
+            assert lt_args[0] == "created_at"
+            assert lt_args[1] == "2026-01-01T00:00:00Z"
 
 
 class TestRouteCacheInvalidationOnUpdate:
@@ -545,9 +549,17 @@ class TestReplayWebhookLog:
         with (
             patch("app.routes.auth.admin") as mock_admin,
             patch("app.routes.auth.route_repository") as mock_repo,
-            patch("app.routes.auth.forward_payload", new_callable=AsyncMock, return_value=(200, "ok", {})),
-            patch("app.routes.auth.log_delivery", new_callable=AsyncMock, return_value=1),
-            patch("app.routes.auth.rebuild_retry_body", return_value=b'{"name":"test"}'),
+            patch(
+                "app.routes.auth.forward_payload",
+                new_callable=AsyncMock,
+                return_value=(200, "ok", {}),
+            ),
+            patch(
+                "app.routes.auth.log_delivery", new_callable=AsyncMock, return_value=1
+            ),
+            patch(
+                "app.routes.auth.rebuild_retry_body", return_value=b'{"name":"test"}'
+            ),
             patch("app.routes.auth.get_owned_route_or_404"),
         ):
             mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [

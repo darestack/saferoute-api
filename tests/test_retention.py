@@ -235,6 +235,61 @@ class TestCleanupEndpoint:
             assert response.pkce_verifiers_cleaned is True
             assert response.idempotency_cache_cleaned is True
 
+    def test_partial_rpc_failure_returns_zero_for_failed_step(self):
+        """When one cleanup RPC fails, the others should still run and return their results."""
+        with (
+            patch("app.services.retention.admin") as mock_admin,
+            patch(
+                "app.services.retention.execute_query", new_callable=AsyncMock
+            ) as mock_exec,
+            patch("app.routes.proxy.settings") as mock_settings,
+        ):
+            _mock_settings(mock_settings)
+            # Simulate cleanup_webhook_logs succeeding, cleanup_rate_limits failing,
+            # and the rest succeeding.
+            mock_admin.rpc.side_effect = [
+                MagicMock(data=[{"webhook_logs_removed": 5}]),
+                MagicMock(data=None),
+                MagicMock(data=None),
+                MagicMock(data=None),
+            ]
+            mock_exec.side_effect = [
+                MagicMock(data=[{"webhook_logs_removed": 5}]),
+                Exception("DB connection lost"),
+                MagicMock(data=None),
+                MagicMock(data=None),
+            ]
+            response = asyncio.run(
+                cleanup(request=MagicMock(), x_retry_secret="secret", keep_days=30)
+            )
+
+            assert response.webhook_logs_removed == 5
+            assert response.rate_limits_cleaned is False
+            assert response.pkce_verifiers_cleaned is True
+            assert response.idempotency_cache_cleaned is True
+
+    def test_all_rpc_failures_return_safe_defaults(self):
+        """When every cleanup RPC fails, the endpoint should return safe defaults."""
+        with (
+            patch("app.services.retention.admin") as mock_admin,
+            patch(
+                "app.services.retention.execute_query", new_callable=AsyncMock
+            ) as mock_exec,
+            patch("app.routes.proxy.settings") as mock_settings,
+        ):
+            _mock_settings(mock_settings)
+            mock_admin.rpc.side_effect = Exception("DB connection lost")
+            mock_exec.side_effect = Exception("DB connection lost")
+            response = asyncio.run(
+                cleanup(request=MagicMock(), x_retry_secret="secret", keep_days=30)
+            )
+
+            assert response.webhook_logs_removed == 0
+            assert response.rate_limits_cleaned is False
+            assert response.pkce_verifiers_cleaned is False
+            assert response.idempotency_cache_cleaned is False
+            assert response.keep_days == 30
+
 
 class TestRetryCircuitBreakerInteraction:
     """When the circuit breaker is open, retries return 503 immediately."""

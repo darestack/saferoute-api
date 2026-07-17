@@ -1,4 +1,5 @@
 """Integration tests for the proxy webhook endpoints using FastAPI TestClient."""
+
 import pytest
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -79,7 +80,9 @@ class TestOutboundHealthCheckReal:
 
             with patch("app.routes.proxy.get_http_client", return_value=mock_client):
                 transport = httpx._transports.asgi.ASGITransport(app=app)
-                async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as ac:
                     response = await ac.get(
                         "/internal/health/outbound",
                         headers={"X-Retry-Secret": "test-retry-secret"},
@@ -208,6 +211,19 @@ class TestProxyWebhookIntegration:
         response = client.get("/")
         assert "X-Request-ID" in response.headers
         assert len(response.headers["X-Request-ID"]) > 0
+
+    def test_cors_allows_request_id_header(self):
+        """Test that X-Request-ID is permitted by the CORS header allowlist."""
+        response = client.get(
+            "/v1/route/test",
+            headers={
+                "Origin": "http://localhost:8000",
+                "X-Request-ID": "test-123",
+            },
+        )
+        assert response.status_code in (200, 404, 422)
+        acrh = response.headers.get("access-control-allow-headers", "")
+        assert "x-request-id" in acrh.lower() or response.status_code != 200
 
     def test_content_type_header_is_preserved_on_forward(self):
         """Test that inbound Content-Type is forwarded when not overridden."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -125,15 +125,17 @@ class TestVerifyPayment:
             mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
             mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
             mock_execute_query.return_value = MagicMock(
-                data=[{
-                    "id": "tx-123",
-                    "reference": "sr_user-123_starter",
-                    "amount": 250000,
-                    "credits_to_add": 1000,
-                    "status": "success",
-                    "user_id": "user-123",
-                    "tier": "starter",
-                }]
+                data=[
+                    {
+                        "id": "tx-123",
+                        "reference": "sr_user-123_starter",
+                        "amount": 250000,
+                        "credits_to_add": 1000,
+                        "status": "success",
+                        "user_id": "user-123",
+                        "tier": "starter",
+                    }
+                ]
             )
 
             result = await verify_payment("sr_user-123_starter")
@@ -153,15 +155,17 @@ class TestVerifyPayment:
             mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
 
             mock_execute_query.return_value = MagicMock(
-                data=[{
-                    "id": "tx-123",
-                    "reference": "sr_user-123_starter",
-                    "amount": 250000,
-                    "credits_to_add": 1000,
-                    "status": "pending",
-                    "user_id": "user-123",
-                    "tier": "starter",
-                }]
+                data=[
+                    {
+                        "id": "tx-123",
+                        "reference": "sr_user-123_starter",
+                        "amount": 250000,
+                        "credits_to_add": 1000,
+                        "status": "pending",
+                        "user_id": "user-123",
+                        "tier": "starter",
+                    }
+                ]
             )
 
             mock_response = MagicMock()
@@ -201,9 +205,7 @@ class TestWebhookSignature:
     def test_verify_webhook_signature_valid(self, mock_settings):
         mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
         payload = b'{"event": "charge.success"}'
-        signature = hmac.new(
-            b"sk_test_123", payload, hashlib.sha512
-        ).hexdigest()
+        signature = hmac.new(b"sk_test_123", payload, hashlib.sha512).hexdigest()
 
         assert verify_webhook_signature(payload, signature) is True
 
@@ -229,31 +231,39 @@ class TestProcessWebhook:
     async def test_process_webhook_charge_success(self):
         with patch("app.services.payments.execute_query") as mock_execute_query:
             mock_execute_query.return_value = MagicMock(
-                data=[{
-                    "id": "tx-123",
-                    "reference": "sr_user-123_starter",
-                    "amount": 250000,
-                    "credits_to_add": 1000,
-                    "status": "pending",
-                    "user_id": "user-123",
-                    "tier": "starter",
-                }]
+                data=[
+                    {
+                        "id": "tx-123",
+                        "reference": "sr_user-123_starter",
+                        "amount": 250000,
+                        "credits_to_add": 1000,
+                        "status": "pending",
+                        "user_id": "user-123",
+                        "tier": "starter",
+                    }
+                ]
             )
 
-            await process_webhook("charge.success", {
-                "reference": "sr_user-123_starter",
-                "status": "success",
-                "amount": 250000,
-            })
+            await process_webhook(
+                "charge.success",
+                {
+                    "reference": "sr_user-123_starter",
+                    "status": "success",
+                    "amount": 250000,
+                },
+            )
 
             assert mock_execute_query.call_count >= 2
 
     @pytest.mark.asyncio
     async def test_process_webhook_charge_failed(self):
         with patch("app.services.payments.execute_query") as mock_execute_query:
-            await process_webhook("charge.failed", {
-                "reference": "sr_user-123_starter",
-            })
+            await process_webhook(
+                "charge.failed",
+                {
+                    "reference": "sr_user-123_starter",
+                },
+            )
 
             assert mock_execute_query.call_count >= 1
 
@@ -263,3 +273,52 @@ class TestProcessWebhook:
             await process_webhook("charge.success", {})
 
             mock_execute_query.assert_not_called()
+
+
+class TestPaymentReferenceUniqueness:
+    """Tests for payment reference collision handling."""
+
+    @pytest.mark.asyncio
+    async def test_reference_includes_unique_suffix_on_collision(self):
+        with (
+            patch("app.services.payments.settings") as mock_settings,
+            patch("app.services.payments.execute_query") as mock_execute_query,
+            patch("secrets.token_hex", return_value="abcd1234"),
+        ):
+            mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
+            mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
+            mock_settings.FRONTEND_URL = "http://localhost:8000"
+
+            # First call: reference collision exists.
+            mock_execute_query.return_value = MagicMock(
+                data=[{"reference": "sr_user-123_starter"}]
+            )
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "status": True,
+                "data": {
+                    "authorization_url": "https://checkout.paystack.com/test",
+                    "reference": "sr_user-123_starter_abcd1234",
+                    "amount": 250000,
+                    "currency": "NGN",
+                },
+            }
+
+            async def mock_post(*args, **kwargs):
+                return mock_response
+
+            mock_client = MagicMock()
+            mock_client.post = mock_post
+            mock_client.aclose = AsyncMock()
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                result = await initialize_payment(
+                    user_id="user-123",
+                    tier="starter",
+                    email="test@example.com",
+                )
+
+            assert result["reference"] == "sr_user-123_starter_abcd1234"
+            assert "abcd1234" in result["reference"]

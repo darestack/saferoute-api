@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 
-from app.utils.signing import get_signature_header, sign_response, verify_response_signature
+from app.utils.signing import (
+    get_signature_header,
+    sign_response,
+    verify_response_signature,
+)
 
 
 class TestSignResponse:

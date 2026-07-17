@@ -80,10 +80,12 @@ class TestSetUserContext:
     def test_set_user_context(self, mock_sentry):
         set_user_context("user-123", email="test@example.com")
 
-        mock_sentry.set_user.assert_called_once_with({
-            "id": "user-123",
-            "email": "test@example.com",
-        })
+        mock_sentry.set_user.assert_called_once_with(
+            {
+                "id": "user-123",
+                "email": "test@example.com",
+            }
+        )
 
     @patch("app.monitoring.sentry_sdk")
     def test_set_user_context_no_email(self, mock_sentry):

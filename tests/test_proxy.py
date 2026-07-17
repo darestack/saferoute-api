@@ -373,12 +373,12 @@ class TestProcessRetriesEmptyDestination:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
-            "form_schema": {},
-            "spam_honeypot_field": None,
-            "spam_blocked_ua": [],
-            "spam_allowed_countries": [],
-            "spam_blocked_ips": [],
-            "email_notifications": {},
+                        "form_schema": {},
+                        "spam_honeypot_field": None,
+                        "spam_blocked_ua": [],
+                        "spam_allowed_countries": [],
+                        "spam_blocked_ips": [],
+                        "email_notifications": {},
                     },
                 }
             ]
@@ -764,12 +764,12 @@ class TestRetryBodyReconstruction:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
-            "form_schema": {},
-            "spam_honeypot_field": None,
-            "spam_blocked_ua": [],
-            "spam_allowed_countries": [],
-            "spam_blocked_ips": [],
-            "email_notifications": {},
+                        "form_schema": {},
+                        "spam_honeypot_field": None,
+                        "spam_blocked_ua": [],
+                        "spam_allowed_countries": [],
+                        "spam_blocked_ips": [],
+                        "email_notifications": {},
                     },
                 }
             ]
@@ -905,6 +905,74 @@ class TestHoneypotStripping:
             assert b"honeypot_field" not in sent_body
             assert b"Jane" in sent_body
 
+    def test_extended_honeypot_fields_stripped_from_forwarded_body(self):
+        """Common honeypot field names (website, url) must also be stripped."""
+        from app.routes.proxy import proxy_webhook
+
+        route = {
+            "id": "route-1",
+            "destination_url": "https://example.com",
+            "method": "POST",
+            "headers": {},
+            "rate_limit": 30,
+            "webhook_secret": None,
+            "transform_body_template": None,
+            "form_schema": {},
+            "spam_honeypot_field": None,
+            "spam_blocked_ua": [],
+            "spam_allowed_countries": [],
+            "spam_blocked_ips": [],
+            "email_notifications": {},
+            "transform_headers": {},
+            "slug": "test-route",
+            "name": "Test",
+            "user_id": "user-1",
+            "is_active": True,
+            "requests_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        with (
+            patch("app.routes.proxy.admin") as mock_admin,
+            patch("app.services.route_cache.admin") as mock_cache_admin,
+            patch(
+                "app.routes.proxy.forward_payload",
+                new=AsyncMock(return_value=(200, "ok", {})),
+            ) as mock_forward,
+            patch("app.routes.proxy.bump_route_metrics_atomic"),
+        ):
+            mock_cache_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                route
+            ]
+            mock_admin.rpc.return_value.execute.return_value.data = [
+                {"success": True, "new_count": 1}
+            ]
+
+            from app.services.route_cache import _cache_route
+
+            asyncio.run(_cache_route("test-route", route))
+
+            request = MagicMock()
+            request.headers = {"content-type": "application/json"}
+            request.client = MagicMock(host="1.2.3.4")
+            request.body = AsyncMock(
+                return_value=b'{"name": "Jane", "website": "spam", "url": "spam"}'
+            )
+
+            asyncio.run(
+                proxy_webhook(
+                    slug="test-route",
+                    request=request,
+                    idempotency_key=None,
+                    x_api_key=None,
+                )
+            )
+
+            sent_body = mock_forward.call_args[1]["body"]
+            assert b"website" not in sent_body
+            assert b"url" not in sent_body
+            assert b"Jane" in sent_body
+
 
 class TestFormValidation:
     """Form schema validation before forwarding."""
@@ -1024,9 +1092,7 @@ class TestSpamShield:
         payload = {"honeypot": "filled"}
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                _check_spam_shield(payload, route, "1.2.3.4", "curl")
-            )
+            asyncio.run(_check_spam_shield(payload, route, "1.2.3.4", "curl"))
         assert exc_info.value.status_code == 400
 
     def test_blocked_user_agent_returns_403(self):
@@ -1043,9 +1109,7 @@ class TestSpamShield:
         payload = {}
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                _check_spam_shield(payload, route, "1.2.3.4", "MyBot/1.0")
-            )
+            asyncio.run(_check_spam_shield(payload, route, "1.2.3.4", "MyBot/1.0"))
         assert exc_info.value.status_code == 403
 
     def test_clean_user_agent_passes(self):
@@ -1136,9 +1200,7 @@ class TestSpamShield:
         }
         payload = {}
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
-            )
+            asyncio.run(_check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0"))
         assert exc_info.value.status_code == 403
 
     def test_allowed_ip_passes(self):
@@ -1219,9 +1281,7 @@ class TestSpamShield:
         }
         payload = {}
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                _check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0")
-            )
+            asyncio.run(_check_spam_shield(payload, route, "1.2.3.4", "Mozilla/5.0"))
         assert exc_info.value.status_code == 403
 
     def test_turnstile_skipped_when_disabled(self):
@@ -1344,12 +1404,12 @@ class TestRetryClaimStatus:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
-            "form_schema": {},
-            "spam_honeypot_field": None,
-            "spam_blocked_ua": [],
-            "spam_allowed_countries": [],
-            "spam_blocked_ips": [],
-            "email_notifications": {},
+                        "form_schema": {},
+                        "spam_honeypot_field": None,
+                        "spam_blocked_ua": [],
+                        "spam_allowed_countries": [],
+                        "spam_blocked_ips": [],
+                        "email_notifications": {},
                     },
                 }
             ]
@@ -1401,12 +1461,12 @@ class TestRetry429Handling:
                         "headers": {},
                         "transform_headers": {},
                         "transform_body_template": None,
-            "form_schema": {},
-            "spam_honeypot_field": None,
-            "spam_blocked_ua": [],
-            "spam_allowed_countries": [],
-            "spam_blocked_ips": [],
-            "email_notifications": {},
+                        "form_schema": {},
+                        "spam_honeypot_field": None,
+                        "spam_blocked_ua": [],
+                        "spam_allowed_countries": [],
+                        "spam_blocked_ips": [],
+                        "email_notifications": {},
                     },
                 }
             ]
