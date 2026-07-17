@@ -6,9 +6,8 @@ Integrates with Paystack for one-time payment collection and verification.
 from __future__ import annotations
 import hashlib
 import hmac
-import json
 import logging
-from typing import Any, Optional
+from typing import Any
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 import httpx
@@ -112,7 +111,11 @@ async def initialize_payment(
             retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
             reraise=True,
         )
-        async def _post_with_retry(client, url, json):
+        async def _post_with_retry(
+            client: httpx.AsyncClient,
+            url: str,
+            json: dict[str, Any],
+        ) -> httpx.Response:
             return await client.post(url, json=json)
 
         client = httpx.AsyncClient(
@@ -223,7 +226,10 @@ async def verify_payment(reference: str) -> dict[str, Any]:
             retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
             reraise=True,
         )
-        async def _get_with_retry(client, url):
+        async def _get_with_retry(
+            client: httpx.AsyncClient,
+            url: str,
+        ) -> httpx.Response:
             return await client.get(url)
 
         client = httpx.AsyncClient(

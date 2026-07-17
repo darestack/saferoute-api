@@ -1,8 +1,7 @@
 """Tests for Paystack payment integration."""
 
 from __future__ import annotations
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -15,7 +14,6 @@ from app.services.payments import (
     verify_webhook_signature,
     process_webhook,
 )
-from app.config import Settings
 
 
 class TestTierHelpers:

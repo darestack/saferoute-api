@@ -7,6 +7,7 @@ webhook log retrieval, and route analytics.
 from __future__ import annotations
 import asyncio
 import inspect
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ import httpx
 import jwt
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from hmac import compare_digest
 from fastapi.responses import JSONResponse
 
@@ -401,8 +402,6 @@ from app.services.payments import (  # noqa: E402
     verify_webhook_signature,
     process_webhook,
 )
-from app.models import PaymentInitializeRequest, PaymentInitializeResponse, PaymentVerifyResponse  # noqa: E402
-
 
 @router.post("/payments/initialize", response_model=PaymentInitializeResponse)
 async def initialize_payment_endpoint(
