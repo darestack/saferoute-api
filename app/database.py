@@ -311,3 +311,32 @@ async def cache_cleanup() -> int:
     except Exception:
         logger.exception("Distributed cache cleanup failed")
     return 0
+
+
+async def deduct_user_credits(user_id: str, amount: int = 1) -> bool:
+    """Atomically deduct credits from a user's profile.
+
+    Uses the ``deduct_user_credits`` SQL function defined in
+    ``migrations/014_add_user_credits.sql``. Creates a profile with
+    default credits if one does not exist yet.
+
+    Args:
+        user_id: The UUID of the user.
+        amount: Number of credits to deduct. Defaults to 1.
+
+    Returns:
+        ``True`` if the deduction succeeded, ``False`` if the user has
+        insufficient credits.
+    """
+    try:
+        result = await execute_query(
+            admin.rpc("deduct_user_credits", {
+                "p_user_id": user_id,
+                "p_amount": amount,
+            })
+        )
+        if result.data and len(result.data) > 0:
+            return bool(result.data[0])
+    except Exception:
+        logger.exception("Failed to deduct credits for user_id=%s", user_id)
+    return False

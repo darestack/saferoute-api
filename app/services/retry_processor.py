@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-from app.database import admin, execute_query
+from app.database import admin, deduct_user_credits, execute_query
 from app.config import settings
 from app.models import RetryProcessResponse
 from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
@@ -150,7 +150,7 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
         admin.table("webhook_logs")
         .select(
             "*, routes!inner(destination_url, method, headers, "
-            "transform_headers, transform_body_template)"
+            "transform_headers, transform_body_template, user_id)"
         )
         .eq("retry_status", "pending")
         .lte("next_retry_at", now)
@@ -236,6 +236,10 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
         if 200 <= status_code < 300:
             new_status = "succeeded"
             next_retry = None
+            # Deduct credit for successful retry
+            route_user_id = route_info.get("user_id")
+            if route_user_id:
+                await deduct_user_credits(route_user_id, 1)
         elif should_retry(status_code) and retry_count < _MAX_RETRIES:
             new_status = "pending"
             next_retry = calculate_next_retry(retry_count)

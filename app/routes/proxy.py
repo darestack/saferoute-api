@@ -31,6 +31,7 @@ from app.crypto import decrypt_webhook_secrets
 from app.database import (
     admin,
     bump_route_metrics_atomic,
+    deduct_user_credits,
     execute_query,
     get_http_client,
     verify_api_key,
@@ -1010,6 +1011,12 @@ async def proxy_webhook(
         retry_status=retry_status,
         next_retry_at=next_retry_at,
     )
+
+    # --- Credit deduction ---
+    if status_code < 400:
+        user_id = route.get("user_id")
+        if user_id:
+            await deduct_user_credits(user_id, 1)
 
     # --- Email notification ---
     email_config = route.get("email_notifications") or {}

@@ -299,6 +299,8 @@ class User(BaseModel):
         email: User email address.
         full_name: Optional display name.
         created_at: ISO 8601 timestamp of account creation.
+        credits: Remaining credit balance.
+        tier: User pricing tier (free/starter/builder/agency).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -307,6 +309,8 @@ class User(BaseModel):
     email: str
     full_name: Optional[str] = None
     created_at: Optional[datetime] = None
+    credits: int = 0
+    tier: str = "free"
 
 
 class UserCreate(BaseModel):

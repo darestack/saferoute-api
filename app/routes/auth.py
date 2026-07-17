@@ -213,11 +213,29 @@ async def _fetch_and_cache_user(user_id: str) -> User:
                 detail="User not found",
             )
 
+        credits = 0
+        tier = "free"
+        try:
+            profile_result = await asyncio.to_thread(
+                admin.table("user_profiles")
+                .select("credits, tier")
+                .eq("id", user_id)
+                .limit(1)
+                .execute
+            )
+            if profile_result.data and isinstance(profile_result.data, list) and len(profile_result.data) > 0:
+                credits = profile_result.data[0].get("credits", 0) if isinstance(profile_result.data[0], dict) else 0
+                tier = profile_result.data[0].get("tier", "free") if isinstance(profile_result.data[0], dict) else "free"
+        except Exception:
+            logger.debug("Failed to fetch user profile for user_id=%s", user_id)
+
         user = User(
             id=result.user.id,
             email=result.user.email or "",
             full_name=getattr(result.user, "full_name", None),
             created_at=result.user.created_at,
+            credits=credits,
+            tier=tier,
         )
 
         # Cache the user after the DB call completes.

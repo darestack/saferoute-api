@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
@@ -340,9 +341,6 @@ app.include_router(auth.router)
 app.include_router(oauth.router)
 app.include_router(proxy.router)
 
-# Note: StaticFiles mount removed to prevent interference with API routes.
-# The frontend/ directory is served separately in production deployments.
-
 logger.info("SafeRoute API initialized (environment=%s)", settings.ENVIRONMENT)
 
 
@@ -421,3 +419,12 @@ async def health_check() -> JSONResponse:
             "service": "SafeRoute API",
         },
     )
+
+
+# Serve frontend files in development/test environments.
+# Mount AFTER all API routes so they take precedence.
+if settings.ENVIRONMENT != "production":
+    import os
+    frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+    if os.path.isdir(frontend_path):
+        app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

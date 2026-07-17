@@ -46,10 +46,17 @@ class TestUserCache:
             mock_admin.auth.admin.get_user_by_id.return_value = MagicMock(
                 user=mock_user
             )
+            # Mock user_profiles query chain
+            mock_profile_result = MagicMock()
+            mock_profile_result.data = [{"credits": 100, "tier": "free"}]
+            mock_query = mock_admin.table.return_value.select.return_value.eq.return_value.limit.return_value
+            mock_query.execute = MagicMock(return_value=mock_profile_result)
 
             user = asyncio.run(_fetch_and_cache_user("user-123"))
             assert user.id == "user-123"
             assert user.email == "cached@example.com"
+            assert user.credits == 100
+            assert user.tier == "free"
 
             # Verify it was cached
             cached = asyncio.run(_get_cached_user("user-123"))
