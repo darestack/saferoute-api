@@ -79,7 +79,10 @@ class TestVerifyRecaptchaToken:
         mock_client.post.return_value = mock_response
 
         with (
-            patch("app.utils.captcha.settings.RECAPTCHA_VERIFY_URL", "https://www.google.com/recaptcha/api/siteverify"),
+            patch(
+                "app.utils.captcha.settings.RECAPTCHA_VERIFY_URL",
+                "https://www.google.com/recaptcha/api/siteverify",
+            ),
             patch("app.utils.captcha.get_http_client", return_value=mock_client),
         ):
             result = await verify_recaptcha_token("valid-token", "secret", "1.2.3.4")
@@ -94,7 +97,10 @@ class TestVerifyRecaptchaToken:
         mock_client.post.return_value = mock_response
 
         with (
-            patch("app.utils.captcha.settings.RECAPTCHA_VERIFY_URL", "https://www.google.com/recaptcha/api/siteverify"),
+            patch(
+                "app.utils.captcha.settings.RECAPTCHA_VERIFY_URL",
+                "https://www.google.com/recaptcha/api/siteverify",
+            ),
             patch("app.utils.captcha.get_http_client", return_value=mock_client),
         ):
             result = await verify_recaptcha_token("token", "secret", "1.2.3.4")
@@ -106,7 +112,10 @@ class TestVerifyRecaptchaToken:
         mock_client.post.side_effect = Exception("Network error")
 
         with (
-            patch("app.utils.captcha.settings.RECAPTCHA_VERIFY_URL", "https://www.google.com/recaptcha/api/siteverify"),
+            patch(
+                "app.utils.captcha.settings.RECAPTCHA_VERIFY_URL",
+                "https://www.google.com/recaptcha/api/siteverify",
+            ),
             patch("app.utils.captcha.get_http_client", return_value=mock_client),
         ):
             result = await verify_recaptcha_token("token", "secret", "1.2.3.4")

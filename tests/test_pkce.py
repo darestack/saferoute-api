@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 
-import pytest
 
 from app.utils.pkce import generate_pkce_pair
 

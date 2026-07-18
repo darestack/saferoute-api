@@ -8,9 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-from typing import Optional
 
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 

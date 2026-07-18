@@ -72,6 +72,7 @@ async def _convert_usd_to_ngn_kobo(usd_amount: float) -> int:
 
     try:
         from app.services.exchange_rates import get_exchange_rate
+
         fetched = await get_exchange_rate("NGN")
         if fetched and fetched > 0:
             rate = fetched
@@ -340,17 +341,21 @@ async def verify_payment(reference: str, user_id: str | None = None) -> dict[str
         )
 
         if is_success:
-            # Credit the user's account
+            # Grant credits exactly once, idempotent across the webhook and
+            # return-verify paths. ``grant_credits_once`` flips
+            # ``credits_granted`` false->true and only adds credits when that
+            # flip succeeds, so concurrent/duplicate calls cannot double-credit.
             await execute_query(
                 admin.rpc(
-                    "add_user_credits",
+                    "grant_credits_once",
                     {
+                        "p_reference": reference,
                         "p_user_id": tx["user_id"],
                         "p_amount": tx["credits_to_add"],
                     },
                 )
             )
-            # Update tier
+            # Update tier (best-effort; safe to repeat).
             await execute_query(
                 admin.table("user_profiles")
                 .update({"tier": tx["tier"]})
@@ -434,10 +439,12 @@ async def process_webhook(event: str, data: dict[str, Any]) -> None:
                     )
                     .eq("reference", reference)
                 )
+                # Idempotent credit grant shared with the return-verify path.
                 await execute_query(
                     admin.rpc(
-                        "add_user_credits",
+                        "grant_credits_once",
                         {
+                            "p_reference": reference,
                             "p_user_id": tx["user_id"],
                             "p_amount": tx["credits_to_add"],
                         },

@@ -1,12 +1,13 @@
 """Tests for response signing utilities."""
 
 from __future__ import annotations
-import hashlib
-import hmac
 
-import pytest
 
-from app.utils.signing import get_signature_header, sign_response, verify_response_signature
+from app.utils.signing import (
+    get_signature_header,
+    sign_response,
+    verify_response_signature,
+)
 
 
 class TestSignResponse:
@@ -55,7 +56,6 @@ class TestVerifyResponseSignature:
     def test_verify_timing_safe(self):
         body = b"test body"
         secret = "secret123"
-        sig = sign_response(body, secret)
         # Should not raise even with wrong signature
         assert verify_response_signature(body, "a" * 64, secret) is False
 

@@ -80,7 +80,10 @@ class Settings(BaseSettings):
     PAYSTACK_WEBHOOK_URL: str = ""
     ADMIN_SECRET_KEY: str = ""
     SENTRY_DSN: str = ""
-    APP_VERSION: str = "0.7.0"
+    # Single source of truth for the service version. ``app/main.py`` reads
+    # this value for both the OpenAPI ``version`` and the root endpoint so the
+    # README badge, OpenAPI docs, and runtime version can never drift apart.
+    APP_VERSION: str = "1.0.0"
     OTEL_ENABLED: bool = False
     RECAPTCHA_SECRET_KEY: str = ""
     RECAPTCHA_VERIFY_URL: str = "https://www.google.com/recaptcha/api/siteverify"
@@ -103,8 +106,9 @@ class Settings(BaseSettings):
     def get_allowed_hosts(self) -> list[str]:
         """Return the list of allowed hosts for TrustedHostMiddleware.
 
-        In production, respects the ``ALLOWED_HOSTS`` setting.
-        In development, allows all hosts.
+        In production, ``ALLOWED_HOSTS`` is required; the value is validated
+        at import time by ``validate_production_settings`` so a missing value
+        fails fast. In development, all hosts are allowed.
         """
         if self.is_production:
             if not self.ALLOWED_HOSTS.strip():

@@ -74,7 +74,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run tests with coverage
-        run: pytest tests/ -v --cov=app --cov-report=term-missing
+        run: pytest tests/ -v --cov=app --cov-report=term-missing --cov-fail-under=80
 
   # ── Security ────────────────────────────────
   security:
@@ -92,18 +92,43 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Check for secrets in code
+      - name: Check for hardcoded secrets
         run: |
-          if git diff --cached --name-only | grep -E '\.(py|ts|js|json|yml|yaml|md)$' | xargs grep -l -i 'password\|secret\|key\|token' 2>/dev/null; then
-            echo "Potential secrets found in staged files"
+          # Scan the full diff (both PR and push) for high-signal secret
+          # patterns. We deliberately avoid naive keyword greps ("key",
+          # "secret", "token") that false-positive on ordinary code such as
+          # API_KEY_SALT or ENCRYPTION_KEY references. Instead we match
+          # assignment of obviously sensitive material: long high-entropy
+          # strings, private-key blocks, and provider-specific secret
+          # prefixes. A hit is a real signal, not noise.
+          git fetch --quiet origin "${GITHUB_BASE_REF:-main}" || true
+          BASE="origin/${GITHUB_BASE_REF:-main}"
+          if git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+            RANGE="$BASE..HEAD"
+          else
+            RANGE="HEAD~1..HEAD"
+          fi
+          if git diff --diff-filter=ACMR --name-only $RANGE \
+            | grep -E '\.(py|ts|tsx|js|json|yml|yaml|toml|env|example)$' \
+            | xargs grep -nEi \
+              -e '-----BEGIN (RSA|EC|OPENSSH|PGP|DSA)? ?PRIVATE KEY-----' \
+              -e '(password|passwd|client_secret|api[_-]?key|secret|token|access[_-]?key)\s*[:=]\s*["'\'']?[A-Za-z0-9+/]{32,}={0,2}["'\'']?' \
+              -e '(sk|rk|AKIA|ghp|gho|ght|ghu|github_pat|glpat|xox[baprs]-|ya29\.|AIza)[0-9A-Za-z_-]{20,}' \
+              2>/dev/null; then
+            echo "Potential hardcoded secret found in diff."
+            echo "Please move the value to an environment variable / secret store."
             exit 1
           fi
+          echo "No obvious hardcoded secrets detected."
 
       - name: Audit dependencies with pip-audit
         run: |
+          # Free, OSS dependency vulnerability scanner. Runs report-only
+          # (does not auto-modify requirements) and prints findings. Failing
+          # the build on a newly disclosed transitive CVE is opt-in via the
+          # fail-on flag; default keeps CI green while surfacing risk.
           pip install pip-audit
-          pip-audit --fix --ignore-vuln GHSA-xxx || true
-        continue-on-error: true
+          pip-audit -r requirements.txt -r requirements-dev.txt --desc on || true
 
   # ── Build ───────────────────────────────────
   build:

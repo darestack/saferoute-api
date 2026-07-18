@@ -607,6 +607,37 @@ begin
 end;
 $$ language plpgsql;
 
+-- Atomically grant credits for a payment exactly once.
+--
+-- Both the Paystack webhook path and the return-URL verify path may attempt to
+-- credit the same transaction. This function flips ``credits_granted`` from
+-- false -> true in a single UPDATE and only adds credits when that flip
+-- succeeds, so concurrent or duplicate calls cannot double-credit the user.
+-- Returns the number of credit-granting rows affected (0 or 1).
+create or replace function public.grant_credits_once(
+    p_reference text,
+    p_user_id uuid,
+    p_amount integer
+)
+returns integer as $$
+declare
+    v_affected integer := 0;
+begin
+    update public.payment_transactions
+    set credits_granted = true
+    where reference = p_reference
+      and credits_granted = false;
+
+    get diagnostics v_affected = row_count;
+
+    if v_affected > 0 then
+        perform public.add_user_credits(p_user_id, p_amount);
+    end if;
+
+    return v_affected;
+end;
+$$ language plpgsql;
+
 -- ========================================
 -- Payment Transactions Table
 -- ========================================
@@ -618,6 +649,10 @@ create table public.payment_transactions (
     currency text not null default 'NGN',
     tier text not null,
     credits_to_add integer not null,
+    -- Guard against double credit grants. Set to true exactly once when
+    -- credits are actually added to the user's balance, regardless of whether
+    -- the grant came from the webhook path or the return-URL verify path.
+    credits_granted boolean not null default false,
     status text not null default 'pending' check (status in ('pending', 'success', 'failed')),
     paystack_response jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,

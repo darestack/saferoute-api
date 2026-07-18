@@ -80,7 +80,7 @@ app = FastAPI(
         "Secure, Zero-Config Webhook Proxy Shield. "
         "Forward webhooks safely without exposing your destination URLs."
     ),
-    version="1.0.0",
+    version=settings.APP_VERSION,
     contact={
         "name": "SafeRoute Team",
         "url": "https://saferouteapi.app",
@@ -341,10 +341,12 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware, max_size=_DEFAULT_MAX_BODY_BYTES)
 
-# Mount routers.
-from app.services.exchange_rates import get_exchange_rate
+# Mount routers. Imported here (after app/middleware setup) deliberately; the
+# helper is a pure function with no import-time side effects.
+from app.services.exchange_rates import get_exchange_rate  # noqa: E402
 
 rates_router = APIRouter(tags=["Rates"])
+
 
 @rates_router.get("/rates")
 async def get_rates(base: str = "USD", symbols: str = "NGN") -> dict[str, Any]:
@@ -357,6 +359,7 @@ async def get_rates(base: str = "USD", symbols: str = "NGN") -> dict[str, Any]:
         except Exception:
             rates[symbol] = 1.0
     return {"base": base.upper(), "rates": rates}
+
 
 app.include_router(rates_router)
 app.include_router(auth.router)
@@ -400,7 +403,7 @@ async def root() -> JSONResponse:
             "dashboard": "https://darestack.github.io/saferoute-api/",
             "endpoints": {
                 "routes": "/v1/routes",
-                "proxy": "/v1/r/{slug}",
+                "proxy": "/v1/route/{slug}",
                 "payments": "/v1/payments",
                 "webhooks": "/v1/webhooks/paystack",
             },
