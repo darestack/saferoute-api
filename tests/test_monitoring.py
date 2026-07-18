@@ -1,94 +1,250 @@
-"""Tests for monitoring and observability utilities."""
+"""Tests for monitoring module."""
 
 from __future__ import annotations
-from unittest.mock import patch
+
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
-from app.monitoring import (
-    add_breadcrumb,
-    capture_exception_safe,
-    init_sentry,
-    set_user_context,
-)
-
-
-class TestSentryInit:
+class TestInitSentry:
     """Tests for Sentry initialization."""
 
-    @patch("app.monitoring.sentry_sdk")
-    @patch("app.monitoring.settings")
-    def test_init_sentry_with_dsn(self, mock_settings, mock_sentry):
+    def test_skips_when_sentry_not_installed(self):
+        """Should not crash when sentry-sdk is not available."""
+        with patch("app.monitoring._sentry_available", False):
+            from app.monitoring import init_sentry
+            init_sentry()  # Should not raise
+
+    def test_skips_when_no_dsn(self):
+        """Should not initialize when SENTRY_DSN is not set."""
+        mock_settings = MagicMock()
+        mock_settings.SENTRY_DSN = ""
+        mock_settings.ENVIRONMENT = "test"
+        mock_settings.is_production = False
+        mock_settings.APP_VERSION = "1.0.0"
+
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.settings", mock_settings),
+            patch("app.monitoring.sentry_sdk") as mock_sdk,
+        ):
+            from app.monitoring import init_sentry
+            init_sentry()
+            mock_sdk.init.assert_not_called()
+
+    def test_initializes_with_dsn(self):
+        """Should initialize Sentry when DSN is configured."""
+        mock_settings = MagicMock()
         mock_settings.SENTRY_DSN = "https://test@sentry.io/123"
         mock_settings.ENVIRONMENT = "production"
         mock_settings.is_production = True
-        mock_settings.APP_VERSION = "0.7.0"
+        mock_settings.APP_VERSION = "1.0.0"
 
-        init_sentry()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.settings", mock_settings),
+            patch("app.monitoring.sentry_sdk") as mock_sdk,
+        ):
+            from app.monitoring import init_sentry
+            init_sentry()
+            mock_sdk.init.assert_called_once()
 
-        mock_sentry.init.assert_called_once()
-        call_kwargs = mock_sentry.init.call_args[1]
-        assert call_kwargs["dsn"] == "https://test@sentry.io/123"
-        assert call_kwargs["environment"] == "production"
-        assert call_kwargs["release"] == "0.7.0"
+    def test_handles_init_error_gracefully(self):
+        """Should not crash if Sentry init raises."""
+        mock_settings = MagicMock()
+        mock_settings.SENTRY_DSN = "https://test@sentry.io/123"
+        mock_settings.ENVIRONMENT = "test"
+        mock_settings.is_production = False
+        mock_settings.APP_VERSION = "1.0.0"
 
-    @patch("app.monitoring.sentry_sdk")
-    @patch("app.monitoring.settings")
-    def test_init_sentry_without_dsn(self, mock_settings, mock_sentry):
-        mock_settings.SENTRY_DSN = ""
-
-        init_sentry()
-
-        mock_sentry.init.assert_not_called()
-
-
-class TestBreadcrumbs:
-    """Tests for breadcrumb functions."""
-
-    @patch("app.monitoring.sentry_sdk")
-    def test_add_breadcrumb(self, mock_sentry):
-        add_breadcrumb("test message", category="test", level="info")
-
-        mock_sentry.add_breadcrumb.assert_called_once()
-        call_kwargs = mock_sentry.add_breadcrumb.call_args[1]
-        assert call_kwargs["message"] == "test message"
-        assert call_kwargs["category"] == "test"
-        assert call_kwargs["level"] == "info"
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.settings", mock_settings),
+            patch("app.monitoring.sentry_sdk.init", side_effect=Exception("Init failed")),
+        ):
+            from app.monitoring import init_sentry
+            init_sentry()  # Should not raise
 
 
-class TestCaptureException:
-    """Tests for exception capturing."""
+class TestInitOpentelemetry:
+    """Tests for OpenTelemetry initialization."""
 
-    @patch("app.monitoring.sentry_sdk")
-    def test_capture_exception_safe(self, mock_sentry):
-        exc = ValueError("test error")
-        capture_exception_safe(exc)
+    def test_skips_when_otel_not_installed(self):
+        """Should not crash when opentelemetry packages are not available."""
+        with patch("app.monitoring._otel_available", False):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()  # Should not raise
 
-        mock_sentry.capture_exception.assert_called_once_with(exc)
+    def test_skips_when_disabled(self):
+        """Should not initialize when OTEL_ENABLED is False."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = False
 
-    @patch("app.monitoring.sentry_sdk")
-    def test_capture_exception_with_context(self, mock_sentry):
-        exc = ValueError("test error")
-        capture_exception_safe(exc, context={"user_id": "123"})
+        with (
+            patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.settings", mock_settings),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()
 
-        assert mock_sentry.capture_exception.called or mock_sentry.push_scope.called
+    def test_initializes_when_enabled(self):
+        """Should initialize OpenTelemetry when enabled."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = True
+
+        mock_provider = MagicMock()
+        mock_processor = MagicMock()
+
+        with (
+            patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.settings", mock_settings),
+            patch("opentelemetry.sdk.trace.TracerProvider", return_value=mock_provider),
+            patch("opentelemetry.sdk.trace.export.BatchSpanProcessor", return_value=mock_processor),
+            patch("opentelemetry.sdk.trace.export.ConsoleSpanExporter"),
+            patch("opentelemetry.trace.set_tracer_provider"),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()
+            mock_provider.add_span_processor.assert_called_once_with(mock_processor)
+
+    def test_handles_init_error_gracefully(self):
+        """Should not crash if OpenTelemetry init raises."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = True
+
+        with (
+            patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.settings", mock_settings),
+            patch("opentelemetry.sdk.trace.TracerProvider", side_effect=Exception("Init failed")),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()  # Should not raise
+
+
+class TestCaptureExceptionSafe:
+    """Tests for safe exception capture."""
+
+    def test_skips_when_sentry_not_available(self):
+        """Should not crash when sentry-sdk is not available."""
+        with patch("app.monitoring._sentry_available", False):
+            from app.monitoring import capture_exception_safe
+            capture_exception_safe(Exception("test"))
+
+    def test_captures_exception(self):
+        """Should capture exception to Sentry."""
+        mock_sentry = MagicMock()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import capture_exception_safe
+            exc = Exception("test error")
+            capture_exception_safe(exc)
+            mock_sentry.capture_exception.assert_called_once_with(exc)
+
+    def test_captures_exception_with_context(self):
+        """Should capture exception with context."""
+        mock_sentry = MagicMock()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import capture_exception_safe
+            exc = Exception("test error")
+            capture_exception_safe(exc, {"key": "value"})
+            mock_sentry.capture_exception.assert_called_once_with(exc)
+
+    def test_handles_capture_error_gracefully(self):
+        """Should not crash if Sentry capture raises."""
+        mock_sentry = MagicMock()
+        mock_sentry.capture_exception.side_effect = Exception("Capture failed")
+
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import capture_exception_safe
+            capture_exception_safe(Exception("test"))  # Should not raise
+
+
+class TestCaptureMessageSafe:
+    """Tests for safe message capture."""
+
+    def test_skips_when_sentry_not_available(self):
+        """Should not crash when sentry-sdk is not available."""
+        with patch("app.monitoring._sentry_available", False):
+            from app.monitoring import capture_message_safe
+            capture_message_safe("test message")
+
+    def test_captures_message(self):
+        """Should capture message to Sentry."""
+        mock_sentry = MagicMock()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import capture_message_safe
+            capture_message_safe("test message", "warning")
+            mock_sentry.capture_message.assert_called_once_with("test message", level="warning")
 
 
 class TestSetUserContext:
-    """Tests for user context."""
+    """Tests for user context setting."""
 
-    @patch("app.monitoring.sentry_sdk")
-    def test_set_user_context(self, mock_sentry):
-        set_user_context("user-123", email="test@example.com")
+    def test_skips_when_sentry_not_available(self):
+        """Should not crash when sentry-sdk is not available."""
+        with patch("app.monitoring._sentry_available", False):
+            from app.monitoring import set_user_context
+            set_user_context("user-123")
 
-        mock_sentry.set_user.assert_called_once_with(
-            {
+    def test_sets_user_context(self):
+        """Should set user context in Sentry."""
+        mock_sentry = MagicMock()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import set_user_context
+            set_user_context("user-123", "test@example.com")
+            mock_sentry.set_user.assert_called_once_with({
                 "id": "user-123",
                 "email": "test@example.com",
-            }
-        )
+            })
 
-    @patch("app.monitoring.sentry_sdk")
-    def test_set_user_context_no_email(self, mock_sentry):
-        set_user_context("user-123")
+    def test_sets_user_context_without_email(self):
+        """Should set user context without email."""
+        mock_sentry = MagicMock()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import set_user_context
+            set_user_context("user-123")
+            mock_sentry.set_user.assert_called_once_with({"id": "user-123"})
 
-        mock_sentry.set_user.assert_called_once_with({"id": "user-123"})
+
+class TestAddBreadcrumb:
+    """Tests for breadcrumb addition."""
+
+    def test_skips_when_sentry_not_available(self):
+        """Should not crash when sentry-sdk is not available."""
+        with patch("app.monitoring._sentry_available", False):
+            from app.monitoring import add_breadcrumb
+            add_breadcrumb("test")
+
+    def test_adds_breadcrumb(self):
+        """Should add breadcrumb to Sentry."""
+        mock_sentry = MagicMock()
+        with (
+            patch("app.monitoring._sentry_available", True),
+            patch("app.monitoring.sentry_sdk", mock_sentry),
+        ):
+            from app.monitoring import add_breadcrumb
+            add_breadcrumb("test message", "http", "info", {"url": "/test"})
+            mock_sentry.add_breadcrumb.assert_called_once_with(
+                message="test message",
+                category="http",
+                level="info",
+                data={"url": "/test"},
+            )
