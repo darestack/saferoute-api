@@ -1,0 +1,33 @@
+{
+  "bumpFiles": [
+    {
+      "filename": "package.json",
+      "updater": "json"
+    },
+    {
+      "filename": "pyproject.toml",
+      "updater": "toml"
+    },
+    {
+      "filename": "app/config.py",
+      "updater": "python"
+    }
+  ],
+  "changelogFile": "CHANGELOG.md",
+  "commitAll": false,
+  "firstCommit": "feat: initial commit",
+  "infile": "CHANGELOG.md",
+  "newline": false,
+  "packageFiles": [
+    "package.json"
+  ],
+  "scripts": {
+    "postchangelog": "echo 'Changelog updated'"
+  },
+  "skip": {
+    "changelog": false,
+    "commit": false,
+    "tag": false
+  },
+  "tagPrefix": "v"
+}

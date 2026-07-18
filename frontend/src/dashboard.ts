@@ -1,11 +1,11 @@
 // SafeRoute Dashboard - main entry point
 
-import { User, Route, Payment, LogEntry } from './types';
+import { User, Route, Payment, LogEntry, WebhookFailure } from './types';
 import { apiRequest, API_BASE } from './lib/api';
 import { getToken, isAuthenticated, logout } from './lib/auth';
 import { API_ENDPOINTS } from './lib/constants';
 import { showSection, updateLoadingState, showError, showSuccess, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
-import { updateRoutesUI, updateLogsUI, renderPaymentHistory } from './components/DashboardTables';
+import { updateRoutesUI, updateLogsUI, renderPaymentHistory, renderWebhookFailures } from './components/DashboardTables';
 import { initCharts } from './components/DashboardCharts';
 
 interface SafeRouteApi {
@@ -13,6 +13,8 @@ interface SafeRouteApi {
   editRoute: (routeId: string) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
   replayLog: (routeId: string, logId: number) => Promise<void>;
+  retryWebhook: (failureId: string) => Promise<void>;
+  loadWebhookFailures: () => Promise<void>;
   formatDate: (dateString: string) => string;
   loadDashboardData: () => Promise<void>;
   loadPaymentHistory: () => Promise<void>;
@@ -22,6 +24,7 @@ interface SafeRouteApi {
     routes: Route[];
     logs: LogEntry[];
     payments: Payment[];
+    webhookFailures: WebhookFailure[];
     isLoading: boolean;
   };
 }
@@ -31,6 +34,7 @@ const state = {
   routes: [] as Route[],
   logs: [] as LogEntry[],
   payments: [] as Payment[],
+  webhookFailures: [] as WebhookFailure[],
   isLoading: false,
 };
 
@@ -183,6 +187,22 @@ function setupEventListeners(): void {
     });
   }
 
+  const webhooksRefreshBtn = document.getElementById('webhooks-refresh-btn');
+  if (webhooksRefreshBtn) {
+    webhooksRefreshBtn.addEventListener('click', async () => {
+      await loadWebhookFailures();
+    });
+  }
+
+  document.querySelectorAll('[data-retry-failure-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const failureId = btn.getAttribute('data-retry-failure-id');
+      if (failureId) {
+        retryWebhook(failureId);
+      }
+    });
+  });
+
   const toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
   if (toggleSidebarBtn) {
     toggleSidebarBtn.addEventListener('click', () => {
@@ -227,10 +247,11 @@ async function loadDashboardData(): Promise<void> {
       loadLogs(),
       loadStats(),
       loadPaymentHistory(),
+      loadWebhookFailures(),
     ]);
   } catch (error) {
     console.error('Failed to load dashboard data:', error);
-    showError('Failed to load dashboard data');
+    showError(error instanceof Error ? error.message : 'Failed to load dashboard data');
   } finally {
     state.isLoading = false;
     updateLoadingState(false);
@@ -309,6 +330,35 @@ async function loadPaymentHistory(): Promise<void> {
   }
 }
 
+async function loadWebhookFailures(): Promise<void> {
+  const token = getToken();
+  if (!token) return;
+
+  try {
+    const response = await fetch(API_ENDPOINTS.WEBHOOKS_FAILURES, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      state.webhookFailures = data.failures || [];
+      renderWebhookFailures(state.webhookFailures);
+    }
+  } catch (error) {
+    console.error('Failed to load webhook failures:', error);
+  }
+}
+
+async function retryWebhook(failureId: string): Promise<void> {
+  try {
+    await apiRequest(API_ENDPOINTS.WEBHOOKS_RETRY(failureId), { method: 'POST' });
+    showSuccess('Retry queued');
+    await loadWebhookFailures();
+  } catch (error) {
+    showError(error instanceof Error ? error.message : 'Failed to retry webhook');
+  }
+}
+
 function updateUserUI(): void {
   if (!state.user) return;
 
@@ -365,13 +415,17 @@ async function checkPaymentResult(): Promise<void> {
 }
 
 async function createRoute(routeData: Partial<Route>): Promise<void> {
-  const route = await apiRequest<Route>(API_ENDPOINTS.CREATE_ROUTE, {
-    method: 'POST',
-    body: JSON.stringify(routeData),
-  });
-  state.routes.push(route);
-  updateRoutesUI(state.routes);
-  showSuccess('Route created successfully');
+  try {
+    const route = await apiRequest<Route>(API_ENDPOINTS.CREATE_ROUTE, {
+      method: 'POST',
+      body: JSON.stringify(routeData),
+    });
+    state.routes.push(route);
+    updateRoutesUI(state.routes);
+    showSuccess('Route created successfully');
+  } catch (error) {
+    showError(error instanceof Error ? error.message : 'Failed to create route');
+  }
 }
 
 async function editRoute(routeId: string): Promise<void> {
@@ -535,9 +589,11 @@ const SafeRouteApi = {
   editRoute,
   deleteRoute,
   replayLog,
+  retryWebhook,
   formatDate,
   loadDashboardData,
   loadPaymentHistory,
+  loadWebhookFailures,
   refreshData,
   get state() {
     return state;

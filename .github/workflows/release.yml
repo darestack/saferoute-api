@@ -1,0 +1,77 @@
+name: Automated Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for conventional commits since last release
+        id: check-commits
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous tag found, proceeding with release"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --oneline --grep="^feat\|^fix\|^docs\|^style\|^refactor\|^perf\|^test\|^chore" || true)
+            if [ -z "$COMMITS" ]; then
+              echo "No conventional commits since $LAST_TAG"
+              echo "should_release=false" >> $GITHUB_OUTPUT
+            else
+              echo "Found conventional commits since $LAST_TAG"
+              echo "should_release=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Run standard-version
+        if: steps.check-commits.outputs.should_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm run release
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.check-commits.outputs.should_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          CHANGELOG=$(sed -n "/## \[${{ steps.version.outputs.version }}\],/,\$p" CHANGELOG.md | head -n -1)
+          gh release create "$TAG" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes "$CHANGELOG" \
+            --latest

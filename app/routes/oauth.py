@@ -217,11 +217,16 @@ async def oauth_redirect(provider: str):
 @router.post("/callback", response_model=CallbackResponse)
 async def oauth_callback_post(
     request: Request,
-    code: str = Query(...),
+    code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     code_challenge: Optional[str] = Query(None),
 ):
     """Handle the OAuth callback from Supabase.
+
+    The frontend POSTs ``code``/``state``/``code_challenge`` in a
+    JSON body (see ``frontend/src/callback.ts``); this handler reads
+    them from the body when present and falls back to query parameters,
+    so both call styles work.
 
     The frontend must POST the authorization ``code`` here after Supabase
     redirects back. POST (not GET) is required so the code is not recorded in
@@ -248,6 +253,17 @@ async def oauth_callback_post(
         HTTPException: 429 if the client has exceeded the rate limit.
     """
     from app.utils.security import get_client_ip
+
+    # Prefer values posted as JSON (frontend contract); fall back to
+    # query parameters so older/alternate clients still work.
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+            code = code or body.get("code")
+            state = state or body.get("state")
+            code_challenge = code_challenge or body.get("code_challenge")
+        except Exception:
+            pass
 
     client_ip = get_client_ip(request)
     await _check_oauth_rate_limit(client_ip)

@@ -1,6 +1,6 @@
-// Dashboard tables: routes, logs, and payment history rendering
+// Dashboard tables: routes, logs, payment history, and webhook failures rendering
 
-import { Route, Payment, LogEntry } from '../types';
+import { Route, Payment, LogEntry, WebhookFailure } from '../types';
 import { formatDate } from './DashboardShell';
 
 /**
@@ -203,6 +203,71 @@ export function renderPaymentHistory(payments: Payment[]): void {
 
     const dateCell = createCell(formatDate(payment.created_at), 'td', 'px-6 py-4 text-sm text-safe-muted');
     tr.appendChild(dateCell);
+
+    tbody.appendChild(tr);
+  });
+}
+
+export function renderWebhookFailures(failures: WebhookFailure[]): void {
+  const tbody = document.getElementById('webhook-failures-list');
+  if (!tbody) return;
+
+  while (tbody.firstChild) {
+    tbody.removeChild(tbody.firstChild);
+  }
+
+  if (failures.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 6;
+    td.className = 'px-6 py-8 text-center text-safe-muted';
+    td.textContent = 'No failed webhook deliveries.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  failures.forEach((failure) => {
+    const tr = document.createElement('tr');
+    tr.className = 'hover:bg-safe-surface/50';
+
+    const routeCell = createCell(failure.route_name || failure.route_id, 'td', 'px-6 py-4 text-sm');
+    tr.appendChild(routeCell);
+
+    const statusCell = document.createElement('td');
+    statusCell.className = 'px-6 py-4';
+    const badge = document.createElement('span');
+    const statusCode = failure.status_code || 0;
+    const statusColor = statusCode >= 200 && statusCode < 300
+      ? 'bg-safe-accent/20 text-safe-accent'
+      : statusCode >= 400 && statusCode < 500
+        ? 'bg-safe-warning/20 text-safe-warning'
+        : 'bg-safe-danger/20 text-safe-danger';
+    badge.className = `px-2 py-1 text-xs rounded-full ${statusColor}`;
+    badge.textContent = String(statusCode);
+    statusCell.appendChild(badge);
+    tr.appendChild(statusCell);
+
+    const errorCell = createCell(failure.error_message || '—', 'td', 'px-6 py-4 text-sm text-safe-muted max-w-xs truncate');
+    tr.appendChild(errorCell);
+
+    const retryCell = createCell(`${failure.retry_count}/${failure.max_retries}`, 'td', 'px-6 py-4 text-sm');
+    tr.appendChild(retryCell);
+
+    const dateCell = createCell(formatDate(failure.created_at), 'td', 'px-6 py-4 text-sm text-safe-muted');
+    tr.appendChild(dateCell);
+
+    const actionCell = document.createElement('td');
+    actionCell.className = 'px-6 py-4 text-right';
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'text-safe-accent hover:text-safe-text text-sm font-medium';
+    retryBtn.textContent = 'Retry';
+    retryBtn.setAttribute('data-retry-failure-id', failure.id);
+    retryBtn.addEventListener('click', () => {
+      (window as any).SafeRoute.retryWebhook(failure.id);
+    });
+    actionCell.appendChild(retryBtn);
+    tr.appendChild(actionCell);
 
     tbody.appendChild(tr);
   });

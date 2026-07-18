@@ -31,10 +31,14 @@ export async function apiRequest<T>(
     },
   });
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     localStorage.removeItem('saferoute_token');
     window.location.href = '/login.html';
     return Promise.reject(new Error('Unauthorized'));
+  }
+
+  if (response.status === 403) {
+    return Promise.reject(new Error('Forbidden'));
   }
 
   if (!response.ok) {

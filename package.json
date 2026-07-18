@@ -1,7 +1,12 @@
 {
-  "name": "saferoute",
+  "name": "saferoute-api",
+  "version": "0.7.0",
   "private": true,
   "scripts": {
-    "build": "cd frontend && npm ci && npm run build"
+    "version": "standard-version",
+    "release": "standard-version && git push --follow-tags origin main"
+  },
+  "devDependencies": {
+    "standard-version": "^9.5.0"
   }
 }

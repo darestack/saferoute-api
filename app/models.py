@@ -206,6 +206,7 @@ class WebhookFailureResponse(BaseModel):
     max_retries: int = 3
     created_at: datetime
     updated_at: datetime
+    route_name: Optional[str] = None
 
 
 class WebhookFailuresResponse(BaseModel):

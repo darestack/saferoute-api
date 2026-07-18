@@ -1,0 +1,10 @@
+# SafeRoute API Security Policy
+
+Contact: mailto:security@darestack.com
+Contact: https://github.com/darestack/saferoute-api/security/advisories/new
+
+Policy: https://github.com/darestack/saferoute-api/blob/main/SECURITY.md
+
+Acknowledgments: https://github.com/darestack/saferoute-api/security/advisories
+
+Preferred-Languages: en

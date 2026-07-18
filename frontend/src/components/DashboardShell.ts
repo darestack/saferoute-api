@@ -4,7 +4,7 @@ export function showSection(sectionId: string): void {
   document.querySelectorAll('[id$="-section"]').forEach((section) => {
     section.classList.add('hidden');
   });
-  const section = document.getElementById(`${sectionId}-section`);
+  const section = document.getElementById(sectionId);
   if (section) {
     section.classList.remove('hidden');
     section.classList.add('animate-fade-in');

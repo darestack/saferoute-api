@@ -34,6 +34,20 @@ export interface Route {
   email_notifications: Record<string, any>;
   created_at: string;
   updated_at: string;
+  webhook_secret?: string;
+  stats?: RouteStats;
+}
+
+export interface RouteStats {
+  total_deliveries: number;
+  successful_deliveries: number;
+  failed_deliveries: number;
+  timeout_count: number;
+  avg_latency_ms?: number;
+  deliveries_24h: number;
+  deliveries_7d: number;
+  deliveries_30d: number;
+  success_rate_percent: number;
 }
 
 export interface Payment {
@@ -53,6 +67,18 @@ export interface LogEntry {
   status_code: number;
   created_at: string;
   duration_ms?: number;
+}
+
+export interface WebhookFailure {
+  id: string;
+  route_id: string;
+  route_name?: string;
+  status_code?: number;
+  error_message?: string;
+  retry_count: number;
+  max_retries: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ApiError {

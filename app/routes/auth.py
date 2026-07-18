@@ -1124,6 +1124,182 @@ async def retry_failed_webhook(
     return RetryQueuedResponse(status="queued", log_id=log_id)
 
 
+@router.get("/webhooks/failures", response_model=WebhookFailuresResponse)
+async def list_all_webhook_failures(
+    cursor: Optional[str] = None,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """List failed webhook deliveries across ALL of the user's routes.
+
+    Joins each failure with its owning route to surface the route name.
+    Uses cursor-based pagination with ``created_at`` timestamps for stable
+    descending-chronological paging.
+
+    Args:
+        cursor: Optional pagination cursor (ISO 8601 ``created_at`` timestamp
+            of the last item from the previous page).
+        limit: Maximum number of failures to return.
+        current_user: Injected authenticated user.
+
+    Returns:
+        A :class:`WebhookFailuresResponse` with failures (including
+        ``route_name``) and next cursor.
+
+    Raises:
+        HTTPException: 400 if the cursor format is invalid.
+    """
+    # Resolve the routes owned by the user so we can (a) restrict failures to
+    # the caller's routes and (b) map route_id -> route_name for the response.
+    owned_routes = await execute_query(
+        admin.table("routes").select("id, name").eq("user_id", current_user.id)
+    )
+    owned_route_ids = [r["id"] for r in (owned_routes.data or [])]
+    route_names = {r["id"]: r.get("name") for r in (owned_routes.data or [])}
+
+    if not owned_route_ids:
+        return WebhookFailuresResponse(
+            route_id=current_user.id,
+            failures=[],
+            next_cursor=None,
+        )
+
+    query = (
+        admin.table("webhook_failures")
+        .select("*")
+        .in_("route_id", owned_route_ids)
+        .order("created_at", desc=True)
+        .order("id", desc=True)
+        .limit(limit + 1)
+    )
+
+    if cursor:
+        try:
+            cursor_ts, cursor_id = cursor.split("|", 1)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid cursor format",
+            )
+        query = query.lt("created_at", cursor_ts)
+
+    result = await execute_query(query)
+
+    failures = result.data or []
+    has_next = len(failures) > limit
+    if has_next:
+        failures = failures[:limit]
+
+    next_cursor = (
+        f"{failures[-1]['created_at']}|{failures[-1]['id']}"
+        if has_next and failures
+        else None
+    )
+
+    return WebhookFailuresResponse(
+        route_id=current_user.id,
+        failures=[
+            WebhookFailureResponse(
+                id=f["id"],
+                route_id=f["route_id"],
+                status_code=f.get("status_code"),
+                error_message=f.get("error_message"),
+                retry_count=f.get("retry_count", 0),
+                max_retries=f.get("max_retries", 3),
+                created_at=f["created_at"],
+                updated_at=f["updated_at"],
+                route_name=route_names.get(f["route_id"]),
+            )
+            for f in failures
+        ],
+        next_cursor=next_cursor,
+    )
+
+
+@router.post("/webhooks/failures/{failure_id}/retry")
+async def retry_webhook_failure(
+    failure_id: str,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Manually retry a failed webhook delivery by its failure_id.
+
+    Looks up the failure entry, verifies it belongs to one of the user's
+    routes, locates the associated webhook log entry, and resets it to a
+    ``pending`` retry state so the next cron run picks it up.
+
+    Args:
+        failure_id: The webhook failure entry ID to retry.
+        current_user: Injected authenticated user.
+
+    Returns:
+        A :class:`RetryQueuedResponse` confirming the retry was queued.
+
+    Raises:
+        HTTPException: 404 if the failure or its log does not exist or does
+            not belong to the user.
+    """
+    result = await execute_query(
+        admin.table("webhook_failures").select("*").eq("id", failure_id).limit(1)
+    )
+
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Webhook failure not found",
+        )
+
+    failure = result.data[0]
+    route_id = failure.get("route_id")
+
+    # Verify the failure belongs to one of the user's routes.
+    await get_owned_route_or_404(admin, route_id, current_user.id, columns="id")
+
+    # Find the associated webhook log entry. Prefer an explicit link via
+    # webhook_log_id, otherwise fall back to matching route_id + created_at.
+    webhook_log_id = failure.get("webhook_log_id")
+    log_entry = None
+    if webhook_log_id is not None:
+        log_result = await execute_query(
+            admin.table("webhook_logs")
+            .select("id")
+            .eq("id", webhook_log_id)
+            .eq("route_id", route_id)
+            .limit(1)
+        )
+        log_entry = log_result.data[0] if log_result.data else None
+
+    if log_entry is None:
+        match_result = await execute_query(
+            admin.table("webhook_logs")
+            .select("id")
+            .eq("route_id", route_id)
+            .eq("created_at", failure["created_at"])
+            .limit(1)
+        )
+        log_entry = match_result.data[0] if match_result.data else None
+
+    if log_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Associated webhook log not found",
+        )
+
+    log_id = log_entry["id"]
+    await execute_query(
+        admin.table("webhook_logs")
+        .update(
+            {
+                "retry_status": "pending",
+                "next_retry_at": datetime.now(timezone.utc).isoformat(),
+                "retry_count": 0,
+            }
+        )
+        .eq("id", log_id)
+    )
+
+    return RetryQueuedResponse(status="queued", log_id=log_id)
+
+
 @router.post("/routes/{route_id}/logs/{log_id}/replay")
 async def replay_webhook_log(
     route_id: str,

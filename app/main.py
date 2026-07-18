@@ -14,10 +14,10 @@ import uuid
 from contextlib import asynccontextmanager
 
 from typing import Callable, Awaitable, Any, MutableMapping, Optional, TypeAlias
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -173,6 +173,8 @@ _FRONTEND_PATHS = {
     "/assets/js/main.js",
     "/assets/js/dashboard.js",
     "/docs/api.md",
+    "/security.txt",
+    "/.well-known/security.txt",
 }
 _ALLOWED_PATHS = _DOCS_PATHS | _FRONTEND_PATHS
 
@@ -462,6 +464,24 @@ async def health_check() -> JSONResponse:
             "service": "SafeRoute API",
         },
     )
+
+
+@app.get("/security.txt")
+async def security_txt() -> PlainTextResponse:
+    """Serve the security.txt contact policy per RFC 9116."""
+    from pathlib import Path
+
+    security_path = Path(__file__).resolve().parent.parent / "security.txt"
+    if not security_path.exists():
+        raise HTTPException(status_code=404, detail="security.txt not found")
+    content = security_path.read_text(encoding="utf-8")
+    return PlainTextResponse(content=content, media_type="text/plain")
+
+
+@app.get("/.well-known/security.txt")
+async def well_known_security_txt() -> PlainTextResponse:
+    """Serve the security.txt contact policy at the well-known location."""
+    return await security_txt()
 
 
 # Serve frontend files in development/test environments.

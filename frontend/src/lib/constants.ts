@@ -11,4 +11,6 @@ export const API_ENDPOINTS = {
   PAYMENTS_HISTORY: '/v1/payments/history',
   OAUTH: (provider: 'google' | 'github') => `/auth/oauth/${provider}`,
   CALLBACK: '/auth/callback',
+  WEBHOOKS_FAILURES: '/v1/webhooks/failures',
+  WEBHOOKS_RETRY: (failureId: string) => `/v1/webhooks/failures/${failureId}/retry`,
 } as const;

@@ -642,3 +642,53 @@ class TestReplayWebhookLog:
                     )
                 )
             assert exc.value.status_code == 400
+
+
+
+
+class TestOauthCallbackBody:
+    """Regression: the frontend POSTs code/state in a JSON body.
+
+    The handler must read them from the body (not only query params),
+    otherwise the frontend login flow 400s with "Missing code".
+    """
+
+    @pytest.mark.asyncio
+    async def test_reads_code_and_state_from_json_body(self):
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        async def _fake_exchange(code, code_challenge):
+            return oauth_module.CallbackResponse(
+                access_token="tok",
+                token_type="bearer",
+                user_id="u1",
+                email="e@example.com",
+            )
+
+        with (
+            patch(
+                "app.routes.oauth._check_oauth_rate_limit",
+                new=AsyncMock(),
+            ),
+            patch(
+                "app.routes.oauth._exchange_code",
+                side_effect=_fake_exchange,
+            ),
+            patch(
+                "app.routes.oauth._get_jwt_signing_key",
+                return_value="test-signing-key-0123456789ab",
+            ),
+            patch(
+                "app.routes.oauth.jwt.decode",
+                return_value={"challenge": "chal", "exp": 9999999999, "iat": 1},
+            ),
+        ):
+            client = TestClient(app)
+            resp = client.post(
+                "/auth/callback",
+                json={"code": "abc", "state": "st-def"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["access_token"] == "tok"
