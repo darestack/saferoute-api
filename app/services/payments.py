@@ -76,7 +76,10 @@ async def _convert_usd_to_ngn_kobo(usd_amount: float) -> int:
         if fetched and fetched > 0:
             rate = fetched
     except Exception:
-        logger.warning("Exchange rate fetch failed; using fallback rate %.2f", fallback_rate)
+        logger.warning(
+            "Exchange rate fetch failed; using fallback rate %.2f",
+            fallback_rate,
+        )
 
     return int(round(usd_amount * rate * 100))
 

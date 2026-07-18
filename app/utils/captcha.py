@@ -7,8 +7,6 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import httpx
-
 
 from app.config import settings
 from app.database import get_http_client

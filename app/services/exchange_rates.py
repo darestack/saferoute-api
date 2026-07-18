@@ -6,11 +6,8 @@ Uses official exchange rate sources with caching to minimize API calls.
 from __future__ import annotations
 import logging
 import time
-from typing import Optional
 
 from fastapi import HTTPException, status
-
-from app.config import settings
 from app.database import get_http_client
 
 logger = logging.getLogger(__name__)
