@@ -8,6 +8,24 @@ import { showSection, updateLoadingState, showError, showSuccess, formatDate, to
 import { updateRoutesUI, updateLogsUI, renderPaymentHistory } from './components/DashboardTables';
 import { initCharts } from './components/DashboardCharts';
 
+interface SafeRouteApi {
+  createRoute: (routeData: { name: string; destination_url: string }) => Promise<void>;
+  editRoute: (routeId: string) => Promise<void>;
+  deleteRoute: (routeId: string) => Promise<void>;
+  replayLog: (routeId: string, logId: number) => Promise<void>;
+  formatDate: (dateString: string) => string;
+  loadDashboardData: () => Promise<void>;
+  loadPaymentHistory: () => Promise<void>;
+  refreshData: () => Promise<void>;
+  state: {
+    user: User | null;
+    routes: Route[];
+    logs: LogEntry[];
+    payments: Payment[];
+    isLoading: boolean;
+  };
+}
+
 const state = {
   user: null as User | null,
   routes: [] as Route[],
@@ -436,4 +454,10 @@ const SafeRouteApi = {
 
 document.addEventListener('DOMContentLoaded', initApp);
 
-(window as any).SafeRoute = SafeRouteApi;
+declare global {
+  interface Window {
+    SafeRoute: SafeRouteApi;
+  }
+}
+
+window.SafeRoute = SafeRouteApi;
