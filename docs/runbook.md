@@ -88,21 +88,10 @@ Expected response:
 ```bash
 curl https://your-api.com/health
 ```
-Response includes cache metrics:
-```json
-{
-  "status": "healthy",
-  "database": "connected",
-  "cache": "connected",
-  "cache_metrics": {
-    "user_cache": {"hits": 1234, "misses": 56, "hit_rate": 0.957, ...},
-    "route_cache": {"hits": 5678, "misses": 123, "hit_rate": 0.979, ...},
-    "geolocation_cache": {"hits": 9012, "misses": 234, "hit_rate": 0.974, ...},
-    "api_key_cache": {"hits": 3456, "misses": 78, "hit_rate": 0.978, ...}
-  },
-  "service": "SafeRoute API"
-}
-```
+The `/health` endpoint checks database **and** distributed-cache (L2
+Postgres) connectivity. If either is down it returns `503` so an orchestrator
+can pull the instance out of rotation. Cache *metrics* (hit/miss rates) are
+exposed separately on the internal endpoint below.
 
 ### Cache Stats (Internal)
 ```bash
@@ -142,6 +131,11 @@ If deploying on Vercel, add to `vercel.json`:
 - **Sentry**: Error tracking with 5,000 events/month free tier
 - **UptimeRobot**: Uptime monitoring with 5-minute intervals
 - **Vercel Analytics**: Built-in for Vercel deployments
+
+See [Zero-Dollar Constraint & Tradeoffs](reference/zero-dollar-constraint.md)
+for the explicit list of every paid/optional integration, what happens
+when it is unconfigured, and the security/scale tradeoffs accepted
+to keep the project at $0.
 
 ### Key Metrics to Monitor
 - `/health` endpoint availability
@@ -193,13 +187,63 @@ If deploying on Vercel, add to `vercel.json`:
 
 ## Key Rotation
 
-### Encryption Key Rotation
-1. Set new `ENCRYPTION_KEY` in environment
-2. Restart application
-3. Re-encrypt existing webhook secrets by reading and updating each route
+All long-lived secrets are environment variables. Rotate them by
+writing new values and restarting (the app reads settings at import time).
+Prefer a rolling restart so in-flight webhook deliveries are not dropped.
 
-### API Key Rotation
-Use `POST /auth/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again.
+### Encryption Key (`ENCRYPTION_KEY`)
+1. Generate a new 32+ char secret.
+2. Set it as `ENCRYPTION_KEY` in the environment.
+3. Restart the application (the Fernet instance is cached per process).
+4. Re-encrypt existing webhook secrets: for every route with a
+   `webhook_secret`/`webhook_secrets` value, read it, decrypt with the
+   old key, and re-write via the update endpoint so it is stored under
+   the new key. The `v1:` version prefix lets old+new coexist during the
+   cutover window.
+
+### API Key (`api_key_hash` per route)
+Use `POST /auth/routes/{route_id}/rotate-key`. The new key is
+returned **once** and cannot be retrieved again — store it immediately.
+The previous key is invalidated atomically and the route's cached proxy
+row is evicted so the new key takes effect on the next request.
+
+### Internal Secrets (`RETRY_ENDPOINT_SECRET`, `ADMIN_SECRET_KEY`)
+1. Generate new high-entropy values.
+2. Set them in the environment alongside the public URLs used by the
+   scheduled jobs (`cleanup.yml`) and any admin tooling.
+3. Restart. Old values stop authenticating immediately because the
+   endpoints compare against the live `settings` value.
+
+### Provider Secrets (Paystack, Resend, Turnstile)
+Rotate in the provider console, then update the corresponding env var
+(`PAYSTACK_SECRET_KEY`, `RESEND_API_KEY`, `TURNSTILE_SECRET_KEY`)
+and restart. Missing values degrade gracefully (see
+[docs/reference/zero-dollar-constraint.md](reference/zero-dollar-constraint.md)).
+
+## Scaling & Horizontal Deployment
+
+SafeRoute is stateless apart from in-memory caches. Horizontal scale
+by running multiple instances behind a load balancer; all durable state
+lives in Supabase.
+
+### Multi-worker / multi-instance caveats (zero-dollar)
+- **In-memory caches are per process.** Route, user, and api-key caches
+  use a PostgreSQL L2 tier, so they converge after TTL. The
+  **circuit breaker is in-memory only** and is NOT shared — with
+  `WORKERS > 1` (or multiple instances) each worker maintains its
+  own breaker and per-IP rate-limit counters. This weakens (but does
+  not break) global rate limiting and circuit breaking. The app logs a
+  startup warning when `WORKERS != 1`.
+- **Mitigation without paid infra:** keep `WORKERS=1` per instance and
+  scale by adding instances; rely on the L2 cache for convergence;
+  tune `CIRCUIT_BREAKER_TIMEOUT_SECONDS` and rate-limit windows
+  for acceptable per-worker divergence.
+
+### When budget allows
+Move the L1/L2 backing store and the circuit breaker into Redis so
+state is shared across workers and instances. The cache and breaker are
+isolated behind `DistributedCache` / `circuit_breaker` modules, so the
+swap is localized.
 
 ## Backup and Recovery
 

@@ -177,6 +177,7 @@ form.addEventListener('submit', async (e) => {
 | API endpoint reference | [docs/reference/api.md](docs/reference/api.md) |
 | Architecture and data flow | [docs/reference/architecture.md](docs/reference/architecture.md) |
 | Operations and incident response | [docs/runbook.md](docs/runbook.md) |
+| Zero-dollar constraint & tradeoffs | [docs/reference/zero-dollar-constraint.md](docs/reference/zero-dollar-constraint.md) |
 | Database migrations | [docs/migrations.md](docs/migrations.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
