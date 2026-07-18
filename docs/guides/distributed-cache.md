@@ -140,11 +140,11 @@ Returns detailed metrics per cache:
 The distributed cache requires migration 013:
 
 ```bash
-# Option 1: Using the migration runner
-.venv/bin/python migrate.py
+# Option 1: Apply via Supabase SQL Editor
+# Copy contents of schema.sql and run it
 
-# Option 2: Apply via Supabase SQL Editor
-# Copy contents of schema.sql
+# Option 2: Use Supabase CLI
+supabase migration up
 ```
 
 ### Environment Variables

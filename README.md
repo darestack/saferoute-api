@@ -1,7 +1,7 @@
 # SafeRoute API
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
-[![FastAPI 0.139](https://img.shields.io/badge/FastAPI-0.139-green)](https://fastapi.tiangolo.com/)
+[![FastAPI 0.139.2](https://img.shields.io/badge/FastAPI-0.139.2-green)](https://fastapi.tiangolo.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-Ready-3ECF8E)](https://supabase.com/)
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors/darestack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -22,11 +22,16 @@ cd saferoute-api
 cp .env.example .env
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
 ```
 
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
+
+Then apply `schema.sql` to your Supabase project and run:
+
+```bash
+uvicorn app.main:app --reload
+```
 
 ## Why SafeRoute?
 
@@ -80,38 +85,23 @@ SafeRoute gives you a backend without the backend:
 
 ## What's included
 
-- [x] Google/GitHub OAuth via Supabase Auth
-- [x] API key generation and verification for route management
-- [x] Proxy forwarding with rate limiting and webhook logging
-- [x] Retry processing for retryable delivery failures
-- [x] Optional webhook signature verification
-- [x] Security headers, CORS, request size limits
-- [x] Basic SSRF guardrails for outbound destinations
-- [x] Supabase schema with RLS, rate-limit table, webhook logs
-- [x] Webhook secret rotation support
-- [x] Form validation schema support
-- [x] Spam shield (honeypot + rate limiting + User-Agent filtering + country blocking + IP blacklist + disposable email detection + Cloudflare Turnstile)
-- [x] Manual replay queue for failed deliveries
-- [x] Bulk log cleanup endpoint
-- [x] Email notifications via Resend
-- [x] Standardized API responses with Pydantic models
-- [x] Credit-based usage system with atomic deduction
-- [x] Paystack payment integration for credit pack purchases
-- [x] Payment webhook verification and automatic credit top-up
-- [x] Admin manual credit adjustment endpoint
-- [x] Frontend dashboard with OAuth login, route management, and payment UI
-- [x] GitHub Pages deployment for frontend
-- [x] Sentry error tracking and OpenTelemetry tracing support
+- **Authentication & Access**: Google/GitHub OAuth via Supabase Auth, API key generation and verification
+- **Proxy & Delivery**: Webhook forwarding with rate limiting, webhook logging, retry processing, idempotency, and optional signature verification
+- **Security**: Security headers, CORS, request size limits, SSRF guardrails, honeypot, User-Agent filtering, country blocking, IP blacklist, disposable email detection, Cloudflare Turnstile
+- **Validation**: Server-side form validation with schema support
+- **Operations**: Manual replay queue for failed deliveries, bulk log cleanup endpoint, circuit breaker
+- **Email**: Email notifications via Resend (optional)
+- **Credits & Payments**: Credit-based usage system with atomic deduction, Paystack integration for credit pack purchases, payment webhook verification, admin credit adjustment
+- **Frontend**: Dashboard with OAuth login, route management, payment UI, and GitHub Pages deployment
+- **Observability**: Sentry error tracking and OpenTelemetry tracing support (optional)
 
 ## Deployment
 
 ### Vercel (recommended for backend)
 
-1. Clone and install dependencies
-2. Set environment variables in Vercel dashboard
-3. Deploy with `vercel --prod`
+See [docs/deployment.md](docs/deployment.md) for the full deployment guide.
 
-Required env vars: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `API_KEY_SALT`, `ENCRYPTION_KEY`, `ALLOWED_HOSTS`, `WEBHOOK_SECRET`, `RETRY_ENDPOINT_SECRET`
+Required env vars: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `API_KEY_SALT`, `ENCRYPTION_KEY`, `ALLOWED_HOSTS`, `RETRY_ENDPOINT_SECRET`
 
 ### Docker
 
@@ -174,11 +164,13 @@ form.addEventListener('submit', async (e) => {
 | Topic | Guide |
 |-------|-------|
 | Detailed setup (Supabase, OAuth, env vars) | [docs/guides/setup.md](docs/guides/setup.md) |
+| Deployment (Vercel, Docker, Uvicorn) | [docs/deployment.md](docs/deployment.md) |
 | API endpoint reference | [docs/reference/api.md](docs/reference/api.md) |
 | Architecture and data flow | [docs/reference/architecture.md](docs/reference/architecture.md) |
 | Operations and incident response | [docs/runbook.md](docs/runbook.md) |
 | Zero-dollar constraint & tradeoffs | [docs/reference/zero-dollar-constraint.md](docs/reference/zero-dollar-constraint.md) |
 | Database migrations | [docs/migrations.md](docs/migrations.md) |
+| Distributed cache architecture | [docs/guides/distributed-cache.md](docs/guides/distributed-cache.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 

@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Supabase project with database access
-- Python 3.11+ and pip
+- Python 3.12+ and pip
 - Environment variables configured (see `.env.example`)
 
 ## Step 1: Apply Database Migrations
@@ -31,15 +31,13 @@ supabase migration up
 4. Paste into the SQL Editor
 5. Click **Run**
 
-### Option C: Using the Custom Migration Runner
+### Option C: Using Supabase SQL Editor
 
-```bash
-# Set DATABASE_URL in your environment
-export DATABASE_URL="postgresql://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres"
-
-# Run migrations
-.venv/bin/python migrate.py
-```
+1. Open your Supabase project dashboard
+2. Go to **SQL Editor**
+3. Copy the contents of `schema.sql`
+4. Paste into the SQL Editor
+5. Click **Run**
 
 ## Step 2: Configure Environment Variables
 

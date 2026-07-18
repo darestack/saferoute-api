@@ -76,7 +76,7 @@ ruff check app/ tests/
 ruff format --check app/ tests/
 
 # Type check
-mypy app/
+mypy app/ --ignore-missing-imports
 ```
 
 ### Style Rules

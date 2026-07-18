@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated `schema.sql` to include all tables from migrations 013–015
-- Updated `User` model to include `credits` and `tier` fields
+- Updated `user_profiles` table to include `credits` and `tier` fields
 - Updated dashboard stats UI to show credit balance and tier
 - Updated `.env.example` with Paystack and admin environment variables
 
