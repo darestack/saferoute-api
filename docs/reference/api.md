@@ -202,7 +202,7 @@ Initiate OAuth flow (Google or GitHub).
 - `200 OK`: OAuth authorization URL.
 
 ### 14. OAuth Callback
-**GET** `/auth/callback`
+**POST** `/auth/callback`
 
 Handle OAuth provider callback and exchange code for JWT.
 

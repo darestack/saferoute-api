@@ -82,6 +82,9 @@ function setupEventListeners(): void {
       const formData = new FormData(form);
       const name = (formData.get('name') as string).trim();
       const destinationUrl = (formData.get('destination_url') as string).trim();
+      const rateLimit = parseInt((formData.get('rate_limit') as string) || '30', 10);
+      const webhookSecret = (formData.get('webhook_secret') as string) || undefined;
+      const turnstileSiteKey = (formData.get('turnstile_site_key') as string) || undefined;
 
       if (name.length < 2) {
         showError('Route name must be at least 2 characters');
@@ -100,9 +103,14 @@ function setupEventListeners(): void {
         return;
       }
 
-      const routeData = {
+      const routeData: Partial<Route> = {
         name,
         destination_url: destinationUrl,
+        rate_limit: isNaN(rateLimit) ? 30 : Math.max(1, Math.min(1000, rateLimit)),
+        has_webhook_secret: !!webhookSecret,
+        webhook_secret: webhookSecret,
+        turnstile_enabled: !!turnstileSiteKey,
+        turnstile_site_key: turnstileSiteKey,
       };
 
       try {
@@ -208,7 +216,6 @@ async function loadDashboardData(): Promise<void> {
     if (routes) {
       state.routes = routes;
       updateRoutesUI(state.routes);
-      initCharts(state.routes);
     }
 
     if (user) {
@@ -216,13 +223,70 @@ async function loadDashboardData(): Promise<void> {
       updateUserUI();
     }
 
-    await loadPaymentHistory();
+    await Promise.all([
+      loadLogs(),
+      loadStats(),
+      loadPaymentHistory(),
+    ]);
   } catch (error) {
     console.error('Failed to load dashboard data:', error);
     showError('Failed to load dashboard data');
   } finally {
     state.isLoading = false;
     updateLoadingState(false);
+  }
+}
+
+async function loadLogs(): Promise<void> {
+  const token = getToken();
+  if (!token || state.routes.length === 0) return;
+
+  try {
+    const allLogs: LogEntry[] = [];
+    const logPromises = state.routes.slice(0, 5).map(async (route) => {
+      const response = await fetch(`${API_ENDPOINTS.ROUTES}/${route.id}/logs?limit=10`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const logs = await response.json();
+        return logs.map((log: LogEntry) => ({ ...log, route_name: route.name }));
+      }
+      return [];
+    });
+
+    const results = await Promise.all(logPromises);
+    results.forEach((logs) => allLogs.push(...logs));
+    allLogs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    state.logs = allLogs.slice(0, 20);
+    updateLogsUI(state.logs);
+  } catch (error) {
+    console.error('Failed to load logs:', error);
+  }
+}
+
+async function loadStats(): Promise<void> {
+  const token = getToken();
+  if (!token || state.routes.length === 0) return;
+
+  try {
+    const statsPromises = state.routes.slice(0, 10).map(async (route) => {
+      const response = await fetch(`${API_ENDPOINTS.ROUTES}/${route.id}/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        return await response.json();
+      }
+      return null;
+    });
+
+    const statsResults = await Promise.all(statsPromises);
+    state.routes.forEach((route, i) => {
+      route.stats = statsResults[i] || null;
+    });
+    initCharts(state.routes);
+  } catch (error) {
+    console.error('Failed to load stats:', error);
   }
 }
 
@@ -300,7 +364,7 @@ async function checkPaymentResult(): Promise<void> {
   }
 }
 
-async function createRoute(routeData: { name: string; destination_url: string }): Promise<void> {
+async function createRoute(routeData: Partial<Route>): Promise<void> {
   const route = await apiRequest<Route>(API_ENDPOINTS.CREATE_ROUTE, {
     method: 'POST',
     body: JSON.stringify(routeData),
@@ -315,18 +379,46 @@ async function editRoute(routeId: string): Promise<void> {
   if (!route) return;
 
   const newName = prompt('Route name:', route.name);
-  if (newName && newName !== route.name) {
+  if (newName === null) return;
+
+  const updates: Partial<Route> = { name: newName || route.name };
+
+  const destinationUrl = prompt('Destination URL:', route.destination_url);
+  if (destinationUrl === null) return;
+  if (destinationUrl) {
     try {
-      const updated = await apiRequest<Route>(API_ENDPOINTS.UPDATE_ROUTE(routeId), {
-        method: 'PUT',
-        body: JSON.stringify({ name: newName }),
-      });
-      Object.assign(route, updated);
-      updateRoutesUI(state.routes);
-      showSuccess('Route updated successfully');
-    } catch (error) {
-      showError(error instanceof Error ? error.message : 'Failed to update route');
+      new URL(destinationUrl);
+      updates.destination_url = destinationUrl;
+    } catch {
+      showError('Invalid destination URL');
+      return;
     }
+  }
+
+  const rateLimit = prompt('Rate limit (requests per minute):', String(route.rate_limit));
+  if (rateLimit === null) return;
+  const parsedRateLimit = parseInt(rateLimit, 10);
+  if (!isNaN(parsedRateLimit) && parsedRateLimit > 0) {
+    updates.rate_limit = parsedRateLimit;
+  }
+
+  const webhookSecret = prompt('Webhook secret (leave empty to remove):', '');
+  if (webhookSecret === null) return;
+  updates.has_webhook_secret = webhookSecret.length > 0;
+  if (webhookSecret) {
+    updates.webhook_secret = webhookSecret;
+  }
+
+  try {
+    const updated = await apiRequest<Route>(API_ENDPOINTS.UPDATE_ROUTE(routeId), {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+    Object.assign(route, updated);
+    updateRoutesUI(state.routes);
+    showSuccess('Route updated successfully');
+  } catch (error) {
+    showError(error instanceof Error ? error.message : 'Failed to update route');
   }
 }
 

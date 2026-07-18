@@ -202,12 +202,12 @@ frontend/
 - `src/global.css` — Custom animations and utilities
 - `docs/api.md` — API reference covering all endpoints, Spam Shield, Turnstile, error codes, credit-based rate limits
 - `.github/workflows/frontend.yml` — GitHub Pages deployment workflow with Vite build
-- Playwright E2E tests: 13/13 passing
+- Playwright E2E tests: 15/15 passing
 
 ### Remaining
-1. **Buy flow**: Implement credit pack purchase flow (Stripe one-time payments)
-2. **Credit deduction**: Backend logic to deduct credits only after successful delivery
-3. **Deploy**: Push to GitHub and enable GitHub Pages in repo settings
+1. **Logs/stats population**: Fetch real webhook logs and route stats from API
+2. **Route config UI**: Add full route editing (webhook secret, transform, spam/Turnstile settings)
+3. **Webhook retry UI**: Add dashboard buttons to retry failed deliveries
 
 ---
 
