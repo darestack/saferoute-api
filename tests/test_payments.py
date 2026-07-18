@@ -127,19 +127,21 @@ class TestVerifyPayment:
         ):
             mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
             mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
-            mock_execute_query.return_value = MagicMock(
-                data=[
-                    {
-                        "id": "tx-123",
-                        "reference": "sr_user-123_starter",
-                        "amount": 250000,
-                        "credits_to_add": 1000,
-                        "status": "success",
-                        "user_id": "user-123",
-                        "tier": "starter",
-                    }
-                ]
-            )
+            tx_row = {
+                "id": "tx-123",
+                "reference": "sr_user-123_starter",
+                "amount": 250000,
+                "credits_to_add": 1000,
+                "status": "success",
+                "user_id": "user-123",
+                "tier": "starter",
+            }
+            # Call 1: transaction lookup. Call 2: balance read (must include
+            # "credits" now that verify_payment populates new_balance).
+            mock_execute_query.side_effect = [
+                MagicMock(data=[tx_row]),
+                MagicMock(data=[{"credits": 5000}]),
+            ]
 
             result = await verify_payment("sr_user-123_starter")
 
@@ -147,6 +149,7 @@ class TestVerifyPayment:
             assert result["reference"] == "sr_user-123_starter"
             assert result["amount"] == 250000
             assert result["credits_added"] == 1000
+            assert result["new_balance"] == 5000
 
     @pytest.mark.asyncio
     async def test_verify_payment_success_from_paystack(self):
@@ -157,19 +160,25 @@ class TestVerifyPayment:
             mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
             mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
 
-            mock_execute_query.return_value = MagicMock(
-                data=[
-                    {
-                        "id": "tx-123",
-                        "reference": "sr_user-123_starter",
-                        "amount": 250000,
-                        "credits_to_add": 1000,
-                        "status": "pending",
-                        "user_id": "user-123",
-                        "tier": "starter",
-                    }
-                ]
-            )
+            pending_tx = {
+                "id": "tx-123",
+                "reference": "sr_user-123_starter",
+                "amount": 250000,
+                "credits_to_add": 1000,
+                "status": "pending",
+                "user_id": "user-123",
+                "tier": "starter",
+            }
+            # Calls: lookup, conditional transition (returns the row on first
+            # success flip), balance read. The add-credits/tier RPCs also call
+            # execute_query, so supply responses for those too.
+            mock_execute_query.side_effect = [
+                MagicMock(data=[pending_tx]),  # lookup
+                MagicMock(data=[pending_tx]),  # conditional status update
+                MagicMock(data=None),  # add_user_credits rpc (ignored)
+                MagicMock(data=None),  # tier update (ignored)
+                MagicMock(data=[{"credits": 6000}]),  # balance read
+            ]
 
             mock_response = MagicMock()
             mock_response.status_code = 200
@@ -199,6 +208,48 @@ class TestVerifyPayment:
 
             assert result["status"] == "success"
             assert result["credits_added"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_verify_payment_idempotent_on_duplicate(self):
+        """A second verify of an already-credited reference must not re-credit.
+
+        The conditional UPDATE (.eq("status", "pending")) returns no row when
+        the transaction is already success, so add_user_credits is skipped.
+        """
+        with (
+            patch("app.services.payments.settings") as mock_settings,
+            patch("app.services.payments.execute_query") as mock_execute_query,
+        ):
+            mock_settings.PAYSTACK_SECRET_KEY = "sk_test_123"
+            mock_settings.PAYSTACK_BASE_URL = "https://api.paystack.co"
+
+            pending_tx = {
+                "id": "tx-123",
+                "reference": "sr_user-123_starter",
+                "amount": 250000,
+                "credits_to_add": 1000,
+                "status": "success",
+                "user_id": "user-123",
+                "tier": "starter",
+            }
+            mock_execute_query.side_effect = [
+                MagicMock(data=[pending_tx]),  # lookup (already success)
+                MagicMock(data=[{"credits": 7000}]),  # balance read
+            ]
+
+            result = await verify_payment("sr_user-123_starter")
+
+            assert result["status"] == "success"
+            assert result["credits_added"] == 1000
+            assert result["new_balance"] == 7000
+            # Only the lookup + balance read ran; no add_user_credits RPC
+            # should have been issued for an already-success transaction.
+            updates = [
+                c
+                for c in mock_execute_query.call_args_list
+                if "add_user_credits" in str(c)
+            ]
+            assert updates == []
 
 
 class TestWebhookSignature:

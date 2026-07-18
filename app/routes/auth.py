@@ -26,6 +26,7 @@ from app.crypto import encrypt_webhook_secret
 from app.database import (
     admin,
     clear_api_key_cache_for_route,
+    deduct_user_credits,
     execute_query,
     generate_api_key,
 )
@@ -1192,6 +1193,16 @@ async def replay_webhook_log(
         body=forward_body,
         headers=headers,
     )
+
+    # A successful replay re-delivers the payload to the destination, so it
+    # consumes a credit exactly like a live delivery (proxy_webhook) or a
+    # processed retry (retry_processor). Skipping the deduction here would let
+    # operators replay successful submissions for free and break the credit
+    # accounting that the pricing tiers depend on.
+    if 200 <= status_code < 300:
+        route_user_id = route.get("user_id")
+        if route_user_id:
+            await deduct_user_credits(route_user_id, 1)
 
     await log_delivery(
         route_id=route_id,
