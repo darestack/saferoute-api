@@ -1,7 +1,7 @@
 // SafeRoute Dashboard - main entry point
 
 import { User, Route, Payment, LogEntry } from './types';
-import { apiRequest } from './lib/api';
+import { apiRequest, API_BASE } from './lib/api';
 import { getToken, isAuthenticated, logout } from './lib/auth';
 import { API_ENDPOINTS } from './lib/constants';
 import { showSection, updateLoadingState, showError, showSuccess, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
@@ -356,7 +356,7 @@ let exchangeRates: Record<string, number> = {};
 
 async function loadExchangeRates(): Promise<void> {
   try {
-    const response = await fetch('/v1/rates?base=USD&symbols=NGN,EUR,GBP,ZAR,KES,GHS,CAD,AUD');
+    const response = await fetch(API_BASE + '/v1/rates?base=USD&symbols=NGN,EUR,GBP,ZAR,KES,GHS,CAD,AUD');
     if (response.ok) {
       const data = await response.json();
       exchangeRates = data.rates || {};

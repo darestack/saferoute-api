@@ -1,4 +1,5 @@
 const TOKEN_KEY = 'saferoute_token';
+import { API_BASE } from './api';
 
 let verifyTokenPromise: Promise<boolean> | null = null;
 
@@ -26,7 +27,7 @@ export async function verifyToken(): Promise<boolean> {
     return verifyTokenPromise;
   }
 
-  verifyTokenPromise = fetch('/v1/me', {
+  verifyTokenPromise = fetch(API_BASE + '/v1/me', {
     headers: { Authorization: `Bearer ${token}` },
   })
     .then((response) => response.ok)
