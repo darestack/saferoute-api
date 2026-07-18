@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you find a security issue, please open a private security advisory on GitHub or email the maintainers.
+If you find a security issue, please open a private security advisory on GitHub or email the maintainers at deeprince2020@gmail.com.
 
 Do not open a public issue for security vulnerabilities.
 

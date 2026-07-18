@@ -1,16 +1,29 @@
 # SafeRoute API Operational Runbook
 
-## Deployment
+## Overview
 
-SafeRoute is a standard ASGI FastAPI application designed to run behind a reverse proxy (e.g., Nginx, Traefik, or a load balancer).
+SafeRoute API is a FastAPI-based form backend for static sites. It handles form validation, spam filtering, email notifications, and webhook delivery. This runbook covers deployment, maintenance, and incident response.
 
-### Environment Variables
+## Architecture
+
+```
+Client -> FastAPI (Vercel/Lambda) -> Supabase (DB + Auth)
+                                  -> Resend (Email)
+                                  -> Paystack (Payments)
+                                  -> Downstream webhooks
+```
+
+## Environment Variables
+
+### Required
 - `SUPABASE_URL`: The URL of your Supabase instance.
 - `SUPABASE_KEY`: The public anon key.
-- `SUPABASE_SERVICE_ROLE_KEY`: The service role key (required).
+- `SUPABASE_SERVICE_ROLE_KEY`: The service role key (required for server-side operations).
 - `ENCRYPTION_KEY`: Used for webhook secret encryption and JWT signing (must be at least 32 chars in production).
 - `API_KEY_SALT`: Salt used for hashing API keys.
 - `RETRY_ENDPOINT_SECRET`: A shared secret used by cron jobs to authenticate to the `/internal/` endpoints.
+
+### Optional
 - `TRUSTED_PROXIES`: A comma-separated list of trusted upstream proxies (e.g., `10.0.0.1, 10.0.0.2`). Used to safely extract `X-Forwarded-For`.
 - `RETENTION_DAYS`: Webhook log retention period (default `30`).
 - `MAX_REQUEST_BODY_BYTES`: Maximum request body size in bytes (default `1048576` / 1 MiB).
@@ -20,45 +33,62 @@ SafeRoute is a standard ASGI FastAPI application designed to run behind a revers
 - `CIRCUIT_BREAKER_TIMEOUT_SECONDS`: Circuit breaker cooldown before half-open (default `60.0`).
 - `OAUTH_CALLBACK_RATE_LIMIT`: Max OAuth callback attempts per IP (default `10`).
 - `OAUTH_CALLBACK_RATE_WINDOW_SECONDS`: OAuth rate limit window in seconds (default `60`).
+- `RESEND_API_KEY`: Resend API key for email notifications.
+- `PAYSTACK_SECRET_KEY`: Paystack secret key for payment processing.
+- `PAYSTACK_BASE_URL`: Paystack API base URL (default `https://api.paystack.co`).
+- `FRONTEND_URL`: Frontend URL for payment callbacks (default `http://localhost:8000`).
+- `SENTRY_DSN`: Sentry DSN for error tracking (optional).
+- `OTEL_ENABLED`: Enable OpenTelemetry tracing (default `false`).
+- `APP_VERSION`: Application version for Sentry release tracking.
 
-### Running the App
-Use Uvicorn to run the app:
+## Deployment
+
+### Vercel (Recommended)
+SafeRoute is optimized for Vercel deployment using the included `api/index.py` adapter.
+
+1. Connect your GitHub repository to Vercel
+2. Set all environment variables in Vercel dashboard
+3. Deploy the `main` branch
+4. Apply `schema.sql` to your Supabase project
+
+### Docker
+```bash
+docker build -t saferoute-api .
+docker run -p 8000:8000 --env-file .env saferoute-api
+```
+
+### Manual (Uvicorn)
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-## Deployment
+## Database Setup
 
-See [deployment.md](deployment.md) for complete deployment instructions.
+1. Open Supabase SQL Editor
+2. Paste contents of `schema.sql`
+3. Execute to create tables, indexes, and RLS policies
+4. Verify with: `SELECT tablename FROM pg_tables WHERE schemaname = 'public';`
 
-Quick checklist:
-1. Apply schema: paste `schema.sql` into Supabase SQL Editor
-2. Set environment variables (see `.env.example`)
-3. Deploy application code
-4. Verify with `curl https://your-api.com/health`
-5. Configure cron jobs for `/internal/process-retries` and `/internal/cleanup`
+## Health Checks
 
-## Maintenance Tasks
-
-### Background Cron Jobs
-You MUST configure a scheduler (like cron-job.org, UptimeRobot, or a Kubernetes CronJob) to hit the following endpoints regularly:
-
-1. **Process Retries**: `POST /internal/process-retries` 
-   - Frequency: Every minute.
-   - Header: `X-Retry-Secret: <your_retry_secret>`
-
-2. **Database Cleanup**: `POST /internal/cleanup`
-   - Frequency: Daily.
-   - Header: `X-Retry-Secret: <your_retry_secret>`
-
-## Cache Monitoring
-
-### Health Check
-The `/health` endpoint now reports cache connectivity and metrics:
+### Basic Health
 ```bash
 curl https://your-api.com/health
 ```
-Response includes:
+Expected response:
+```json
+{
+  "status": "healthy",
+  "database": "connected",
+  "service": "SafeRoute API"
+}
+```
+
+### Detailed Health with Cache Metrics
+```bash
+curl https://your-api.com/health
+```
+Response includes cache metrics:
 ```json
 {
   "status": "healthy",
@@ -74,48 +104,117 @@ Response includes:
 }
 ```
 
-### Detailed Cache Stats
-For per-cache breakdown, use the internal endpoint (requires `RETRY_ENDPOINT_SECRET`):
+### Cache Stats (Internal)
 ```bash
 curl -H "X-Retry-Secret: $RETRY_ENDPOINT_SECRET" \
   https://your-api.com/internal/cache/stats
 ```
 
-### Cache Alerts
-Set up alerts for:
-- **Low hit rate** (< 80%): Indicates cache is too small or TTL too short
-- **High L1 utilization** (> 90%): Cache is near capacity, consider increasing `max_size`
-- **L2 errors**: Database connectivity issues affecting distributed cache
+## Background Jobs
 
-### Manual Cache Clear
-To clear all caches (use during debugging or after configuration changes):
-```bash
-# No direct endpoint - restart the application workers
-# Caches are in-memory and clear on restart
+### Cron Jobs
+You MUST configure a scheduler to hit the following endpoints:
+
+1. **Process Retries**: `POST /internal/process-retries`
+   - Frequency: Every minute
+   - Header: `X-Retry-Secret: <your_retry_secret>`
+   - Processes failed webhook deliveries from the retry queue
+
+2. **Database Cleanup**: `POST /internal/cleanup`
+   - Frequency: Daily (recommended: 02:00 UTC)
+   - Header: `X-Retry-Secret: <your_retry_secret>`
+   - Purges expired webhook logs, idempotency keys, and PKCE verifiers
+
+### Vercel Cron
+If deploying on Vercel, add to `vercel.json`:
+```json
+{
+  "crons": [
+    { "path": "/internal/process-retries", "schedule": "* * * * *" },
+    { "path": "/internal/cleanup", "schedule": "0 2 * * *" }
+  ]
+}
 ```
+
+## Monitoring
+
+### Free Tier Options
+- **Sentry**: Error tracking with 5,000 events/month free tier
+- **UptimeRobot**: Uptime monitoring with 5-minute intervals
+- **Vercel Analytics**: Built-in for Vercel deployments
+
+### Key Metrics to Monitor
+- `/health` endpoint availability
+- Webhook delivery success rate (check `/auth/routes/{id}/logs`)
+- Circuit breaker state (open = downstream issues)
+- Cache hit rates (should be > 80%)
+- Payment success rate
 
 ## Incident Response
 
 ### High Memory Usage or Event Loop Stuttering
-- **Symptom**: 502 Bad Gateway or Uvicorn `Worker failed to boot`.
-- **Cause**: Extremely high webhook volume filling the `_circuit_breaker_state` or `_route_cache` OrderedDicts.
-- **Action**: Increase the `workers` count in Uvicorn, scale horizontally, or lower the `_ROUTE_CACHE_MAX_SIZE` in `app/routes/proxy.py`.
+- **Symptom**: 502 Bad Gateway or Uvicorn `Worker failed to boot`
+- **Cause**: High webhook volume filling circuit breaker or route caches
+- **Action**: Increase worker count, scale horizontally, or reduce `_ROUTE_CACHE_MAX_SIZE`
 
 ### Cache Not Sharing Across Workers
-- **Symptom**: Cache hit rates are low, or data appears inconsistent between workers.
-- **Cause**: The `cache_entries` table or RPC functions are missing from the database (migration 013 not applied).
+- **Symptom**: Low cache hit rates, inconsistent data between workers
+- **Cause**: Missing `cache_entries` table or RPC functions
 - **Action**: 
-  1. Verify migration 013 is applied: check for `cache_entries` table in Supabase SQL Editor
-  2. If missing, apply: paste `schema.sql` into Supabase SQL Editor
-  3. Restart workers to clear stale in-memory caches
-  4. Monitor `/health` endpoint for `"cache": "connected"`
+  1. Verify migration 013 is applied
+  2. If missing, apply `schema.sql`
+  3. Restart workers to clear in-memory caches
 
 ### Rate Limit Evasion
-- **Symptom**: A single client bypasses rate limits.
-- **Cause**: The `TRUSTED_PROXIES` environment variable is misconfigured or missing the edge proxy IP.
-- **Action**: Check your reverse proxy (e.g., Cloudflare, Vercel) and ensure its IPs are correctly listed in `TRUSTED_PROXIES` so `app/utils/security.py` can parse the `X-Forwarded-For` chain correctly from right-to-left.
+- **Symptom**: Single client bypasses rate limits
+- **Cause**: `TRUSTED_PROXIES` not configured or missing edge proxy IP
+- **Action**: Configure `TRUSTED_PROXIES` with your CDN/proxy IPs
 
 ### Webhook Delivery Failures (Circuit Breaker Open)
-- **Symptom**: Webhook logs show `status_code = 503` (Service unavailable (circuit breaker open)).
-- **Cause**: A downstream endpoint is timing out or returning 5xx consistently.
-- **Action**: Check the downstream health. The circuit breaker will automatically transition to "half-open" every 60 seconds and recover once the downstream starts returning 200s again.
+- **Symptom**: Webhook logs show `status_code = 503`
+- **Cause**: Downstream endpoint timing out or returning 5xx
+- **Action**: Check downstream health. Circuit breaker auto-recovers every 60s.
+
+### Payment Failures
+- **Symptom**: Users report payment initialization failures
+- **Cause**: Paystack API key misconfigured or service down
+- **Action**: 
+  1. Verify `PAYSTACK_SECRET_KEY` is set
+  2. Check Paystack status page
+  3. Review payment_transactions table for error details
+
+### Email Delivery Failures
+- **Symptom**: Form submission emails not received
+- **Cause**: Resend API key misconfigured or rate limited
+- **Action**:
+  1. Verify `RESEND_API_KEY` is set
+  2. Check Resend dashboard for delivery status
+  3. Review application logs for `ResendError` messages
+
+## Key Rotation
+
+### Encryption Key Rotation
+1. Set new `ENCRYPTION_KEY` in environment
+2. Restart application
+3. Re-encrypt existing webhook secrets by reading and updating each route
+
+### API Key Rotation
+Use `POST /auth/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again.
+
+## Backup and Recovery
+
+### Database
+- Supabase handles automated backups (check your plan)
+- Export critical tables regularly: `payment_transactions`, `routes`, `user_profiles`
+- Schema is in `schema.sql` for disaster recovery
+
+### Application State
+- All state is in Supabase; application is stateless
+- Caches are in-memory and rebuild on restart
+- No additional backup needed beyond database
+
+## Support
+
+For issues and questions:
+- GitHub Issues: https://github.com/darestack/saferoute-api/issues
+- Email: deeprince2020@gmail.com
