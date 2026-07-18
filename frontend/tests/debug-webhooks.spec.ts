@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('debug webhooks loading', async ({ page }) => {
+  await page.goto('/dashboard.html');
   await page.evaluate(() => localStorage.setItem('saferoute_token', 'test-token'));
   
   await page.route('/v1/me', route => route.fulfill({
@@ -21,7 +22,8 @@ test('debug webhooks loading', async ({ page }) => {
     body: JSON.stringify({ route_id: 'test-user', failures: [{ id: 'failure-1', route_id: 'route-1', route_name: 'Test Route', status_code: 500, error_message: 'Timeout', retry_count: 3, max_retries: 3, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }], next_cursor: null })
   }));
   
-  await page.goto('/dashboard.html');
+  // Reload to trigger init with token set
+  await page.reload();
   await page.waitForTimeout(2000);
   
   // Click webhooks
