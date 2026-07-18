@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
+from collections import OrderedDict
 
 import pytest
 
@@ -20,7 +21,10 @@ class TestGetExchangeRate:
     @pytest.mark.asyncio
     async def test_returns_cached_rate_when_fresh(self):
         """Should return cached rate if less than 1 hour old."""
-        with patch("app.services.exchange_rates._rate_cache", {"NGN": (1500.0, int(time.time()))}):
+        with patch(
+            "app.services.exchange_rates._rate_cache",
+            OrderedDict({"NGN": (1500.0, int(time.time()))}),
+        ):
             rate = await get_exchange_rate("NGN")
             assert rate == 1500.0
 
@@ -30,15 +34,18 @@ class TestGetExchangeRate:
         stale_ts = int(time.time()) - 7200  # 2 hours ago
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "rates": {"NGN": 1600.0, "EUR": 0.92}
-        }
+        mock_response.json.return_value = {"rates": {"NGN": 1600.0, "EUR": 0.92}}
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", {"NGN": (1500.0, stale_ts)}),
-            patch("app.services.exchange_rates.get_http_client", return_value=mock_client),
+            patch(
+                "app.services.exchange_rates._rate_cache",
+                OrderedDict({"NGN": (1500.0, stale_ts)}),
+            ),
+            patch(
+                "app.services.exchange_rates.get_http_client", return_value=mock_client
+            ),
         ):
             rate = await get_exchange_rate("NGN")
             assert rate == 1600.0
@@ -49,8 +56,11 @@ class TestGetExchangeRate:
         mock_client = AsyncMock()
         mock_client.get.side_effect = Exception("API down")
 
-        with patch("app.services.exchange_rates.get_http_client", return_value=mock_client):
+        with patch(
+            "app.services.exchange_rates.get_http_client", return_value=mock_client
+        ):
             from fastapi import HTTPException
+
             with pytest.raises(HTTPException) as exc:
                 await get_exchange_rate("NGN")
             assert exc.value.status_code == 502
@@ -66,10 +76,13 @@ class TestGetExchangeRate:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", {}),
-            patch("app.services.exchange_rates.get_http_client", return_value=mock_client),
+            patch("app.services.exchange_rates._rate_cache", OrderedDict({})),
+            patch(
+                "app.services.exchange_rates.get_http_client", return_value=mock_client
+            ),
         ):
             from fastapi import HTTPException
+
             with pytest.raises(HTTPException) as exc:
                 await get_exchange_rate("XYZ")
             assert exc.value.status_code == 400
@@ -83,10 +96,13 @@ class TestGetExchangeRate:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", {}),
-            patch("app.services.exchange_rates.get_http_client", return_value=mock_client),
+            patch("app.services.exchange_rates._rate_cache", OrderedDict({})),
+            patch(
+                "app.services.exchange_rates.get_http_client", return_value=mock_client
+            ),
         ):
             from fastapi import HTTPException
+
             with pytest.raises(HTTPException) as exc:
                 await get_exchange_rate("NGN")
             assert exc.value.status_code == 502
@@ -98,7 +114,9 @@ class TestConvertUsdToLocal:
     @pytest.mark.asyncio
     async def test_converts_usd_to_local_currency(self):
         """Should convert USD to target currency."""
-        with patch("app.services.exchange_rates.get_exchange_rate", return_value=1500.0):
+        with patch(
+            "app.services.exchange_rates.get_exchange_rate", return_value=1500.0
+        ):
             result = await convert_usd_to_local(10.0, "NGN")
             assert result == 15000.0
 
@@ -132,3 +150,37 @@ class TestFormatPrice:
         """Should handle case-insensitive currency codes."""
         assert format_price(5.0, "usd") == "$5.00"
         assert format_price(5.0, "NgN") == "₦5.00"
+
+
+class TestRateCacheBounds:
+    """The in-memory rate cache must stay bounded (LRU eviction)."""
+
+    @pytest.mark.asyncio
+    async def test_evicts_oldest_when_over_limit(self):
+        from collections import OrderedDict
+
+        from app.services import exchange_rates
+
+        # Build a cache one over the limit using only the common set so
+        # the fetch path does not require a real HTTP call.
+        cache = OrderedDict()
+        for i in range(exchange_rates._RATE_CACHE_MAX_ENTRIES + 1):
+            cache[f"X{i:02d}"] = (1.0, int(time.time()))
+        with patch("app.services.exchange_rates._rate_cache", cache):
+            # Trigger a write via a (mocked) fetch for a new currency.
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "rates": {f"X{exchange_rates._RATE_CACHE_MAX_ENTRIES + 1:02d}": 2.0}
+            }
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            with patch(
+                "app.services.exchange_rates.get_http_client",
+                return_value=mock_client,
+            ):
+                await get_exchange_rate(
+                    f"X{exchange_rates._RATE_CACHE_MAX_ENTRIES + 1:02d}"
+                )
+            # Cache must never exceed the configured ceiling.
+            assert len(cache) <= exchange_rates._RATE_CACHE_MAX_ENTRIES

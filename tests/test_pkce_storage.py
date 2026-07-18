@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,7 +18,9 @@ class TestStorePkceVerifier:
         mock_admin = MagicMock()
         mock_result = MagicMock()
         mock_result.data = [{"id": 1}]
-        mock_admin.table.return_value.insert.return_value.execute.return_value = mock_result
+        mock_admin.table.return_value.insert.return_value.execute.return_value = (
+            mock_result
+        )
 
         with patch("app.database.execute_query", return_value=mock_result):
             await store_pkce_verifier(mock_admin, "challenge", "verifier")

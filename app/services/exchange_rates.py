@@ -4,8 +4,10 @@ Uses official exchange rate sources with caching to minimize API calls.
 """
 
 from __future__ import annotations
+import asyncio
 import logging
 import time
+from collections import OrderedDict
 
 from fastapi import HTTPException, status
 from app.database import get_http_client
@@ -18,9 +20,11 @@ _EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
 # Cache TTL: 1 hour (exchange rates don't change minute-to-minute)
 _CACHE_TTL_SECONDS = 3600
 
-# In-memory cache for rates
-_rate_cache: dict[str, tuple[float, int]] = {}
-# Structure: {currency_code: (rate, timestamp_epoch)}
+# Bound the in-memory rate cache so it cannot grow without limit as new
+# currency codes are requested. Oldest entries are evicted first (LRU).
+_RATE_CACHE_MAX_ENTRIES = 256
+_rate_cache: "OrderedDict[str, tuple[float, int]]" = OrderedDict()
+_rate_cache_lock = asyncio.Lock()
 
 
 async def get_exchange_rate(to_currency: str) -> float:
@@ -39,12 +43,14 @@ async def get_exchange_rate(to_currency: str) -> float:
     """
     to_currency = to_currency.upper()
 
-    # Return cached rate if fresh
-    cached = _rate_cache.get(to_currency)
-    if cached:
-        rate, ts = cached
-        if time.time() - ts < _CACHE_TTL_SECONDS:
-            return rate
+    # Return cached rate if fresh (LRU promotion under lock).
+    async with _rate_cache_lock:
+        cached = _rate_cache.get(to_currency)
+        if cached:
+            _rate_cache.move_to_end(to_currency)
+            rate, ts = cached
+            if time.time() - ts < _CACHE_TTL_SECONDS:
+                return rate
 
     # Fetch fresh rates
     try:
@@ -66,12 +72,14 @@ async def get_exchange_rate(to_currency: str) -> float:
             )
 
         rate = float(rates[to_currency])
-        _rate_cache[to_currency] = (rate, int(time.time()))
-
-        # Cache a few common currencies while we're here
-        for currency in ["EUR", "GBP", "ZAR", "KES", "GHS", "CAD", "AUD"]:
-            if currency in rates:
-                _rate_cache[currency] = (float(rates[currency]), int(time.time()))
+        # Cache the requested currency plus a few common ones while we're here.
+        async with _rate_cache_lock:
+            _rate_cache[to_currency] = (rate, int(time.time()))
+            for currency in ["EUR", "GBP", "ZAR", "KES", "GHS", "CAD", "AUD"]:
+                if currency in rates:
+                    _rate_cache[currency] = (float(rates[currency]), int(time.time()))
+            while len(_rate_cache) > _RATE_CACHE_MAX_ENTRIES:
+                _rate_cache.popitem(last=False)
 
         return rate
 

@@ -56,6 +56,7 @@ from app.models import (
     WebhookFailuresResponse,
 )
 from app.utils.routes import get_owned_route_or_404, route_to_response
+from app.utils.ip_allowlist import require_ip_allowlist
 from app.utils.security import (
     safe_error_detail,
     generate_slug,
@@ -485,7 +486,9 @@ async def paystack_webhook(request: Request):
 
 @router.post("/webhooks/paystack/retry")
 async def retry_failed_webhooks(
+    request: Request,
     x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
+    _ip_check: None = Depends(require_ip_allowlist),
 ):
     """Retry failed payment webhooks.
 
@@ -544,12 +547,14 @@ async def list_payment_history(
 
 @router.post("/admin/credits/adjust")
 async def admin_adjust_credits(
+    request: Request,
     user_id: str = Query(..., description="User ID to adjust credits for"),
     amount: int = Query(
         ..., description="Amount to add (positive) or subtract (negative)"
     ),
     reason: str = Query("Manual adjustment by admin"),
     x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
+    _ip_check: None = Depends(require_ip_allowlist),
 ):
     """Manually adjust a user's credit balance.
 

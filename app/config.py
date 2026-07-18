@@ -82,8 +82,6 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""
     APP_VERSION: str = "0.7.0"
     OTEL_ENABLED: bool = False
-    RECAPTCHA_SECRET_KEY: str = ""
-    RECAPTCHA_VERIFY_URL: str = "https://www.google.com/recaptcha/api/siteverify"
     ADMIN_ALLOWED_IPS: str = ""
 
     @property

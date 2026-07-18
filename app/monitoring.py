@@ -65,8 +65,16 @@ def init_opentelemetry() -> None:
 
     try:
         provider = TracerProvider()
-        processor = BatchSpanProcessor(ConsoleSpanExporter())
-        provider.add_span_processor(processor)
+        # A ConsoleSpanExporter prints spans to stdout, which is useful
+        # for local debugging but is noisy, useless, and a throughput
+        # liability in production. Only attach it outside production; in
+        # production OTel stays initialized (so downstream code can create
+        # spans) but does not export anywhere unless a real exporter is
+        # wired in. This keeps the zero-dollar constraint (no paid
+        # collector required) while avoiding console spam in prod.
+        if not settings.is_production:
+            processor = BatchSpanProcessor(ConsoleSpanExporter())
+            provider.add_span_processor(processor)
         trace.set_tracer_provider(provider)
         logger.info("OpenTelemetry tracing initialized")
     except Exception as exc:

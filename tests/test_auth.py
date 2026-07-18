@@ -51,10 +51,7 @@ class TestUserCache:
             # Mock user_profiles query chain
             mock_profile_result = MagicMock()
             mock_profile_result.data = [{"credits": 100, "tier": "free"}]
-            mock_query = (
-                mock_admin.table.return_value.select.return_value
-                .eq.return_value.limit.return_value
-            )
+            mock_query = mock_admin.table.return_value.select.return_value.eq.return_value.limit.return_value
             mock_query.execute = MagicMock(return_value=mock_profile_result)
 
             user = asyncio.run(_fetch_and_cache_user("user-123"))
@@ -357,9 +354,7 @@ class TestRouteFailuresPagination:
             s = mock_admin.table.return_value.select.return_value
             e1 = s.eq.return_value
             # Two order() calls (created_at, id) before limit().
-            execute_mock = (
-                e1.order.return_value.order.return_value.limit.return_value.execute.return_value
-            )
+            execute_mock = e1.order.return_value.order.return_value.limit.return_value.execute.return_value
             execute_mock.data = []
 
             user = User(id="u1", email="e@e.com", created_at=None)
@@ -482,12 +477,10 @@ class TestManualRetryEndpoint:
         mock_user = User(id="u1", email="e@e.com", created_at=None)
         mock_admin = MagicMock()
         (
-            mock_admin.table.return_value.select.return_value
-            .eq.return_value.eq.return_value.execute.return_value.data
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
         ) = [{"id": 1, "retry_status": "exhausted"}]
         (
-            mock_admin.table.return_value.update.return_value
-            .eq.return_value.execute.return_value.data
+            mock_admin.table.return_value.update.return_value.eq.return_value.execute.return_value.data
         ) = [{"id": 1}]
 
         with (
@@ -513,8 +506,7 @@ class TestManualRetryEndpoint:
         mock_user = User(id="u1", email="e@e.com", created_at=None)
         mock_admin = MagicMock()
         (
-            mock_admin.table.return_value.select.return_value
-            .eq.return_value.eq.return_value.execute.return_value.data
+            mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
         ) = [{"id": "log-1", "retry_status": "pending"}]
 
         with (
@@ -572,8 +564,7 @@ class TestReplayWebhookLog:
             patch("app.routes.auth.get_owned_route_or_404"),
         ):
             (
-                mock_admin.table.return_value.select.return_value
-                .eq.return_value.eq.return_value.execute.return_value.data
+                mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
             ) = [mock_log]
             mock_repo.find_by_id = AsyncMock(return_value=mock_route)
 
@@ -601,10 +592,7 @@ class TestReplayWebhookLog:
             patch("app.routes.auth.admin") as mock_admin,
             patch("app.routes.auth.get_owned_route_or_404"),
         ):
-            execute_mock = (
-                mock_admin.table.return_value.select.return_value
-                .eq.return_value.eq.return_value.execute.return_value
-            )
+            execute_mock = mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value
             execute_mock.data = []
 
             with pytest.raises(HTTPException) as exc:
@@ -641,8 +629,7 @@ class TestReplayWebhookLog:
             patch("app.routes.auth.get_owned_route_or_404"),
         ):
             (
-                mock_admin.table.return_value.select.return_value
-                .eq.return_value.eq.return_value.execute.return_value.data
+                mock_admin.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data
             ) = [mock_log]
             mock_repo.find_by_id = AsyncMock(return_value=mock_route)
 
