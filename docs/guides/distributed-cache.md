@@ -137,11 +137,12 @@ Returns detailed metrics per cache:
 
 ### Applying the Migration
 
-The distributed cache requires migration 013:
+The distributed cache requires the `cache_entries` table and RPC functions,
+which are included in `schema.sql`:
 
 ```bash
-# Option 1: Using the migration runner
-.venv/bin/python migrate.py
+# Option 1: Using Supabase CLI
+supabase migration up
 
 # Option 2: Apply via Supabase SQL Editor
 # Copy contents of schema.sql

@@ -64,6 +64,54 @@ pytest tests/ -v --cov=app --cov-report=term-missing
 
 ---
 
+## Frontend Development
+
+The frontend dashboard lives in `frontend/` and is built with TypeScript, Vite, and Playwright.
+
+### Prerequisites
+
+- Node.js 20+
+- npm
+
+### Install and Run
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+The dev server runs at `http://localhost:5173` by default.
+
+### Build
+
+```bash
+cd frontend
+npm run build
+```
+
+### Tests
+
+```bash
+# Unit tests (Vitest)
+cd frontend && npm run test:unit
+
+# E2E tests (Playwright)
+cd frontend && npm run test:e2e
+```
+
+### Lint
+
+```bash
+cd frontend && npm run lint
+```
+
+### Deployment
+
+The frontend is automatically deployed to GitHub Pages via `.github/workflows/frontend.yml` on push to `main`. Ensure GitHub Pages is enabled in your repository settings.
+
+---
+
 ## Code Quality
 
 Run these checks **before** submitting a pull request:
@@ -76,7 +124,7 @@ ruff check app/ tests/
 ruff format --check app/ tests/
 
 # Type check
-mypy app/
+mypy app/ --ignore-missing-imports
 ```
 
 ### Style Rules

@@ -21,7 +21,7 @@ git clone https://github.com/darestack/saferoute-api.git
 cd saferoute-api
 cp .env.example .env
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
@@ -54,28 +54,59 @@ SafeRoute gives you a backend without the backend:
 ## Project layout
 
 ```
+├── api/
+│   └── index.py              # Mangum ASGI adapter for Vercel
 ├── app/
-│   ├── main.py              # FastAPI app, middleware, routes
-│   ├── config.py            # Pydantic settings
-│   ├── database.py          # Supabase clients
-│   ├── crypto.py            # Webhook secret encryption
-│   ├── models.py            # Request/response schemas
-│   ├── repositories/        # Data access layer
-│   ├── routes/              # HTTP route handlers
-│   │   ├── auth.py          # JWT auth, route CRUD, payments, admin
-│   │   ├── oauth.py         # Google/GitHub OAuth flows
-│   │   └── proxy.py         # Webhook forwarding engine
-│   ├── services/            # Business logic layer
-│   │   └── payments.py      # Paystack integration
-│   └── utils/               # Shared helpers
-├── frontend/                # Static dashboard (GitHub Pages)
-│   ├── dashboard.html       # Authenticated dashboard
-│   ├── login.html           # OAuth login
-│   ├── index.html           # Marketing homepage
-│   └── assets/              # CSS, JS, images
+│   ├── main.py               # FastAPI app, middleware, routes
+│   ├── config.py             # Pydantic settings
+│   ├── database.py           # Supabase clients
+│   ├── crypto.py             # Webhook secret encryption
+│   ├── logging_config.py     # Structured JSON logging
+│   ├── models.py             # Request/response schemas
+│   ├── monitoring.py         # Sentry / OpenTelemetry initialization
+│   ├── repositories/         # Data access layer
+│   ├── routes/               # HTTP route handlers
+│   │   ├── auth.py           # JWT auth, route CRUD, payments, admin
+│   │   ├── oauth.py          # Google/GitHub OAuth flows
+│   │   └── proxy.py          # Webhook forwarding engine
+│   ├── services/             # Business logic layer
+│   │   ├── cache.py          # Distributed cache (L1 + L2)
+│   │   ├── circuit_breaker.py # Outbound circuit breaker
+│   │   ├── exchange_rates.py # FX rate fetching
+│   │   ├── payments.py       # Paystack integration
+│   │   ├── retention.py      # Database cleanup jobs
+│   │   ├── retry_processor.py # Failed webhook retry logic
+│   │   └── route_cache.py    # Route config caching
+│   └── utils/                # Shared helpers
+│       ├── captcha.py        # Cloudflare Turnstile verification
+│       ├── disposable_domains.json # Embedded fallback list
+│       ├── email.py          # Resend email delivery
+│       ├── ip_allowlist.py   # Admin IP allowlist
+│       ├── pkce.py           # PKCE code verifier storage
+│       ├── retry.py          # Retry scheduling utilities
+│       ├── routes.py         # Route helper functions
+│       └── security.py       # IP extraction, URL validation
+├── frontend/                 # Static dashboard (GitHub Pages)
+│   ├── src/                  # TypeScript source
+│   │   ├── main.ts           # Homepage entry
+│   │   ├── dashboard.ts      # Dashboard SPA entry
+│   │   ├── login.ts          # Login page logic
+│   │   ├── callback.ts       # OAuth callback handler
+│   │   ├── components/       # Dashboard UI components
+│   │   ├── lib/              # API and auth utilities
+│   │   ├── types/            # TypeScript interfaces
+│   │   └── global.css        # Custom animations
+│   ├── auth/
+│   │   └── callback.html     # OAuth callback handler
+│   ├── dashboard.html        # Authenticated dashboard
+│   ├── login.html            # OAuth login
+│   ├── index.html            # Marketing homepage
+│   └── assets/               # CSS, JS, images
+├── tests/                    # Backend test suite
+├── load-tests/               # k6 load testing scripts
 ├── requirements.txt
-├── schema.sql               # Supabase tables + RLS policies
-└── tests/                   # Test suite
+├── schema.sql                # Supabase tables + RLS policies
+└── docs/                     # Documentation
 ```
 
 ## What's included

@@ -200,9 +200,9 @@ frontend/
 - `src/components/` — Modular dashboard components (shell, charts, tables)
 - `src/types/` — TypeScript interfaces and type declarations
 - `src/global.css` — Custom animations and utilities
-- `docs/api.md` — API reference covering all endpoints, Spam Shield, Turnstile, error codes, credit-based rate limits
+- `docs/reference/api.md` — API reference covering all endpoints, Spam Shield, Turnstile, error codes, credit-based rate limits
 - `.github/workflows/frontend.yml` — GitHub Pages deployment workflow with Vite build
-- Playwright E2E tests: 15/15 passing
+- Playwright E2E tests implemented and passing
 
 ### Remaining
 1. **Logs/stats population**: Fetch real webhook logs and route stats from API

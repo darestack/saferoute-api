@@ -1,17 +1,20 @@
 # SafeRoute API Architecture
 
 ## Overview
+
 SafeRoute API is a high-performance, asynchronous webhook forwarding engine built on FastAPI and Supabase. It provides a secure ingress layer for external webhooks, enforcing rate limits, verifying HMAC signatures, applying payload transformations, and ensuring idempotent delivery to downstream services.
 
 ## Architecture Patterns
+
 - **Edge Proxy Model**: Acts as a reverse proxy for incoming webhooks.
 - **Asynchronous I/O**: Built entirely on `asyncio` and `httpx` to handle high concurrency without blocking.
 - **Stateless Application Layer**: Web workers (Uvicorn/FastAPI) are fully stateless. All durable state, including rate limits, idempotency caches, and retry queues, is offloaded to PostgreSQL (Supabase).
 - **Circuit Breaker**: Prevents cascading failures by halting outbound requests to dead downstream services.
 
 ## Data Flow (Webhook Delivery)
-1. **Ingress**: An external provider (e.g., Stripe, GitHub) POSTs a webhook to `/v1/route/{slug}`.
-2. **Security Checks**: 
+
+1. **Ingress**: An external provider (e.g., Stripe, GitHub) POSTs a webhook to `/v1/route/{slug}` or `/v1/r/{slug}`.
+2. **Security Checks**:
    - Extract real client IP from `X-Forwarded-For`.
    - Validate payload signature (`X-Hub-Signature-256`) against the route's decrypted secret.
 3. **Idempotency**: Check the `idempotency_cache` table via the `Idempotency-Key` header. Return cached response if a duplicate is found.
@@ -22,10 +25,21 @@ SafeRoute API is a high-performance, asynchronous webhook forwarding engine buil
 8. **Metrics**: Increment the route's delivery counters atomically.
 
 ## Security Boundaries
+
 - **SSRF Prevention**: `validate_destination_url_async` ensures destinations are valid HTTP/HTTPS URLs and do not point to internal IP ranges. DNS resolution is performed at route-creation time only (`resolve_dns=False` on the hot path) to avoid latency and TOCTOU issues. The write-time DNS check is the primary defense against DNS rebinding.
 - **Database Access**: The application uses the Supabase service-role key for internal queries, bypassing Row-Level Security (RLS) to act as a privileged daemon.
 - **Secrets Management**: Webhook secrets are stored symmetrically encrypted in the database.
 
+## Caching
+
+SafeRoute uses a two-tier distributed cache:
+
+- **L1 (In-Memory)**: Per-worker `OrderedDict` with TTL and FIFO eviction. Fast (~0.01ms) but not shared across workers.
+- **L2 (PostgreSQL)**: Shared `cache_entries` table with JSONB values and RPC functions (`cache_get`, `cache_set`, `cache_delete`, `cache_cleanup`). Consistent across workers but adds ~1–5ms latency.
+
+See [docs/guides/distributed-cache.md](../guides/distributed-cache.md) for full cache architecture details.
+
 ## Background Jobs
+
 - **/internal/process-retries**: A secured cron endpoint that polls `webhook_logs` for failed deliveries and re-attempts them up to 3 times with exponential backoff.
 - **/internal/cleanup**: A secured cron endpoint that prunes expired idempotency keys, old webhook logs, and rate limit buckets to bound database growth.

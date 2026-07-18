@@ -17,6 +17,7 @@ To migrate a route module to use the repository:
 1. Replace direct `admin.table(...).execute()` calls with repository methods
 2. Replace `get_owned_route_or_404()` with `route_repository.find_by_id()`
 3. Update tests to mock the repository instead of `admin`
+4. Update endpoint paths from `/auth/routes/` to `/v1/routes/` if applicable
 
 ## Benefits
 

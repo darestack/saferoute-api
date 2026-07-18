@@ -37,30 +37,59 @@
 ## 3. Configure environment variables
 
 ```env
+# Required
 SUPABASE_URL=https://<PROJECT_REF>.supabase.co
 SUPABASE_KEY=eyJhbGciOi...
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
-WEBHOOK_SECRET=dev-secret-change-in-production
+DATABASE_URL=postgresql://postgres:[PASSWORD]@db.<PROJECT_REF>.supabase.co:5432/postgres
 API_KEY_SALT=dev-salt-change-in-production
+
+# Secrets
+WEBHOOK_SECRET=dev-secret-change-in-production
 RETRY_ENDPOINT_SECRET=dev-retry-secret-change-in-production
 ENCRYPTION_KEY=dev-encryption-key-change-outside-development
+
+# App behavior
+ENVIRONMENT=development
 FRONTEND_URL=http://localhost:8000
 ALLOWED_HOSTS=localhost:8000
 TRUSTED_PROXIES=
-ENVIRONMENT=development
 RETENTION_DAYS=30
+
+# Outbound / network
 OUTBOUND_HEALTH_CHECK_URL=https://www.google.com/generate_204
 FORWARD_TIMEOUT_SECONDS=10.0
+
+# Rate limiting
 RATE_LIMIT_WINDOW_SECONDS=60
 DEFAULT_RATE_LIMIT=30
+
+# Retry / cleanup
 MAX_RETRIES=3
 RETRY_BATCH_SIZE=100
 RETRY_CLAIM_STALE_SECONDS=300
 MAX_LOG_BODY_BYTES=10000
+
+# Disposable email detection
+DISPOSABLE_EMAIL_LIST_URL=https://raw.githubusercontent.com/ivolo/disposable-email-domains/master/index.json
+
+# Email notifications (Resend)
 RESEND_API_KEY=
 EMAIL_FROM=noreply@saferoute.dev
 EMAIL_REPLY_TO=
+
+# Cloudflare Turnstile
 TURNSTILE_SECRET_KEY=
+
+# Payments (Paystack)
+PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+PAYSTACK_BASE_URL=https://api.paystack.co
+PAYSTACK_WEBHOOK_URL=https://saferoute-api.vercel.app/v1/webhooks/paystack
+
+# Monitoring
+SENTRY_DSN=
+APP_VERSION=0.7.0
+OTEL_ENABLED=false
 ```
 
 - `SUPABASE_URL` and `SUPABASE_KEY` from Project Settings → API
@@ -85,6 +114,15 @@ TURNSTILE_SECRET_KEY=
 - `EMAIL_REPLY_TO` — optional reply-to address for notification emails.
 - `TURNSTILE_SECRET_KEY` — optional Cloudflare Turnstile secret key. Required per-route when Turnstile is enabled.
 - `DISPOSABLE_EMAIL_LIST_URL` — optional URL to a JSON array of disposable email domains. Defaults to the maintained list at `https://raw.githubusercontent.com/ivolo/disposable-email-domains/master/index.json`. Set to empty string to disable external fetching and use the embedded fallback list.
+- `DATABASE_URL` — PostgreSQL connection string for direct database access (required for CI tasks and direct DB operations). Format: `postgresql://user:password@host:port/database`.
+- `PAYSTACK_SECRET_KEY` — Paystack API secret key for payment processing. Start with `sk_test_` for test mode or `sk_live_` for production.
+- `PAYSTACK_BASE_URL` — Paystack API base URL. Defaults to `https://api.paystack.co`.
+- `PAYSTACK_WEBHOOK_URL` — Public URL where Paystack sends webhook events. Must be reachable from the internet.
+- `ADMIN_SECRET_KEY` — Shared secret for admin endpoints (`/v1/admin/credits/adjust`, `/v1/webhooks/paystack/retry`). Required when using admin features.
+- `ADMIN_ALLOWED_IPS` — Comma-separated IP allowlist for admin endpoints. Leave empty to allow all IPs (not recommended for production).
+- `SENTRY_DSN` — Sentry DSN for error tracking. If empty, error tracking is disabled.
+- `APP_VERSION` — Application version string for health checks and monitoring. Defaults to `0.7.0`.
+- `OTEL_ENABLED` — Enable OpenTelemetry tracing. Set to `true` to enable. Defaults to `false`.
 
 ## 4. Run locally
 
@@ -111,11 +149,11 @@ Open the `auth_url` in a browser, sign in, and you'll get a JWT token back.
 2. Restart the application
 3. Re-encrypt existing webhook secrets by reading each route and updating the `webhook_secret` field with the newly encrypted value
 
-**Note:** The application caches the Fernet instance. After rotation, call `clear_fernet_cache()` or restart to use the new key.
+**Note:** The application caches the Fernet instance in memory. After rotation, restart the process to use the new key.
 
 ### API Key
 
-Use `POST /auth/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again.
+Use `POST /v1/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again.
 
 ## Deploying
 

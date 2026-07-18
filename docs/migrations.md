@@ -2,7 +2,8 @@
 
 SafeRoute API uses `schema.sql` as the canonical source of truth for the full
 database schema. The complete schema is in `schema.sql`.
-an existing database.
+
+For existing databases, apply incremental migrations in lexicographic order.
 
 ## Source of truth
 
@@ -35,14 +36,13 @@ supabase migration new <description>
 supabase migration up
 ```
 
+### Supabase SQL Editor
+
+For fresh deployments or quick schema updates, paste the contents of `schema.sql` into the Supabase SQL Editor and run it.
+
 ### Custom runner (CI/CD)
 
-```bash
-python migrate.py
-```
-
-Requires `DATABASE_URL` in the environment. The target database must have the
-base schema from `schema.sql` already applied.
+If you have a custom migration runner in your CI/CD pipeline, apply migrations using `DATABASE_URL` in the environment. The target database must have the base schema from `schema.sql` already applied.
 
 ## Local Postgres (optional)
 
@@ -50,5 +50,4 @@ base schema from `schema.sql` already applied.
 docker compose up -d postgres
 ```
 
-This starts a plain Postgres 16 container. It does not apply the Supabase
-schema automatically; use the Supabase CLI for a complete local stack.
+This starts a plain Postgres 16 container. It does not apply the Supabase schema automatically; use the Supabase CLI for a complete local stack.

@@ -36,10 +36,14 @@ Client -> FastAPI (Vercel/Lambda) -> Supabase (DB + Auth)
 - `RESEND_API_KEY`: Resend API key for email notifications.
 - `PAYSTACK_SECRET_KEY`: Paystack secret key for payment processing.
 - `PAYSTACK_BASE_URL`: Paystack API base URL (default `https://api.paystack.co`).
+- `PAYSTACK_WEBHOOK_URL`: Public URL where Paystack sends webhook events.
 - `FRONTEND_URL`: Frontend URL for payment callbacks (default `http://localhost:8000`).
 - `SENTRY_DSN`: Sentry DSN for error tracking (optional).
 - `OTEL_ENABLED`: Enable OpenTelemetry tracing (default `false`).
 - `APP_VERSION`: Application version for Sentry release tracking.
+- `ADMIN_SECRET_KEY`: Shared secret for admin endpoints.
+- `ADMIN_ALLOWED_IPS`: Comma-separated IP allowlist for admin endpoints.
+- `DISPOSABLE_EMAIL_LIST_URL`: URL to disposable email domain list (defaults to embedded fallback if empty).
 
 ## Deployment
 
@@ -80,13 +84,17 @@ Expected response:
 {
   "status": "healthy",
   "database": "connected",
+  "cache": "connected",
   "service": "SafeRoute API"
 }
 ```
 
+> **Note:** The `/health` endpoint checks database and cache connectivity only. Detailed cache metrics (hit/miss rates, L1/L2 breakdown) are available at `/internal/cache/stats`.
+
 ### Detailed Health with Cache Metrics
 ```bash
-curl https://your-api.com/health
+curl -H "X-Retry-Secret: $RETRY_ENDPOINT_SECRET" \
+  https://your-api.com/internal/cache/stats
 ```
 The `/health` endpoint checks database **and** distributed-cache (L2
 Postgres) connectivity. If either is down it returns `503` so an orchestrator
@@ -139,7 +147,7 @@ to keep the project at $0.
 
 ### Key Metrics to Monitor
 - `/health` endpoint availability
-- Webhook delivery success rate (check `/auth/routes/{id}/logs`)
+- Webhook delivery success rate (check `/v1/routes/{route_id}/logs`)
 - Circuit breaker state (open = downstream issues)
 - Cache hit rates (should be > 80%)
 - Payment success rate
@@ -202,7 +210,8 @@ Prefer a rolling restart so in-flight webhook deliveries are not dropped.
    cutover window.
 
 ### API Key (`api_key_hash` per route)
-Use `POST /auth/routes/{route_id}/rotate-key`. The new key is
+
+Use `POST /v1/routes/{route_id}/rotate-key`. The new key is
 returned **once** and cannot be retrieved again — store it immediately.
 The previous key is invalidated atomically and the route's cached proxy
 row is evicted so the new key takes effect on the next request.
@@ -218,7 +227,7 @@ row is evicted so the new key takes effect on the next request.
 Rotate in the provider console, then update the corresponding env var
 (`PAYSTACK_SECRET_KEY`, `RESEND_API_KEY`, `TURNSTILE_SECRET_KEY`)
 and restart. Missing values degrade gracefully (see
-[docs/reference/zero-dollar-constraint.md](reference/zero-dollar-constraint.md)).
+[docs/reference/zero-dollar-constraint.md](../reference/zero-dollar-constraint.md).
 
 ## Scaling & Horizontal Deployment
 

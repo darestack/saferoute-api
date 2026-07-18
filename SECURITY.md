@@ -53,8 +53,8 @@ To rotate the `ENCRYPTION_KEY`:
 2. Restart the application
 3. Re-encrypt existing `safe_plain:` and `v1:` webhook secrets by reading and updating each route
 
-**Note:** The application caches the Fernet instance in memory. After rotation, call `clear_fernet_cache()` or restart the process to use the new key.
+**Note:** The application caches the Fernet instance in memory. After rotation, restart the process to use the new key.
 
 ### API Key Rotation
 
-Use `POST /auth/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again. The old key is invalidated immediately.
+Use `POST /v1/routes/{route_id}/rotate-key` to rotate a route's API key. The new key is returned once and cannot be retrieved again. The old key is invalidated immediately.

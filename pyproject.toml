@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "saferoute-api"
-version = "0.1.0"
+version = "0.7.0"
 description = "Form backend for static sites with validation, spam filtering, and webhook delivery"
 readme = "README.md"
 license = {text = "MIT"}
