@@ -88,6 +88,75 @@ class TestInitOpentelemetry:
             from app.monitoring import init_opentelemetry
             init_opentelemetry()
 
+    def test_skips_when_disabled(self):
+        """Should not initialize when OTEL_ENABLED is False."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = False
+
+        with (
+            patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.settings", mock_settings),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()
+
+    @pytest.mark.skipif(
+        not all(
+            __import__("importlib.util").util.find_spec(m)
+            for m in ("opentelemetry", "opentelemetry.sdk.trace")
+        ),
+        reason="opentelemetry not installed",
+    )
+    def test_initializes_when_enabled(self):
+        """Should initialize OpenTelemetry when enabled."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = True
+
+        mock_provider = MagicMock()
+        mock_processor = MagicMock()
+
+        with (
+            patch("app.monitoring.settings", mock_settings),
+            patch("opentelemetry.sdk.trace.TracerProvider", return_value=mock_provider),
+            patch("opentelemetry.sdk.trace.export.BatchSpanProcessor", return_value=mock_processor),
+            patch("opentelemetry.sdk.trace.export.ConsoleSpanExporter"),
+            patch("opentelemetry.trace.set_tracer_provider"),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()
+            mock_provider.add_span_processor.assert_called_once_with(mock_processor)
+
+    @pytest.mark.skipif(
+        not all(
+            __import__("importlib.util").util.find_spec(m)
+            for m in ("opentelemetry", "opentelemetry.sdk.trace")
+        ),
+        reason="opentelemetry not installed",
+    )
+    def test_handles_init_error_gracefully(self):
+        """Should not crash if OpenTelemetry init raises."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = True
+
+        with (
+            patch("app.monitoring.settings", mock_settings),
+            patch("opentelemetry.sdk.trace.TracerProvider", side_effect=Exception("Init failed")),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()  # Should not raise
+
+    def test_skips_when_disabled(self):
+        """Should not initialize when OTEL_ENABLED is False."""
+        mock_settings = MagicMock()
+        mock_settings.OTEL_ENABLED = False
+
+        with (
+            patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.settings", mock_settings),
+        ):
+            from app.monitoring import init_opentelemetry
+            init_opentelemetry()
+
     def test_initializes_when_enabled(self):
         """Should initialize OpenTelemetry when enabled."""
         mock_settings = MagicMock()
@@ -98,11 +167,11 @@ class TestInitOpentelemetry:
 
         with (
             patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.TracerProvider", return_value=mock_provider),
+            patch("app.monitoring.BatchSpanProcessor", return_value=mock_processor),
+            patch("app.monitoring.ConsoleSpanExporter"),
+            patch("app.monitoring.trace.set_tracer_provider"),
             patch("app.monitoring.settings", mock_settings),
-            patch("opentelemetry.sdk.trace.TracerProvider", return_value=mock_provider),
-            patch("opentelemetry.sdk.trace.export.BatchSpanProcessor", return_value=mock_processor),
-            patch("opentelemetry.sdk.trace.export.ConsoleSpanExporter"),
-            patch("opentelemetry.trace.set_tracer_provider"),
         ):
             from app.monitoring import init_opentelemetry
             init_opentelemetry()
@@ -115,8 +184,8 @@ class TestInitOpentelemetry:
 
         with (
             patch("app.monitoring._otel_available", True),
+            patch("app.monitoring.TracerProvider", side_effect=Exception("Init failed")),
             patch("app.monitoring.settings", mock_settings),
-            patch("opentelemetry.sdk.trace.TracerProvider", side_effect=Exception("Init failed")),
         ):
             from app.monitoring import init_opentelemetry
             init_opentelemetry()  # Should not raise
