@@ -836,6 +836,7 @@ async def _check_spam_shield(
 
 
 @router.post("/v1/route/{slug}")
+@router.post("/v1/r/{slug}")
 async def proxy_webhook(
     slug: str,
     request: Request,

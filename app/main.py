@@ -13,7 +13,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 
-from typing import Callable, Awaitable, Any, MutableMapping, TypeAlias
+from typing import Callable, Awaitable, Any, MutableMapping, Optional, TypeAlias
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -350,15 +350,25 @@ rates_router = APIRouter(tags=["Rates"])
 
 @rates_router.get("/rates")
 async def get_rates(base: str = "USD", symbols: str = "NGN") -> dict[str, Any]:
-    """Get exchange rates from base currency to target currencies."""
+    """Get exchange rates from base currency to target currencies.
+
+    A per-symbol lookup failure is reported explicitly as ``None`` (with the
+    failing symbol recorded under ``errors``) rather than silently falling
+    back to ``1.0``. A wrong-but-plausible rate could misprice payments, so
+    callers must treat a ``None`` rate as "unavailable" and not substitute a
+    default.
+    """
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    rates = {}
+    rates: dict[str, Optional[float]] = {}
+    errors: list[str] = []
     for symbol in symbol_list:
         try:
             rates[symbol] = await get_exchange_rate(symbol)
-        except Exception:
-            rates[symbol] = 1.0
-    return {"base": base.upper(), "rates": rates}
+        except Exception as exc:
+            logger.warning("Exchange rate lookup failed for %s: %s", symbol, exc)
+            rates[symbol] = None
+            errors.append(symbol)
+    return {"base": base.upper(), "rates": rates, "errors": errors}
 
 
 app.include_router(rates_router)
@@ -407,6 +417,7 @@ async def root() -> JSONResponse:
                 "payments": "/v1/payments",
                 "webhooks": "/v1/webhooks/paystack",
             },
+            "note": "Public proxy URL is /v1/r/{slug} (alias of /v1/route/{slug}).",
         },
     )
 

@@ -184,3 +184,49 @@ class TestRateCacheBounds:
                 )
             # Cache must never exceed the configured ceiling.
             assert len(cache) <= exchange_rates._RATE_CACHE_MAX_ENTRIES
+
+
+class TestRatesEndpoint:
+    """Tests for the /rates HTTP endpoint error semantics."""
+
+    @pytest.mark.asyncio
+    async def test_returns_rate_and_no_errors_on_success(self):
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        with patch(
+            "app.main.get_exchange_rate",
+            AsyncMock(return_value=1500.0),
+        ):
+            client = TestClient(app)
+            resp = client.get("/rates?symbols=NGN")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["base"] == "USD"
+        assert body["rates"]["NGN"] == 1500.0
+        assert body["errors"] == []
+
+    @pytest.mark.asyncio
+    async def test_reports_failed_symbol_in_errors_not_default(self):
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        async def _side_effect(symbol: str) -> float:
+            if symbol == "NGN":
+                return 1500.0
+            raise RuntimeError("unavailable")
+
+        with patch(
+            "app.main.get_exchange_rate",
+            side_effect=_side_effect,
+        ):
+            client = TestClient(app)
+            resp = client.get("/rates?symbols=NGN,BAD")
+        assert resp.status_code == 200
+        body = resp.json()
+        # A failed lookup must be surfaced as None + recorded, never 1.0.
+        assert body["rates"]["NGN"] == 1500.0
+        assert body["rates"]["BAD"] is None
+        assert body["errors"] == ["BAD"]
