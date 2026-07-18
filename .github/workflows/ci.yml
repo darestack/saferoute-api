@@ -55,7 +55,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: [lint]
+    needs: [lint, typecheck]
     env:
       SUPABASE_URL: "https://placeholder.supabase.co"
       SUPABASE_KEY: "placeholder-anon-key"
@@ -82,6 +82,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the secret scan can inspect the whole tree, not
+          # just the last commit (shallow clones miss committed secrets).
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -92,18 +96,37 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Check for secrets in code
+      - name: Scan for likely committed secrets
         run: |
-          if git diff --cached --name-only | grep -E '\.(py|ts|js|json|yml|yaml|md)$' | xargs grep -l -i 'password\|secret\|key\|token' 2>/dev/null; then
-            echo "Potential secrets found in staged files"
+          # Free, dependency-free heuristic scan. Avoids the previous
+          # word-list grep ('password|secret|key|token') that matched
+          # ordinary identifiers (API_KEY_SALT, etc.) and only read staged
+          # files (empty in push events). Instead it flags high-signal
+          # secret shapes across the tracked tree.
+          matches="$(
+            grep -rInE \
+              -e 'sk_(live|test)_[0-9a-fA-F]{16,}' \
+              -e 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' \
+              -e '(password|secret|api[_-]?key|token)\s*[:=]\s*["'\''][A-Za-z0-9/+]{20,}={0,2}["'\'']' \
+              -e 'AKIA[0-9A-Z]{16}' \
+              --exclude-dir=.git --exclude-dir=.venv --exclude-dir=node_modules \
+              --exclude='*.lock' --exclude='disposable_domains.json' \
+              --exclude='.env' --exclude='.env.*' \
+              . 2>/dev/null | grep -vE 'test_|example|placeholder|changeme|dev-' || true
+          )"
+          if [ -n "$matches" ]; then
+            echo "Potential secrets detected:"
+            echo "$matches"
             exit 1
           fi
+          echo "No obvious secrets found."
 
       - name: Audit dependencies with pip-audit
         run: |
           pip install pip-audit
-          pip-audit --fix --ignore-vuln GHSA-xxx || true
-        continue-on-error: true
+          # Fail the build on known vulnerabilities. No '--fix' (do not mutate
+          # the lockfile in CI) and no placeholder '--ignore-vuln'.
+          pip-audit -r requirements.txt -r requirements-dev.txt --strict
 
   # ── Build ───────────────────────────────────
   build:
