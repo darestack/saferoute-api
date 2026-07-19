@@ -409,7 +409,7 @@ async def root(request: Request) -> Response:
     accept = request.headers.get("accept", "")
     if settings.ENVIRONMENT == "production" and "text/html" in accept:
         index_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "public", "index.html"
+            os.path.dirname(os.path.dirname(__file__)), "app", "public", "index.html"
         )
         if os.path.isfile(index_path):
             return HTMLResponse(
@@ -504,6 +504,6 @@ if settings.ENVIRONMENT != "production":
     if os.path.isdir(frontend_path):
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
-    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public")
+    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "app", "public")
     if os.path.isdir(public_path):
         app.mount("/", StaticFiles(directory=public_path, html=True), name="frontend")
