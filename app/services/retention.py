@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.database import admin, execute_query
@@ -59,10 +60,34 @@ async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
     pkce_verifiers_cleaned_count = await _safe_void_rpc("cleanup_pkce_verifiers")
     idempotency_cache_cleaned_count = await _safe_void_rpc("cleanup_idempotency_cache")
 
+    blocklist_updated = False
+    if settings.BLOCKLIST_URL:
+        try:
+            from app.routes.proxy import _update_blocklist_from_url
+            await _update_blocklist_from_url(settings.BLOCKLIST_URL)
+            blocklist_updated = True
+        except Exception:
+            logger.warning("Blocklist update during cleanup failed")
+
+    audit_logs_removed = 0
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        result = await execute_query(
+            admin.table("audit_logs")
+            .delete()
+            .lt("created_at", cutoff.isoformat())
+        )
+        if hasattr(result, "data") and isinstance(result.data, list):
+            audit_logs_removed = len(result.data)
+    except Exception:
+        logger.warning("Cleanup step audit_logs failed")
+
     return CleanupResponse(
         webhook_logs_removed=webhook_logs_removed,
         rate_limits_cleaned=rate_limits_cleaned_count,
         pkce_verifiers_cleaned=pkce_verifiers_cleaned_count,
         idempotency_cache_cleaned=idempotency_cache_cleaned_count,
+        audit_logs_removed=audit_logs_removed,
+        blocklist_updated=blocklist_updated,
         keep_days=keep_days,
     )

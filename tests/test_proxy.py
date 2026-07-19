@@ -455,9 +455,10 @@ class TestRateLimitHeaders:
             assert remaining == 30
 
     def test_429_includes_retry_after_header(self):
-        from app.routes.proxy import enforce_rate_limit
+        from app.routes.proxy import enforce_rate_limit, _rate_limit_violations
         from fastapi import HTTPException
 
+        _rate_limit_violations.clear()
         with patch("app.routes.proxy.admin") as mock_admin:
             mock_admin.rpc.return_value.execute.return_value.data = [
                 {"success": False, "new_count": 30}
@@ -465,12 +466,13 @@ class TestRateLimitHeaders:
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(enforce_rate_limit("route-1", "1.2.3.4", 30))
             assert exc_info.value.status_code == 429
-            assert exc_info.value.headers["Retry-After"] == "60"
+            assert exc_info.value.headers["Retry-After"] == "120"
 
     def test_rpc_failure_includes_retry_after_header(self):
-        from app.routes.proxy import enforce_rate_limit
+        from app.routes.proxy import enforce_rate_limit, _rate_limit_violations
         from fastapi import HTTPException
 
+        _rate_limit_violations.clear()
         with patch("app.routes.proxy.admin") as mock_admin:
             mock_admin.rpc.return_value.execute.return_value.data = []
             with pytest.raises(HTTPException) as exc_info:
@@ -1682,71 +1684,156 @@ class TestRouteCacheInvalidation:
 
 
 class TestCircuitBreaker:
-    """Tests for the outbound HTTP circuit breaker."""
+    """Tests for the PostgreSQL-backed outbound HTTP circuit breaker."""
 
     def test_opens_after_threshold_failures(self):
-        from app.routes.proxy import (
-            _is_circuit_breaker_open,
-            _record_circuit_breaker_failure,
+        from app.services.circuit_breaker import (
+            is_circuit_breaker_open as _is_circuit_breaker_open,
+            record_circuit_breaker_failure as _record_circuit_breaker_failure,
             _CIRCUIT_BREAKER_THRESHOLD,
         )
 
         url = "https://example.com/webhook"
-        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
-            asyncio.run(_record_circuit_breaker_failure(url))
+        failure_count = 0
 
-        assert asyncio.run(_is_circuit_breaker_open(url)) is True
+        def mock_execute(query):
+            nonlocal failure_count
+            result = MagicMock()
+            query_type = type(query).__name__
+            if "Select" in query_type:
+                if failure_count >= _CIRCUIT_BREAKER_THRESHOLD:
+                    result.data = [{
+                        "destination_url": url,
+                        "state": "open",
+                        "failure_count": failure_count,
+                        "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())),
+                    }]
+                else:
+                    result.data = []
+            elif "RPC" in query_type:
+                result.data = []
+            else:
+                failure_count += 1
+                result.data = [{"destination_url": url, "failure_count": failure_count}]
+            return result
+
+        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+            for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+                asyncio.run(_record_circuit_breaker_failure(url))
+
+            assert asyncio.run(_is_circuit_breaker_open(url)) is True
 
     def test_closes_after_success(self):
-        from app.routes.proxy import (
-            _is_circuit_breaker_open,
-            _record_circuit_breaker_failure,
-            _record_circuit_breaker_success,
+        from app.services.circuit_breaker import (
+            is_circuit_breaker_open as _is_circuit_breaker_open,
+            record_circuit_breaker_failure as _record_circuit_breaker_failure,
+            record_circuit_breaker_success as _record_circuit_breaker_success,
             _CIRCUIT_BREAKER_THRESHOLD,
         )
 
         url = "https://example.com/webhook"
-        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
-            asyncio.run(_record_circuit_breaker_failure(url))
+        failure_count = 0
 
-        asyncio.run(_record_circuit_breaker_success(url))
-        assert asyncio.run(_is_circuit_breaker_open(url)) is False
+        def mock_execute(query):
+            nonlocal failure_count
+            result = MagicMock()
+            query_type = type(query).__name__
+            if "Select" in query_type:
+                result.data = []
+            elif "RPC" in query_type:
+                result.data = []
+            elif "delete" in str(query).lower():
+                failure_count = 0
+                result.data = []
+            else:
+                failure_count += 1
+                result.data = [{"destination_url": url, "failure_count": failure_count}]
+            return result
+
+        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+            for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+                asyncio.run(_record_circuit_breaker_failure(url))
+
+            asyncio.run(_record_circuit_breaker_success(url))
+            assert asyncio.run(_is_circuit_breaker_open(url)) is False
 
     def test_clear_circuit_breaker_resets_state(self):
-        from app.routes.proxy import (
-            _is_circuit_breaker_open,
-            _record_circuit_breaker_failure,
+        from app.services.circuit_breaker import (
+            is_circuit_breaker_open as _is_circuit_breaker_open,
+            record_circuit_breaker_failure as _record_circuit_breaker_failure,
             clear_route_circuit_breaker,
             _CIRCUIT_BREAKER_THRESHOLD,
         )
 
         url = "https://example.com/webhook"
-        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
-            asyncio.run(_record_circuit_breaker_failure(url))
+        failure_count = 0
 
-        asyncio.run(clear_route_circuit_breaker(url))
-        assert asyncio.run(_is_circuit_breaker_open(url)) is False
+        def mock_execute(query):
+            nonlocal failure_count
+            result = MagicMock()
+            query_type = type(query).__name__
+            if "Select" in query_type:
+                result.data = []
+            elif "RPC" in query_type:
+                result.data = []
+            elif "delete" in str(query).lower():
+                failure_count = 0
+                result.data = []
+            else:
+                failure_count += 1
+                result.data = [{"destination_url": url, "failure_count": failure_count}]
+            return result
+
+        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+            for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+                asyncio.run(_record_circuit_breaker_failure(url))
+
+            asyncio.run(clear_route_circuit_breaker(url))
+            assert asyncio.run(_is_circuit_breaker_open(url)) is False
 
     def test_half_open_after_cooldown(self):
-        from app.routes.proxy import (
-            _is_circuit_breaker_open,
-            _record_circuit_breaker_failure,
+        from app.services.circuit_breaker import (
+            is_circuit_breaker_open as _is_circuit_breaker_open,
+            record_circuit_breaker_failure as _record_circuit_breaker_failure,
             _CIRCUIT_BREAKER_THRESHOLD,
             _CIRCUIT_BREAKER_COOLDOWN_SECONDS,
         )
 
         url = "https://example.com/webhook"
-        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
-            asyncio.run(_record_circuit_breaker_failure(url))
+        failure_count = 0
+        now_ts = time.time()
 
-        assert asyncio.run(_is_circuit_breaker_open(url)) is True
+        def mock_execute(query):
+            nonlocal failure_count
+            result = MagicMock()
+            query_type = type(query).__name__
+            if "Select" in query_type:
+                if failure_count >= _CIRCUIT_BREAKER_THRESHOLD:
+                    opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts))
+                    result.data = [{
+                        "destination_url": url,
+                        "state": "open",
+                        "failure_count": failure_count,
+                        "opened_at": opened_at,
+                    }]
+                else:
+                    result.data = []
+            elif "RPC" in query_type:
+                result.data = []
+            else:
+                failure_count += 1
+                result.data = [{"destination_url": url, "failure_count": failure_count}]
+            return result
 
-        # Simulate time passing beyond cooldown.
-        with patch(
-            "app.routes.proxy.time.monotonic",
-            return_value=time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1,
-        ):
-            assert asyncio.run(_is_circuit_breaker_open(url)) is False
+        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+            for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+                asyncio.run(_record_circuit_breaker_failure(url))
+
+            assert asyncio.run(_is_circuit_breaker_open(url)) is True
+
+            past_time = now_ts + _CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1
+            with patch("app.services.circuit_breaker.time.time", return_value=past_time):
+                assert asyncio.run(_is_circuit_breaker_open(url)) is False
 
 
 class TestRateLimitResetAlignment:

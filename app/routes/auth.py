@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import json
 import logging
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional, cast
@@ -22,7 +23,7 @@ from hmac import compare_digest
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.crypto import encrypt_webhook_secret
+from app.crypto import encrypt_webhook_secret, decrypt_webhook_secret
 from app.database import (
     admin,
     clear_api_key_cache_for_route,
@@ -38,6 +39,7 @@ from app.routes.proxy import (
     log_delivery,
 )
 from app.services.retry_processor import rebuild_retry_body
+from app.services.secret_rotation import record_secret_rotation  # noqa: E402
 from app.monitoring import add_breadcrumb  # noqa: E402
 from app.models import (
     PaymentInitializeRequest,
@@ -48,6 +50,7 @@ from app.models import (
     RouteResponse,
     RouteUpdate,
     RouteCreateResponse,
+    RouteSigningSecretResponse,
     RouteStatsResponse,
     RetryQueuedResponse,
     User,
@@ -57,10 +60,12 @@ from app.models import (
 )
 from app.utils.routes import get_owned_route_or_404, route_to_response
 from app.utils.ip_allowlist import require_ip_allowlist
+from app.utils.audit import log_audit_event  # noqa: E402
 from app.utils.security import (
     safe_error_detail,
     generate_slug,
     validate_destination_url,
+    get_client_ip,
 )
 
 logger = logging.getLogger(__name__)
@@ -463,6 +468,13 @@ async def paystack_webhook(request: Request):
     signature = request.headers.get("x-paystack-signature", "")
 
     if not verify_webhook_signature(body, signature):
+        await log_audit_event(
+            action="payment_webhook.auth_failed",
+            resource_type="payment_webhook",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            metadata={"reason": "invalid_signature"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid webhook signature",
@@ -480,6 +492,15 @@ async def paystack_webhook(request: Request):
     data = payload.get("data", {})
 
     await process_webhook(event, data)
+
+    await log_audit_event(
+        action="payment_webhook.processed",
+        resource_type="payment_webhook",
+        resource_id=data.get("reference"),
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        metadata={"event": event},
+    )
 
     return JSONResponse(content={"status": "ok"})
 
@@ -524,6 +545,14 @@ async def retry_failed_webhooks(
                 retried += 1
         except Exception:
             pass
+
+    await log_audit_event(
+        action="payment_webhooks.retried",
+        resource_type="payment_webhook",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        metadata={"retried_count": retried},
+    )
 
     return {"retried": retried}
 
@@ -603,6 +632,15 @@ async def admin_adjust_credits(
         admin.table("user_profiles").select("credits, tier").eq("id", user_id).limit(1)
     )
     new_credits = result.data[0]["credits"] if result.data else 0
+
+    await log_audit_event(
+        action="credits.adjusted",
+        resource_type="user",
+        resource_id=user_id,
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        metadata={"amount": amount, "new_balance": new_credits, "reason": reason},
+    )
 
     return {
         "user_id": user_id,
@@ -854,6 +892,7 @@ async def delete_route(
 @router.post("/routes/{route_id}/rotate-key", response_model=RouteCreateResponse)
 async def rotate_api_key(
     route_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user_from_jwt),
 ):
     """Rotate the API key for a route. Returns the new key once."""
@@ -879,10 +918,24 @@ async def rotate_api_key(
             )
 
         await clear_api_key_cache_for_route(route_id)
-        # The route's API key changed; also drop the cached proxy row so the
-        # new key is reflected on the next request.
         await clear_route_cache_for_route(result.data[0]["slug"])
         route = result.data[0]
+
+        await log_audit_event(
+            action="api_key.rotated",
+            resource_type="route",
+            resource_id=route_id,
+            user_id=current_user.id,
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            metadata={"key_prefix": key_prefix},
+        )
+
+        await record_secret_rotation(
+            secret_name=f"api_key:{route_id}",
+            owner=current_user.id,
+        )
+
         return RouteCreateResponse(**route_to_response(route, api_key=full_key))
     except HTTPException:
         raise
@@ -892,6 +945,48 @@ async def rotate_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=safe_error_detail(exc),
         )
+
+
+@router.get("/routes/{route_id}/signing-secret", response_model=RouteSigningSecretResponse)
+async def get_signing_secret(
+    route_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user_from_jwt),
+):
+    """Reveal the route's outbound signing secret once.
+
+    The secret is returned only on this call. Store it securely; it cannot
+    be retrieved again. If no secret exists yet, a new one is generated
+    and persisted automatically.
+    """
+    route = await get_owned_route_or_404(admin, route_id, current_user.id)
+
+    secret = route.get("signing_secret")
+    if not secret:
+        secret = secrets.token_urlsafe(32)
+        await execute_query(
+            admin.table("routes")
+            .update({"signing_secret": encrypt_webhook_secret(secret)})
+            .eq("id", route_id)
+        )
+    else:
+        secret = decrypt_webhook_secret(secret)
+
+    await log_audit_event(
+        action="signing_secret.revealed",
+        resource_type="route",
+        resource_id=route_id,
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    await record_secret_rotation(
+        secret_name=f"signing_secret:{route_id}",
+        owner=current_user.id,
+    )
+
+    return RouteSigningSecretResponse(id=route_id, signing_secret=secret)
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from app.utils.pkce import (
     store_pkce_verifier,
     retrieve_and_delete_pkce_verifier,
 )
+from app.utils.audit import log_audit_event  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,13 @@ async def oauth_callback_post(
 
     # Validate state parameter to prevent CSRF.
     if not state:
+        await log_audit_event(
+            action="oauth.auth_failed",
+            resource_type="oauth",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"reason": "missing_state"},
+        )
         raise HTTPException(
             status_code=400,
             detail="Missing state parameter",
@@ -283,20 +291,34 @@ async def oauth_callback_post(
         )
         code_challenge = payload["challenge"]
     except jwt.ExpiredSignatureError:
+        await log_audit_event(
+            action="oauth.auth_failed",
+            resource_type="oauth",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"reason": "expired_state"},
+        )
         raise HTTPException(
             status_code=400,
             detail="State parameter expired",
         )
     except jwt.InvalidTokenError:
+        await log_audit_event(
+            action="oauth.auth_failed",
+            resource_type="oauth",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"reason": "invalid_state"},
+        )
         raise HTTPException(
             status_code=400,
             detail="Invalid state parameter",
         )
 
-    return await _exchange_code(code, code_challenge)
+    return await _exchange_code(code, code_challenge, client_ip)
 
 
-async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackResponse:
+async def _exchange_code(code: str, code_challenge: Optional[str], client_ip: Optional[str] = None) -> CallbackResponse:
     """Common code exchange logic for OAuth callback.
 
     Args:
@@ -336,10 +358,24 @@ async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackRe
             result = await result
 
         if result.session is None or result.user is None:
+            await log_audit_event(
+                action="oauth.auth_failed",
+                resource_type="oauth",
+                ip_address=client_ip,
+                metadata={"reason": "exchange_failed"},
+            )
             raise HTTPException(
                 status_code=400,
                 detail="Failed to exchange authorization code for session.",
             )
+
+        await log_audit_event(
+            action="oauth.auth_succeeded",
+            resource_type="oauth",
+            resource_id=result.user.id,
+            ip_address=client_ip,
+            metadata={"provider": "supabase"},
+        )
 
         return CallbackResponse(
             access_token=result.session.access_token,
@@ -351,6 +387,12 @@ async def _exchange_code(code: str, code_challenge: Optional[str]) -> CallbackRe
         raise
     except Exception:
         logger.exception("OAuth callback failed")
+        await log_audit_event(
+            action="oauth.auth_failed",
+            resource_type="oauth",
+            ip_address=client_ip,
+            metadata={"reason": "unhandled_exception"},
+        )
         raise HTTPException(
             status_code=400,
             detail="OAuth callback failed",

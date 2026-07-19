@@ -65,6 +65,7 @@ class RouteCreate(BaseModel):
     webhook_secret: Optional[str] = Field(None, min_length=8, max_length=256)
     webhook_secrets: Optional[list[str]] = Field(None, max_length=10)
     rate_limit: int = Field(default=30, ge=1, le=1000)
+    max_payload_bytes: int = Field(default=1048576, ge=1, le=10485760)
     transform_headers: dict[str, str] = Field(default_factory=dict)
     transform_body_template: Optional[str] = Field(None, max_length=10000)
 
@@ -107,6 +108,10 @@ class RouteResponse(BaseModel):
     last_used_at: Optional[datetime] = None
     api_key_prefix: Optional[str] = None
     rate_limit: int = 30
+    max_payload_bytes: int = 1048576
+    max_concurrent_deliveries: int = 10
+    content_scan_rules: list[dict[str, Any]] = Field(default_factory=list)
+    signing_secret: Optional[str] = None
     has_webhook_secret: bool = False
     has_transform: bool = False
     transform_headers: dict[str, str] = Field(default_factory=dict)
@@ -135,6 +140,19 @@ class RouteCreateResponse(RouteResponse):
     api_key: str
 
 
+class RouteSigningSecretResponse(BaseModel):
+    """Schema returned when revealing a route's signing secret.
+
+    Attributes:
+        signing_secret: The plaintext signing secret. Shown only once.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    signing_secret: str
+
+
 class RouteUpdate(BaseModel):
     """Schema for updating an existing route. All fields are optional."""
 
@@ -149,6 +167,10 @@ class RouteUpdate(BaseModel):
     webhook_secrets: Optional[list[str]] = Field(None, max_length=10)
     clear_webhook_secret: Optional[bool] = None
     rate_limit: Optional[int] = Field(None, ge=1, le=1000)
+    max_payload_bytes: Optional[int] = Field(None, ge=1, le=10485760)
+    max_concurrent_deliveries: Optional[int] = Field(None, ge=1, le=1000)
+    content_scan_rules: Optional[list[dict[str, Any]]] = None
+    signing_secret: Optional[str] = Field(None, min_length=8, max_length=256)
     transform_headers: Optional[dict[str, str]] = None
     transform_body_template: Optional[str] = Field(None, max_length=10000)
     form_schema: Optional[dict[str, Any]] = None
@@ -256,7 +278,42 @@ class CleanupResponse(BaseModel):
     rate_limits_cleaned: bool
     pkce_verifiers_cleaned: bool
     idempotency_cache_cleaned: bool
+    audit_logs_removed: int = 0
+    blocklist_updated: bool = False
     keep_days: int
+
+
+class AppSetting(BaseModel):
+    """A key-value application setting."""
+
+    key: str
+    value: dict[str, Any]
+    updated_at: Optional[datetime] = None
+
+
+class AppSettingsResponse(BaseModel):
+    """Response containing multiple app settings."""
+
+    settings: dict[str, Any]
+
+
+class SecretRotationCheck(BaseModel):
+    """A tracked secret and its last rotation date."""
+
+    secret_name: str
+    last_rotated_at: datetime
+    owner: Optional[str] = None
+    is_stale: bool = False
+    days_since_rotation: int = 0
+
+
+class SecretRotationResponse(BaseModel):
+    """Response from the secret rotation check endpoint."""
+
+    stale_secrets: list[SecretRotationCheck]
+    total_checked: int
+    stale_count: int
+    max_age_days: int
 
 
 class RouteStatsResponse(BaseModel):
@@ -312,6 +369,7 @@ class User(BaseModel):
     created_at: Optional[datetime] = None
     credits: int = 0
     tier: str = "free"
+    max_concurrent_requests: int = 50
 
 
 class UserCreate(BaseModel):

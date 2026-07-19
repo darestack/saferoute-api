@@ -63,6 +63,38 @@ def has_http_client() -> bool:
     return _http_client is not None and not _http_client.is_closed
 
 
+def get_http_client_pool_stats() -> dict[str, Any]:
+    """Return connection pool statistics for the shared HTTP client.
+
+    Returns:
+        Dict with configured limits and, when available, runtime pool
+        utilization. Returns empty dict if the client is not initialized.
+    """
+    if not has_http_client():
+        return {}
+
+    client = _http_client
+    stats: dict[str, Any] = {
+        "max_connections": client._limits.max_connections,
+        "max_keepalive_connections": client._limits.max_keepalive_connections,
+    }
+
+    pool = getattr(client, "_pool", None)
+    if pool is not None:
+        try:
+            stats.update(
+                {
+                    "pool_size": getattr(pool, "size", lambda: None)(),
+                    "available_connections": getattr(pool, "available", lambda: None)(),
+                    "in_use_connections": getattr(pool, "in_use", lambda: None)(),
+                }
+            )
+        except Exception:
+            pass
+
+    return stats
+
+
 def _hash_api_key(full_key: str) -> str:
     """Compute the SHA-256 HMAC hash of an API key."""
     return hmac.new(

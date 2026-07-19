@@ -194,6 +194,13 @@ function setupEventListeners(): void {
     });
   }
 
+  const currencySelect = document.getElementById('currency-select');
+  if (currencySelect) {
+    currencySelect.addEventListener('change', () => {
+      updatePrices();
+    });
+  }
+
   document.querySelectorAll('[data-retry-failure-id]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const failureId = btn.getAttribute('data-retry-failure-id');
@@ -573,7 +580,7 @@ async function purchaseCredits(tier: string): Promise<void> {
   } catch (error) {
     if (loadingEl) loadingEl.classList.add('hidden');
     if (errorEl) {
-      errorEl.textContent = error instanceof Error ? error.message : 'Payment failed';
+      errorEl.textContent = error instanceof Error ? (error.message.includes('Failed to fetch') ? 'Payment failed' : error.message) : 'Payment failed';
       errorEl.classList.remove('hidden');
     }
   }
@@ -600,7 +607,11 @@ const SafeRouteApi = {
   },
 };
 
-document.addEventListener('DOMContentLoaded', initApp);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
 
 declare global {
   interface Window {

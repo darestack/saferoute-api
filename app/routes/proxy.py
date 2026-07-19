@@ -11,6 +11,8 @@ forwards payloads, and logs delivery results. Supports:
 """
 
 from __future__ import annotations
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -27,7 +29,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.crypto import decrypt_webhook_secrets
+from app.crypto import decrypt_webhook_secret, decrypt_webhook_secrets
 from app.database import (
     admin,
     bump_route_metrics_atomic,
@@ -36,13 +38,14 @@ from app.database import (
     get_http_client,
     verify_api_key,
 )
-from app.models import OutboundHealthResponse, RetryProcessResponse, CleanupResponse
+from app.models import OutboundHealthResponse, RetryProcessResponse, CleanupResponse, SecretRotationResponse
 from app.utils.retry import should_retry, calculate_next_retry
 from app.utils.security import (
     verify_webhook_signature,
     get_client_ip,
     validate_destination_url_async,
 )
+from app.utils.audit import log_audit_event  # noqa: E402
 from app.utils.transform import parse_payload, render_template
 from app.utils.email import (
     send_submission_email,
@@ -66,6 +69,16 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
+# IP reputation blocklist (global)
+# ---------------------------------------------------------------------------
+_blocked_ips: set[str] = set()
+"""In-memory set of globally blocked IP addresses.
+
+Populated by the ``/internal/update-blocklist`` endpoint and checked on
+every proxied request before rate limiting. Refreshed by the cleanup cron.
+"""
+
+# ---------------------------------------------------------------------------
 # IP geolocation cache (country code lookups)
 # ---------------------------------------------------------------------------
 from app.services.cache import DistributedCache  # noqa: E402
@@ -86,6 +99,37 @@ _GEOLOCATION_URL = "http://ip-api.com/json/{ip}?fields=countryCode"
 
 _GEOLOCATION_TIMEOUT = settings.GEOLOCATION_TIMEOUT_SECONDS
 """Timeout for geolocation HTTP requests."""
+
+# ---------------------------------------------------------------------------
+# Concurrency control semaphores
+# ---------------------------------------------------------------------------
+_route_semaphores: dict[str, asyncio.Semaphore] = {}
+_user_semaphores: dict[str, asyncio.Semaphore] = {}
+_semaphore_lock = asyncio.Lock()
+
+
+async def _get_route_semaphore(route_id: str, max_concurrent: int) -> asyncio.Semaphore:
+    """Get or create a semaphore for a route's concurrent deliveries."""
+    async with _semaphore_lock:
+        if route_id not in _route_semaphores:
+            _route_semaphores[route_id] = asyncio.Semaphore(max(1, max_concurrent))
+        return _route_semaphores[route_id]
+
+
+async def _get_user_semaphore(user_id: str, max_concurrent: int) -> asyncio.Semaphore:
+    """Get or create a semaphore for a user's concurrent requests."""
+    async with _semaphore_lock:
+        if user_id not in _user_semaphores:
+            _user_semaphores[user_id] = asyncio.Semaphore(max(1, max_concurrent))
+        return _user_semaphores[user_id]
+
+
+async def _release_semaphore(semaphore: asyncio.Semaphore) -> None:
+    """Release a semaphore, ignoring errors if it's already released."""
+    try:
+        semaphore.release()
+    except ValueError:
+        pass
 
 
 async def _lookup_country_code(client_ip: str) -> Optional[str]:
@@ -276,11 +320,17 @@ async def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -
         if result.data:
             row = result.data[0]
             if not row.get("success"):
+                async with _rate_limit_violations_lock:
+                    _rate_limit_violations[client_ip] = _rate_limit_violations.get(client_ip, 0) + 1
+                    violations = _rate_limit_violations[client_ip]
+                backoff = min(300, _RATE_LIMIT_WINDOW_SECONDS * (2 ** min(violations, 5)))
                 raise HTTPException(
                     status_code=429,
                     detail="Too many requests",
-                    headers={"Retry-After": str(_RATE_LIMIT_WINDOW_SECONDS)},
+                    headers={"Retry-After": str(backoff)},
                 )
+            async with _rate_limit_violations_lock:
+                _rate_limit_violations.pop(client_ip, None)
             new_count = cast(int, row.get("new_count", max_requests))
             return max(0, max_requests - new_count)
     except HTTPException:
@@ -794,6 +844,21 @@ async def _check_spam_shield(
                 detail="Access denied",
             )
 
+    blocked_countries = route.get("spam_blocked_countries") or []
+    if blocked_countries:
+        country = await _lookup_country_code(client_ip)
+        if country and country in blocked_countries:
+            logger.info(
+                "Country blocked for slug=%s, country=%s, ip=%s",
+                route.get("slug"),
+                country,
+                client_ip,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
+
     blocked_ips = route.get("spam_blocked_ips") or []
     if blocked_ips and client_ip in blocked_ips:
         logger.info(
@@ -833,6 +898,50 @@ async def _check_spam_shield(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Turnstile verification failed",
             )
+
+
+async def _scan_payload_content(payload: dict, rules: list[dict]) -> Optional[str]:
+    """Scan payload fields for content matching configured rules.
+
+    Args:
+        payload: Parsed request body.
+        rules: List of rule dicts with ``pattern`` (regex), ``field`` (path),
+            and ``action`` (``block`` or ``flag``).
+
+    Returns:
+        Error message if a rule matches and action is ``block``, otherwise None.
+    """
+    for rule in rules:
+        pattern = rule.get("pattern")
+        field = rule.get("field")
+        action = rule.get("action", "flag")
+        if not pattern or not field:
+            continue
+        value = payload
+        for part in field.split("."):
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                value = None
+                break
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float)):
+            value = str(value)
+        else:
+            continue
+        try:
+            if re.search(pattern, value, re.IGNORECASE):
+                if action == "block":
+                    return f"Blocked by content filter: {field}"
+        except re.error:
+            continue
+    return None
+
+
+# Track rate limit violations per IP for adaptive backoff.
+_rate_limit_violations: dict[str, int] = {}
+_rate_limit_violations_lock = asyncio.Lock()
 
 
 @router.post("/v1/route/{slug}")
@@ -885,6 +994,12 @@ async def proxy_webhook(
     start_time = time.perf_counter()
     client_ip = get_client_ip(request)
 
+    if client_ip in _blocked_ips:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
     try:
         body = await request.body()
     except Exception:
@@ -907,8 +1022,38 @@ async def proxy_webhook(
     if not route:
         route = await fill_route_cache(slug)
 
+    max_payload_bytes = route.get("max_payload_bytes") or 1048576
+    if len(body) > max_payload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Payload exceeds route limit of {max_payload_bytes} bytes",
+        )
+
     _validate_form_schema(payload, route.get("form_schema") or {})
     await _check_spam_shield(payload, route, client_ip, user_agent)
+
+    content_scan_rules = route.get("content_scan_rules")
+    if content_scan_rules:
+        user_tier = "free"
+        try:
+            profile_result = await execute_query(
+                admin.table("user_profiles")
+                .select("tier")
+                .eq("id", route.get("user_id"))
+                .limit(1)
+            )
+            if profile_result.data:
+                user_tier = profile_result.data[0].get("tier", "free")
+        except Exception:
+            pass
+
+        if user_tier in ("builder", "agency"):
+            scan_error = await _scan_payload_content(payload, content_scan_rules)
+            if scan_error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=scan_error,
+                )
 
     destination = route["destination_url"]
     try:
@@ -977,15 +1122,39 @@ async def proxy_webhook(
     # --- Outbound headers ---
     outbound_headers = _build_outbound_headers(route, content_type)
 
-    # --- Forward ---
-    method = route.get("method", "POST")
+    # --- Outbound signing ---
+    signing_secret = route.get("signing_secret")
+    if signing_secret:
+        try:
+            plaintext_secret = decrypt_webhook_secret(signing_secret)
+            if plaintext_secret:
+                signature = hmac.new(
+                    plaintext_secret.encode("utf-8"),
+                    forward_body,
+                    hashlib.sha256,
+                ).hexdigest()
+                outbound_headers["X-SafeRoute-Signature"] = f"sha256={signature}"
+        except Exception:
+            logger.warning("Failed to compute outbound signature for route %s", route.get("id"))
 
-    status_code, response_body, response_headers = await forward_payload(
-        method=method,
-        url=destination,
-        body=forward_body,
-        headers=outbound_headers,
+    # --- Concurrency control ---
+    route_semaphore = await _get_route_semaphore(
+        route["id"], route.get("max_concurrent_deliveries", 10)
     )
+    user_semaphore = await _get_user_semaphore(
+        route.get("user_id", "anonymous"), route.get("max_concurrent_requests", 50)
+    )
+
+    async with route_semaphore, user_semaphore:
+        # --- Forward ---
+        method = route.get("method", "POST")
+
+        status_code, response_body, response_headers = await forward_payload(
+            method=method,
+            url=destination,
+            body=forward_body,
+            headers=outbound_headers,
+        )
 
     duration_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -1179,8 +1348,103 @@ async def outbound_health_check(
         )
 
 
+# ---------------------------------------------------------------------------
+# IP reputation blocklist management
+# ---------------------------------------------------------------------------
+async def _update_blocklist_from_url(url: str) -> int:
+    """Fetch an IP blocklist feed and update the global blocked IPs set.
+
+    Args:
+        url: URL to fetch the blocklist from. Expected to return one IP per line.
+
+    Returns:
+        Number of IPs added to the blocklist.
+    """
+    global _blocked_ips
+    client = get_http_client()
+    try:
+        response = await client.get(url, timeout=10.0)
+        response.raise_for_status()
+        text = response.text
+        new_ips = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                ipaddress.ip_address(line)
+                new_ips.add(line)
+            except ValueError:
+                continue
+        _blocked_ips = new_ips
+        return len(new_ips)
+    except Exception as exc:
+        logger.warning("Failed to update blocklist from %s: %s", url, exc)
+        return 0
+
+
+@router.post("/internal/update-blocklist")
+async def update_blocklist(
+    request: Request,
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+):
+    """Update the global IP blocklist from the configured feed."""
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    url = settings.BLOCKLIST_URL
+    if not url:
+        return JSONResponse(
+            status_code=200,
+            content={"status": "skipped", "reason": "BLOCKLIST_URL not configured"},
+        )
+
+    count = await _update_blocklist_from_url(url)
+    return JSONResponse(
+        status_code=200,
+        content={"status": "updated", "blocked_ips_count": count},
+    )
+
+
+from app.services.secret_rotation import check_stale_secrets  # noqa: E402
+
+
 @router.get(
-    "/internal/cache/stats",
+    "/internal/check-secret-rotation",
+    response_model=SecretRotationResponse,
+)
+async def check_secret_rotation(
+    request: Request,
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+    max_age_days: Optional[int] = None,
+):
+    """Check for stale secrets that haven't been rotated recently.
+
+    Returns secrets whose last rotation date exceeds the configured maximum
+    age. The response includes all tracked secrets with their rotation status.
+    """
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = await check_stale_secrets(max_age_days)
+
+    if result.stale_count > 0:
+        logger.warning(
+            "Stale secrets detected: %d secrets exceed %d days without rotation",
+            result.stale_count,
+            result.max_age_days,
+        )
+
+    return result
+
+
+@router.get("/internal/cache/stats",
+
+
     summary="Cache statistics",
     description="Return detailed metrics for all distributed caches.",
 )
@@ -1198,7 +1462,7 @@ async def cache_stats(
         from app.routes.auth import _user_cache
         from app.services.route_cache import _route_cache
         from app.routes.proxy import _ip_country_cache
-        from app.database import _api_key_cache
+        from app.database import _api_key_cache, get_http_client_pool_stats
 
         caches = {
             "user_cache": _user_cache.get_metrics(),
@@ -1206,6 +1470,8 @@ async def cache_stats(
             "geolocation_cache": _ip_country_cache.get_metrics(),
             "api_key_cache": _api_key_cache.get_metrics(),
         }
+
+        pool_stats = get_http_client_pool_stats()
 
         # Calculate aggregate stats
         total_hits = sum(c["hits"] for c in caches.values())
@@ -1215,29 +1481,160 @@ async def cache_stats(
         total_size = sum(c["l1_size"] for c in caches.values())
         total_max = sum(c["l1_max_size"] for c in caches.values())
 
+        response_content = {
+            "caches": caches,
+            "aggregate": {
+                "total_hits": total_hits,
+                "total_misses": total_misses,
+                "total_l2_hits": total_l2_hits,
+                "total_l2_misses": total_l2_misses,
+                "overall_hit_rate": total_hits / (total_hits + total_misses)
+                if (total_hits + total_misses) > 0
+                else 0.0,
+                "total_l1_size": total_size,
+                "total_l1_max_size": total_max,
+                "utilization_pct": round(total_size / total_max * 100, 1)
+                if total_max > 0
+                else 0.0,
+            },
+        }
+
+        if pool_stats:
+            response_content["http_client_pool"] = pool_stats
+
         return JSONResponse(
             status_code=200,
-            content={
-                "caches": caches,
-                "aggregate": {
-                    "total_hits": total_hits,
-                    "total_misses": total_misses,
-                    "total_l2_hits": total_l2_hits,
-                    "total_l2_misses": total_l2_misses,
-                    "overall_hit_rate": total_hits / (total_hits + total_misses)
-                    if (total_hits + total_misses) > 0
-                    else 0.0,
-                    "total_l1_size": total_size,
-                    "total_l1_max_size": total_max,
-                    "utilization_pct": round(total_size / total_max * 100, 1)
-                    if total_max > 0
-                    else 0.0,
-                },
-            },
+            content=response_content,
         )
     except Exception as exc:
         logger.error("Cache stats endpoint failed: %s", exc)
         return JSONResponse(
             status_code=500,
             content={"error": "Failed to retrieve cache stats"},
+        )
+
+
+from app.services.circuit_breaker import get_circuit_breaker_stats  # noqa: E402
+
+
+@router.get(
+    "/internal/circuit-breaker/stats",
+    summary="Circuit breaker statistics",
+    description="Return circuit breaker state for all tracked destinations.",
+)
+async def circuit_breaker_stats(
+    request: Request,
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+) -> JSONResponse:
+    """Return circuit breaker statistics for monitoring."""
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        stats = await get_circuit_breaker_stats()
+        open_count = sum(1 for s in stats.values() if s["state"] == "open")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "destinations": stats,
+                "summary": {
+                    "total_tracked": len(stats),
+                    "open": open_count,
+                    "closed": len(stats) - open_count,
+                },
+            },
+        )
+    except Exception as exc:
+        logger.error("Circuit breaker stats endpoint failed: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to retrieve circuit breaker stats"},
+        )
+
+
+@router.get("/internal/settings/admin-ips")
+async def get_admin_ips(
+    request: Request,
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+):
+    """Get the current admin allowed IPs from database or env var."""
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        result = await execute_query(
+            admin.table("app_settings")
+            .select("value")
+            .eq("key", "admin_allowed_ips")
+            .limit(1)
+        )
+
+        if result.data:
+            ips = result.data[0].get("value", {}).get("ips", "")
+        else:
+            ips = settings.ADMIN_ALLOWED_IPS
+
+        return JSONResponse(
+            status_code=200,
+            content={"admin_allowed_ips": ips},
+        )
+    except Exception as exc:
+        logger.error("Failed to get admin IPs: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to retrieve admin IPs"},
+        )
+
+
+@router.put("/internal/settings/admin-ips")
+async def update_admin_ips(
+    request: Request,
+    body: dict[str, Any],
+    x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+):
+    """Update the admin allowed IPs in the database."""
+    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    ips = body.get("admin_allowed_ips", "")
+    if not isinstance(ips, str):
+        raise HTTPException(status_code=400, detail="admin_allowed_ips must be a string")
+
+    try:
+        await execute_query(
+            admin.table("app_settings")
+            .upsert(
+                {
+                    "key": "admin_allowed_ips",
+                    "value": {"ips": ips},
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="key",
+            )
+        )
+
+        await log_audit_event(
+            action="admin_ips.updated",
+            resource_type="app_settings",
+            resource_id="admin_allowed_ips",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            metadata={"ips": ips},
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={"status": "updated", "admin_allowed_ips": ips},
+        )
+    except Exception as exc:
+        logger.error("Failed to update admin IPs: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to update admin IPs"},
         )

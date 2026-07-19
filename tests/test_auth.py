@@ -659,7 +659,7 @@ class TestOauthCallbackBody:
 
         from app.main import app
 
-        async def _fake_exchange(code, code_challenge):
+        async def _fake_exchange(code, code_challenge, client_ip=None):
             return oauth_module.CallbackResponse(
                 access_token="tok",
                 token_type="bearer",

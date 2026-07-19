@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.7.0"
     OTEL_ENABLED: bool = False
     ADMIN_ALLOWED_IPS: str = ""
+    BLOCKLIST_URL: str = ""
+    SECRET_ROTATION_MAX_AGE_DAYS: int = 90
 
     @property
     def is_production(self) -> bool:

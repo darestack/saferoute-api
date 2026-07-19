@@ -3,5 +3,9 @@
     "api/index.py": {
       "maxDuration": 30
     }
-  }
+  },
+  "crons": [
+    { "path": "/internal/process-retries", "schedule": "* * * * *" },
+    { "path": "/internal/cleanup", "schedule": "0 2 * * *" }
+  ]
 }

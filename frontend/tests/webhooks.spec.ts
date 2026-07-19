@@ -42,9 +42,9 @@ test.describe('Webhook Retry Management', () => {
 
     await page.goto('/dashboard.html');
     await page.getByRole('link', { name: 'Webhooks' }).click();
-    await page.waitForSelector('[data-retry-failure-id]', { timeout: 10000 });
+    await page.waitForSelector('[data-retry-failure-id="failure-1"]', { timeout: 10000 });
 
-    await expect(page.getByText('Test Route')).toBeVisible();
+    await expect(page.locator('#webhooks-section').getByText('Test Route')).toBeVisible();
     await expect(page.getByText('500')).toBeVisible();
     await expect(page.getByText('Destination timeout')).toBeVisible();
     await expect(page.getByText('3/3')).toBeVisible();
@@ -94,7 +94,8 @@ test.describe('Webhook Retry Management', () => {
     await page.goto('/dashboard.html');
     await page.getByRole('link', { name: 'Webhooks' }).click();
     await page.waitForSelector('[data-retry-failure-id="failure-1"]', { timeout: 10000 });
-    await page.locator('#webhooks-refresh-btn').click();
+    
+    await page.locator('[data-retry-failure-id="failure-1"]').click();
 
     await expect(page.getByText('Retry queued')).toBeVisible();
   });
@@ -134,7 +135,7 @@ test.describe('Webhook Retry Management', () => {
 
     await page.goto('/dashboard.html');
     await page.getByRole('link', { name: 'Webhooks' }).click();
-    await expect(page.getByText('Test Route')).toBeVisible({ timeout: 10000 });
+    await page.waitForSelector('[data-retry-failure-id="failure-1"]', { timeout: 10000 });
 
     let callCount = 0;
     await page.route('/v1/webhooks/failures', route => {
@@ -144,14 +145,15 @@ test.describe('Webhook Retry Management', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           route_id: 'test-user',
-          failures: callCount === 1 ? [] : [{ id: 'failure-1', route_id: 'route-1', route_name: 'Test Route', status_code: 500, error_message: 'Timeout', retry_count: 3, max_retries: 3, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }],
+          failures: callCount === 1 ? [{ id: 'failure-1', route_id: 'route-1', route_name: 'Test Route', status_code: 500, error_message: 'Timeout', retry_count: 3, max_retries: 3, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }] : [],
           next_cursor: null
         })
       });
     });
 
     await page.locator('#webhooks-refresh-btn').click();
-    await expect(page.getByText('Test Route')).toBeVisible({ timeout: 10000 });
+    await page.waitForSelector('[data-retry-failure-id="failure-1"]', { timeout: 10000 });
+    await expect(page.locator('#webhooks-section').getByText('Test Route')).toBeVisible();
   });
 
   test('shows retry error when retry fails', async ({ page }) => {
@@ -198,7 +200,8 @@ test.describe('Webhook Retry Management', () => {
     await page.goto('/dashboard.html');
     await page.getByRole('link', { name: 'Webhooks' }).click();
     await page.waitForSelector('[data-retry-failure-id="failure-1"]', { timeout: 10000 });
-    await page.locator('#webhooks-refresh-btn').click();
+    
+    await page.locator('[data-retry-failure-id="failure-1"]').click();
 
     await expect(page.getByText('Retry failed')).toBeVisible();
   });

@@ -30,6 +30,10 @@ def route_to_response(
         "last_used_at": route.get("last_used_at"),
         "api_key_prefix": route.get("api_key_prefix"),
         "rate_limit": route.get("rate_limit", 30),
+        "max_payload_bytes": route.get("max_payload_bytes", 1048576),
+        "max_concurrent_deliveries": route.get("max_concurrent_deliveries", 10),
+        "content_scan_rules": route.get("content_scan_rules", []),
+        "signing_secret": route.get("signing_secret"),
         "has_webhook_secret": bool(
             route.get("webhook_secret") or route.get("webhook_secrets")
         ),

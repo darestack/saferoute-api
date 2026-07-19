@@ -24,6 +24,10 @@ create table public.routes (
     webhook_secret text,
     webhook_secrets jsonb default '[]'::jsonb,
     rate_limit integer default 30,
+    max_payload_bytes integer default 1048576,
+    max_concurrent_deliveries integer default 10,
+    content_scan_rules jsonb default '[]'::jsonb,
+    signing_secret text,
     transform_headers jsonb default '{}'::jsonb,
     transform_body_template text,
     form_schema jsonb default '{}'::jsonb,
@@ -529,6 +533,7 @@ create table public.user_profiles (
     id uuid primary key references auth.users(id) on delete cascade,
     credits integer not null default 100,
     tier text not null default 'free',
+    max_concurrent_requests integer default 50,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -664,3 +669,90 @@ create trigger update_payment_transactions_updated_at
 -- select cron.schedule('cleanup-idempotency-cache', '0 * * * *', $$
 --     select public.cleanup_idempotency_cache();
 -- $$);
+
+-- ========================================
+-- Audit Logs Table
+-- ========================================
+create table public.audit_logs (
+    id bigint generated always as identity primary key,
+    user_id uuid references auth.users(id) on delete set null,
+    action text not null,
+    resource_type text not null,
+    resource_id text,
+    ip_address inet,
+    user_agent text,
+    metadata jsonb default '{}'::jsonb,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_audit_logs_user_id on public.audit_logs(user_id);
+create index idx_audit_logs_action on public.audit_logs(action);
+create index idx_audit_logs_created_at on public.audit_logs(created_at);
+
+alter table public.audit_logs enable row level security;
+
+create policy "Service role full access audit_logs"
+    on public.audit_logs for all
+    to service_role
+    using (true);
+
+create policy "Users can view own audit logs"
+    on public.audit_logs for select
+    to authenticated
+    using (auth.uid() = user_id);
+
+-- ========================================
+-- Secret Rotation Checks Table
+-- ========================================
+create table public.secret_rotation_checks (
+    id bigint generated always as identity primary key,
+    secret_name text not null unique,
+    last_rotated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    owner text,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_secret_rotation_checks_name on public.secret_rotation_checks(secret_name);
+
+alter table public.secret_rotation_checks enable row level security;
+
+create policy "Service role full access secret_rotation_checks"
+    on public.secret_rotation_checks for all
+    to service_role
+    using (true);
+
+-- ========================================
+-- Circuit Breaker State Table
+-- ========================================
+create table public.circuit_breaker_state (
+    destination_url text primary key,
+    state text not null default 'closed',
+    opened_at timestamp with time zone,
+    failure_count integer not null default 0,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index idx_circuit_breaker_state_updated_at on public.circuit_breaker_state(updated_at);
+
+alter table public.circuit_breaker_state enable row level security;
+
+create policy "Service role full access circuit_breaker_state"
+    on public.circuit_breaker_state for all
+    to service_role
+    using (true);
+
+-- ========================================
+-- App Settings Table
+-- ========================================
+create table public.app_settings (
+    key text primary key,
+    value jsonb not null default '{}'::jsonb,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.app_settings enable row level security;
+
+create policy "Service role full access app_settings"
+    on public.app_settings for all
+    to service_role
+    using (true);
