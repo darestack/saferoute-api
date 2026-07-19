@@ -80,6 +80,13 @@
                         </svg>
                         Webhooks
                     </a>
+                    <a href="#admin-section" class="nav-link flex items-center gap-3 px-3 py-2 rounded-lg text-safe-muted hover:bg-safe-card hover:text-safe-text transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        Admin
+                    </a>
                     <a href="/changelog.html" class="nav-link flex items-center gap-3 px-3 py-2 rounded-lg text-safe-muted hover:bg-safe-card hover:text-safe-text transition-colors">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
@@ -395,7 +402,127 @@
                     </div>
                 </div>
             </section>
+
+            <!-- Admin Section -->
+            <section id="admin-section" class="p-4 sm:p-6 lg:p-8 hidden">
+                <div class="mb-8">
+                    <h1 class="font-display text-3xl font-bold mb-2">Admin</h1>
+                    <p class="text-safe-muted">System configuration and security settings.</p>
+                </div>
+
+                <!-- IP Allowlist Management -->
+                <div class="bg-safe-card rounded-xl border border-safe-border overflow-hidden">
+                    <div class="p-6 border-b border-safe-border">
+                        <h3 class="font-display text-lg font-bold">IP Allowlist</h3>
+                        <p class="text-safe-muted text-sm mt-1">Restrict admin endpoint access to specific IP addresses. Leave empty to allow all.</p>
+                    </div>
+                    <div class="p-6">
+                        <form id="admin-ips-form" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Allowed IP Addresses</label>
+                                <textarea id="admin-allowed-ips" rows="4" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all font-mono text-sm" placeholder="192.168.1.1, 10.0.0.0/8"></textarea>
+                                <p class="text-safe-muted text-xs mt-1">Comma-separated IPs or CIDR ranges. One per line or comma-separated.</p>
+                            </div>
+                            <div class="flex gap-3">
+                                <button type="submit" class="btn-primary px-4 py-2 text-white rounded-lg font-medium text-sm">Save IP Allowlist</button>
+                                <span id="admin-ips-status" class="text-sm text-safe-muted"></span>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
         </main>
+    </div>
+
+    <!-- Route Detail Modal -->
+    <div id="route-detail-modal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-labelledby="route-detail-title">
+        <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" id="route-detail-backdrop"></div>
+        <div class="relative min-h-screen flex items-center justify-center p-4">
+            <div class="bg-safe-card rounded-2xl border border-safe-border p-8 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 id="route-detail-title" class="font-display text-2xl font-bold">Route Details</h3>
+                    <button id="close-route-detail" class="p-2 text-safe-muted hover:text-safe-text transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                <form id="route-detail-form" class="space-y-6">
+                    <input type="hidden" id="detail-route-id">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Route Name</label>
+                            <input type="text" id="detail-name" required class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Destination URL</label>
+                            <input type="url" id="detail-destination-url" required class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Method</label>
+                            <select id="detail-method" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all">
+                                <option value="POST">POST</option>
+                                <option value="GET">GET</option>
+                                <option value="PUT">PUT</option>
+                                <option value="PATCH">PATCH</option>
+                                <option value="DELETE">DELETE</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Rate Limit (req/min)</label>
+                            <input type="number" id="detail-rate-limit" min="1" max="1000" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Max Payload (bytes)</label>
+                            <input type="number" id="detail-max-payload-bytes" min="1" max="10485760" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Max Concurrent Deliveries</label>
+                            <input type="number" id="detail-max-concurrent-deliveries" min="1" max="1000" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Content Scan Rules (JSON)</label>
+                            <input type="text" id="detail-content-scan-rules" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all font-mono text-sm" placeholder='[{"pattern": "spam", "field": "message", "action": "block"}]'>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3 p-4 bg-safe-surface/50 rounded-lg border border-safe-border">
+                        <button type="button" id="reveal-signing-secret-btn" class="px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium text-sm">
+                            Reveal Signing Secret
+                        </button>
+                        <span class="text-sm text-safe-muted">Shows the secret once. Copy it immediately; it cannot be retrieved again.</span>
+                    </div>
+                    <div class="flex gap-3">
+                        <button type="submit" class="flex-1 btn-primary px-4 py-2 text-white rounded-lg font-medium">Save Changes</button>
+                        <button type="button" id="cancel-route-detail" class="flex-1 px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Signing Secret Reveal Modal -->
+    <div id="signing-secret-modal" class="fixed inset-0 z-[60] hidden" role="dialog" aria-modal="true" aria-labelledby="signing-secret-title">
+        <div class="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+        <div class="relative min-h-screen flex items-center justify-center p-4">
+            <div class="bg-safe-card rounded-2xl border border-safe-border p-8 max-w-md w-full">
+                <h3 id="signing-secret-title" class="font-display text-2xl font-bold mb-2">Signing Secret</h3>
+                <p class="text-safe-muted text-sm mb-6">This is the only time this secret will be shown. Copy it now and store it securely.</p>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Secret Value</label>
+                        <input type="text" id="revealed-signing-secret" readonly class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border font-mono text-sm" onclick="this.select()">
+                    </div>
+                    <div class="flex gap-3">
+                        <button id="copy-signing-secret" class="flex-1 btn-primary px-4 py-2 text-white rounded-lg font-medium">Copy to Clipboard</button>
+                        <button id="dismiss-signing-secret" class="flex-1 px-4 py-2 rounded-lg border border-safe-border hover:border-safe-accent/50 transition-colors font-medium">Dismiss</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Create Route Modal -->

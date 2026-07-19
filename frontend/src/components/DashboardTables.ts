@@ -83,7 +83,7 @@ export function updateRoutesUI(routes: Route[]): void {
     editBtn.textContent = 'Edit';
     editBtn.setAttribute('data-route-id', route.id);
     editBtn.addEventListener('click', () => {
-      (window as any).SafeRoute.editRoute(route.id);
+      (window as any).SafeRoute.openRouteDetail(route.id);
     });
     actionCell.appendChild(editBtn);
     tr.appendChild(actionCell);

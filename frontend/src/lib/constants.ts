@@ -13,4 +13,6 @@ export const API_ENDPOINTS = {
   CALLBACK: '/auth/callback',
   WEBHOOKS_FAILURES: '/v1/webhooks/failures',
   WEBHOOKS_RETRY: (failureId: string) => `/v1/webhooks/failures/${failureId}/retry`,
+  SIGNING_SECRET: (routeId: string) => `/v1/routes/${routeId}/signing-secret`,
+  ADMIN_IPS: '/internal/settings/admin-ips',
 } as const;

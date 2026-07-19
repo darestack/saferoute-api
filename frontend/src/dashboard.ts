@@ -4,13 +4,20 @@ import { User, Route, Payment, LogEntry, WebhookFailure } from './types';
 import { apiRequest, API_BASE } from './lib/api';
 import { getToken, isAuthenticated, logout } from './lib/auth';
 import { API_ENDPOINTS } from './lib/constants';
-import { showSection, updateLoadingState, showError, showSuccess, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal } from './components/DashboardShell';
+import { showSection, updateLoadingState, showError, showSuccess, formatDate, toggleSidebar, showCreateRouteModal, hideCreateRouteModal, showRouteDetailModal, hideRouteDetailModal, showSigningSecretModal, hideSigningSecretModal } from './components/DashboardShell';
 import { updateRoutesUI, updateLogsUI, renderPaymentHistory, renderWebhookFailures } from './components/DashboardTables';
 import { initCharts } from './components/DashboardCharts';
 
 interface SafeRouteApi {
-  createRoute: (routeData: { name: string; destination_url: string }) => Promise<void>;
-  editRoute: (routeId: string) => Promise<void>;
+  createRoute: (routeData: { name: string; destination_url: string; rate_limit?: number; max_payload_bytes?: number; max_concurrent_deliveries?: number; content_scan_rules?: Record<string, any>[]; webhook_secret?: string; turnstile_site_key?: string }) => Promise<void>;
+  openRouteDetail: (routeId: string) => Promise<void>;
+  saveRouteDetail: () => Promise<void>;
+  closeRouteDetail: () => void;
+  revealSigningSecret: (routeId: string) => Promise<void>;
+  copySigningSecret: () => Promise<void>;
+  dismissSigningSecret: () => void;
+  loadAdminData: () => Promise<void>;
+  saveAdminIps: (ips: string) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
   replayLog: (routeId: string, logId: number) => Promise<void>;
   retryWebhook: (failureId: string) => Promise<void>;
@@ -26,6 +33,7 @@ interface SafeRouteApi {
     payments: Payment[];
     webhookFailures: WebhookFailure[];
     isLoading: boolean;
+    currentRouteId: string | null;
   };
 }
 
@@ -36,6 +44,7 @@ const state = {
   payments: [] as Payment[],
   webhookFailures: [] as WebhookFailure[],
   isLoading: false,
+  currentRouteId: null as string | null,
 };
 
 async function initApp(): Promise<void> {
@@ -68,6 +77,10 @@ function setupEventListeners(): void {
       e.preventDefault();
       const sectionId = link.getAttribute('href')?.slice(1) || 'dashboard';
       showSection(sectionId);
+
+      if (sectionId === 'admin-section') {
+        loadAdminData();
+      }
 
       document.querySelectorAll('.nav-link').forEach((l) => {
         l.classList.remove('bg-safe-accent/10', 'text-safe-accent');
@@ -111,6 +124,9 @@ function setupEventListeners(): void {
         name,
         destination_url: destinationUrl,
         rate_limit: isNaN(rateLimit) ? 30 : Math.max(1, Math.min(1000, rateLimit)),
+        max_payload_bytes: 1048576,
+        max_concurrent_deliveries: 10,
+        content_scan_rules: [],
         has_webhook_secret: !!webhookSecret,
         webhook_secret: webhookSecret,
         turnstile_enabled: !!turnstileSiteKey,
@@ -138,6 +154,70 @@ function setupEventListeners(): void {
   if (modalBackdrop) {
     modalBackdrop.addEventListener('click', () => {
       hideCreateRouteModal();
+    });
+  }
+
+  const routeDetailBackdrop = document.getElementById('route-detail-backdrop');
+  if (routeDetailBackdrop) {
+    routeDetailBackdrop.addEventListener('click', () => {
+      hideRouteDetailModal();
+    });
+  }
+
+  const closeRouteDetailBtn = document.getElementById('close-route-detail');
+  if (closeRouteDetailBtn) {
+    closeRouteDetailBtn.addEventListener('click', () => {
+      hideRouteDetailModal();
+    });
+  }
+
+  const cancelRouteDetailBtn = document.getElementById('cancel-route-detail');
+  if (cancelRouteDetailBtn) {
+    cancelRouteDetailBtn.addEventListener('click', () => {
+      hideRouteDetailModal();
+    });
+  }
+
+  const revealSigningSecretBtn = document.getElementById('reveal-signing-secret-btn');
+  if (revealSigningSecretBtn) {
+    revealSigningSecretBtn.addEventListener('click', async () => {
+      const routeId = (document.getElementById('detail-route-id') as HTMLInputElement)?.value;
+      if (routeId) {
+        await revealSigningSecret(routeId);
+      }
+    });
+  }
+
+  const copySigningSecretBtn = document.getElementById('copy-signing-secret');
+  if (copySigningSecretBtn) {
+    copySigningSecretBtn.addEventListener('click', async () => {
+      await copySigningSecret();
+    });
+  }
+
+  const dismissSigningSecretBtn = document.getElementById('dismiss-signing-secret');
+  if (dismissSigningSecretBtn) {
+    dismissSigningSecretBtn.addEventListener('click', () => {
+      dismissSigningSecret();
+    });
+  }
+
+  const routeDetailForm = document.getElementById('route-detail-form');
+  if (routeDetailForm) {
+    routeDetailForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await saveRouteDetail();
+    });
+  }
+
+  const adminIpsForm = document.getElementById('admin-ips-form');
+  if (adminIpsForm) {
+    adminIpsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const ipsTextarea = document.getElementById('admin-allowed-ips') as HTMLTextAreaElement;
+      if (ipsTextarea) {
+        await saveAdminIps(ipsTextarea.value);
+      }
     });
   }
 
@@ -435,40 +515,58 @@ async function createRoute(routeData: Partial<Route>): Promise<void> {
   }
 }
 
-async function editRoute(routeId: string): Promise<void> {
+async function openRouteDetail(routeId: string): Promise<void> {
   const route = state.routes.find((r) => r.id === routeId);
   if (!route) return;
 
-  const newName = prompt('Route name:', route.name);
-  if (newName === null) return;
+  state.currentRouteId = routeId;
 
-  const updates: Partial<Route> = { name: newName || route.name };
+  (document.getElementById('detail-route-id') as HTMLInputElement).value = route.id;
+  (document.getElementById('detail-name') as HTMLInputElement).value = route.name;
+  (document.getElementById('detail-destination-url') as HTMLInputElement).value = route.destination_url;
+  (document.getElementById('detail-method') as HTMLSelectElement).value = route.method;
+  (document.getElementById('detail-rate-limit') as HTMLInputElement).value = String(route.rate_limit);
+  (document.getElementById('detail-max-payload-bytes') as HTMLInputElement).value = String(route.max_payload_bytes);
+  (document.getElementById('detail-max-concurrent-deliveries') as HTMLInputElement).value = String(route.max_concurrent_deliveries);
+  (document.getElementById('detail-content-scan-rules') as HTMLInputElement).value = JSON.stringify(route.content_scan_rules || []);
 
-  const destinationUrl = prompt('Destination URL:', route.destination_url);
-  if (destinationUrl === null) return;
-  if (destinationUrl) {
+  showRouteDetailModal();
+}
+
+async function saveRouteDetail(): Promise<void> {
+  const routeId = state.currentRouteId;
+  if (!routeId) return;
+
+  const route = state.routes.find((r) => r.id === routeId);
+  if (!route) return;
+
+  const name = (document.getElementById('detail-name') as HTMLInputElement).value.trim();
+  const destinationUrl = (document.getElementById('detail-destination-url') as HTMLInputElement).value.trim();
+  const method = (document.getElementById('detail-method') as HTMLSelectElement).value;
+  const rateLimit = parseInt((document.getElementById('detail-rate-limit') as HTMLInputElement).value, 10);
+  const maxPayloadBytes = parseInt((document.getElementById('detail-max-payload-bytes') as HTMLInputElement).value, 10);
+  const maxConcurrentDeliveries = parseInt((document.getElementById('detail-max-concurrent-deliveries') as HTMLInputElement).value, 10);
+  const contentScanRulesRaw = (document.getElementById('detail-content-scan-rules') as HTMLInputElement).value.trim();
+
+  let contentScanRules: Record<string, any>[] = [];
+  if (contentScanRulesRaw) {
     try {
-      new URL(destinationUrl);
-      updates.destination_url = destinationUrl;
+      contentScanRules = JSON.parse(contentScanRulesRaw);
     } catch {
-      showError('Invalid destination URL');
+      showError('Invalid JSON for content scan rules');
       return;
     }
   }
 
-  const rateLimit = prompt('Rate limit (requests per minute):', String(route.rate_limit));
-  if (rateLimit === null) return;
-  const parsedRateLimit = parseInt(rateLimit, 10);
-  if (!isNaN(parsedRateLimit) && parsedRateLimit > 0) {
-    updates.rate_limit = parsedRateLimit;
-  }
-
-  const webhookSecret = prompt('Webhook secret (leave empty to remove):', '');
-  if (webhookSecret === null) return;
-  updates.has_webhook_secret = webhookSecret.length > 0;
-  if (webhookSecret) {
-    updates.webhook_secret = webhookSecret;
-  }
+  const updates: Partial<Route> = {
+    name: name || route.name,
+    destination_url: destinationUrl || route.destination_url,
+    method: method || route.method,
+    rate_limit: isNaN(rateLimit) ? route.rate_limit : Math.max(1, Math.min(1000, rateLimit)),
+    max_payload_bytes: isNaN(maxPayloadBytes) ? route.max_payload_bytes : Math.max(1, Math.min(10485760, maxPayloadBytes)),
+    max_concurrent_deliveries: isNaN(maxConcurrentDeliveries) ? route.max_concurrent_deliveries : Math.max(1, Math.min(1000, maxConcurrentDeliveries)),
+    content_scan_rules: contentScanRules,
+  };
 
   try {
     const updated = await apiRequest<Route>(API_ENDPOINTS.UPDATE_ROUTE(routeId), {
@@ -477,9 +575,92 @@ async function editRoute(routeId: string): Promise<void> {
     });
     Object.assign(route, updated);
     updateRoutesUI(state.routes);
+    hideRouteDetailModal();
     showSuccess('Route updated successfully');
   } catch (error) {
     showError(error instanceof Error ? error.message : 'Failed to update route');
+  }
+}
+
+async function revealSigningSecret(routeId: string): Promise<void> {
+  try {
+    const result = await apiRequest<{ id: string; signing_secret: string }>(API_ENDPOINTS.SIGNING_SECRET(routeId));
+    if (result.signing_secret) {
+      showSigningSecretModal(result.signing_secret);
+    } else {
+      showError('No signing secret available');
+    }
+  } catch (error) {
+    showError(error instanceof Error ? error.message : 'Failed to reveal signing secret');
+  }
+}
+
+async function copySigningSecret(): Promise<void> {
+  const input = document.getElementById('revealed-signing-secret');
+  if (!input) return;
+
+  try {
+    await navigator.clipboard.writeText((input as HTMLInputElement).value);
+    showSuccess('Signing secret copied to clipboard');
+    dismissSigningSecret();
+  } catch {
+    showError('Failed to copy to clipboard');
+  }
+}
+
+function dismissSigningSecret(): void {
+  const input = document.getElementById('revealed-signing-secret');
+  if (input) {
+    (input as HTMLInputElement).value = '';
+    hideSigningSecretModal();
+  }
+}
+
+function closeRouteDetail(): void {
+  hideRouteDetailModal();
+  state.currentRouteId = null;
+}
+
+async function loadAdminData(): Promise<void> {
+  try {
+    const result = await apiRequest<{ admin_allowed_ips: string }>(API_ENDPOINTS.ADMIN_IPS);
+    const ipsTextarea = document.getElementById('admin-allowed-ips') as HTMLTextAreaElement;
+    if (ipsTextarea && result.admin_allowed_ips) {
+      ipsTextarea.value = result.admin_allowed_ips;
+    }
+  } catch {
+    // Admin section may not be accessible without proper permissions
+  }
+}
+
+async function saveAdminIps(ips: string): Promise<void> {
+  const statusEl = document.getElementById('admin-ips-status');
+  if (statusEl) {
+    statusEl.textContent = 'Saving...';
+  }
+
+  try {
+    await apiRequest(API_ENDPOINTS.ADMIN_IPS, {
+      method: 'PUT',
+      body: JSON.stringify({ admin_allowed_ips: ips }),
+    });
+    if (statusEl) {
+      statusEl.textContent = 'Saved successfully';
+      statusEl.classList.add('text-safe-accent');
+      setTimeout(() => {
+        statusEl.textContent = '';
+        statusEl.classList.remove('text-safe-accent');
+      }, 3000);
+    }
+  } catch (error) {
+    if (statusEl) {
+      statusEl.textContent = error instanceof Error ? error.message : 'Failed to save';
+      statusEl.classList.add('text-safe-danger');
+      setTimeout(() => {
+        statusEl.textContent = '';
+        statusEl.classList.remove('text-safe-danger');
+      }, 3000);
+    }
   }
 }
 
@@ -593,7 +774,14 @@ async function refreshData(): Promise<void> {
 
 const SafeRouteApi = {
   createRoute,
-  editRoute,
+  openRouteDetail,
+  saveRouteDetail,
+  closeRouteDetail,
+  revealSigningSecret,
+  copySigningSecret,
+  dismissSigningSecret,
+  loadAdminData,
+  saveAdminIps,
   deleteRoute,
   replayLog,
   retryWebhook,

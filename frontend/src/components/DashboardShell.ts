@@ -97,3 +97,41 @@ export function hideCreateRouteModal(): void {
     }
   }
 }
+
+export function showRouteDetailModal(): void {
+  const modal = document.getElementById('route-detail-modal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    const firstInput = modal.querySelector('input');
+    if (firstInput instanceof HTMLElement) {
+      setTimeout(() => firstInput.focus(), 100);
+    }
+  }
+}
+
+export function hideRouteDetailModal(): void {
+  const modal = document.getElementById('route-detail-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+}
+
+export function showSigningSecretModal(secret: string): void {
+  const modal = document.getElementById('signing-secret-modal');
+  const input = document.getElementById('revealed-signing-secret');
+  if (modal && input) {
+    (input as HTMLInputElement).value = secret;
+    modal.classList.remove('hidden');
+    (input as HTMLInputElement).focus();
+    (input as HTMLInputElement).select();
+  }
+}
+
+export function hideSigningSecretModal(): void {
+  const modal = document.getElementById('signing-secret-modal');
+  const input = document.getElementById('revealed-signing-secret');
+  if (modal && input) {
+    (input as HTMLInputElement).value = '';
+    modal.classList.add('hidden');
+  }
+}

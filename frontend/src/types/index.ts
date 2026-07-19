@@ -19,6 +19,10 @@ export interface Route {
   last_used_at?: string;
   api_key_prefix?: string;
   rate_limit: number;
+  max_payload_bytes: number;
+  max_concurrent_deliveries: number;
+  content_scan_rules: Record<string, any>[];
+  signing_secret?: string | null;
   has_webhook_secret: boolean;
   has_transform: boolean;
   transform_headers: Record<string, string>;
