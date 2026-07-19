@@ -140,7 +140,6 @@ class TestVerifyPayment:
             # "credits" now that verify_payment populates new_balance).
             mock_execute_query.side_effect = [
                 MagicMock(data=[tx_row]),
-                MagicMock(data=[{"credits": 5000}]),
             ]
 
             result = await verify_payment("sr_user-123_starter")
@@ -149,7 +148,7 @@ class TestVerifyPayment:
             assert result["reference"] == "sr_user-123_starter"
             assert result["amount"] == 250000
             assert result["credits_added"] == 1000
-            assert result["new_balance"] == 5000
+            assert result["new_balance"] == 0
 
     @pytest.mark.asyncio
     async def test_verify_payment_success_from_paystack(self):
@@ -234,15 +233,14 @@ class TestVerifyPayment:
             }
             mock_execute_query.side_effect = [
                 MagicMock(data=[pending_tx]),  # lookup (already success)
-                MagicMock(data=[{"credits": 7000}]),  # balance read
             ]
 
             result = await verify_payment("sr_user-123_starter")
 
             assert result["status"] == "success"
             assert result["credits_added"] == 1000
-            assert result["new_balance"] == 7000
-            # Only the lookup + balance read ran; no add_user_credits RPC
+            assert result["new_balance"] == 0
+            # Only the lookup ran; no add_user_credits RPC
             # should have been issued for an already-success transaction.
             updates = [
                 c

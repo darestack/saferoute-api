@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ class TestGetExchangeRate:
         """Should return cached rate if less than 1 hour old."""
         with patch(
             "app.services.exchange_rates._rate_cache",
-            {"NGN": (1500.0, int(time.time()))},
+            OrderedDict({"NGN": (1500.0, int(time.time()))}),
         ):
             rate = await get_exchange_rate("NGN")
             assert rate == 1500.0
@@ -39,7 +40,8 @@ class TestGetExchangeRate:
 
         with (
             patch(
-                "app.services.exchange_rates._rate_cache", {"NGN": (1500.0, stale_ts)}
+                "app.services.exchange_rates._rate_cache",
+                OrderedDict({"NGN": (1500.0, stale_ts)}),
             ),
             patch(
                 "app.services.exchange_rates.get_http_client", return_value=mock_client
@@ -74,7 +76,7 @@ class TestGetExchangeRate:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", {}),
+            patch("app.services.exchange_rates._rate_cache", OrderedDict()),
             patch(
                 "app.services.exchange_rates.get_http_client", return_value=mock_client
             ),
@@ -94,7 +96,7 @@ class TestGetExchangeRate:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", {}),
+            patch("app.services.exchange_rates._rate_cache", OrderedDict()),
             patch(
                 "app.services.exchange_rates.get_http_client", return_value=mock_client
             ),
