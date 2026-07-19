@@ -406,15 +406,19 @@ async def shutdown_event() -> None:
 async def root() -> Response:
     """Serve the frontend dashboard in production, API info in development."""
     if settings.ENVIRONMENT == "production":
-        index_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "public", "index.html"
-        )
-        if os.path.isfile(index_path):
-            return HTMLResponse(
-                status_code=200,
-                content=Path(index_path).read_text(encoding="utf-8"),
-                media_type="text/html",
-            )
+        possible_paths = [
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "public", "index.html"),
+            os.path.join(os.getcwd(), "public", "index.html"),
+            "/vercel/path0/public/index.html",
+            "/var/task/public/index.html",
+        ]
+        for index_path in possible_paths:
+            if os.path.isfile(index_path):
+                return HTMLResponse(
+                    status_code=200,
+                    content=Path(index_path).read_text(encoding="utf-8"),
+                    media_type="text/html",
+                )
     return JSONResponse(
         status_code=200,
         content={
@@ -502,6 +506,13 @@ if settings.ENVIRONMENT != "production":
     if os.path.isdir(frontend_path):
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
-    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public")
-    if os.path.isdir(public_path):
-        app.mount("/", StaticFiles(directory=public_path, html=True), name="frontend")
+    possible_paths = [
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "public"),
+        os.path.join(os.getcwd(), "public"),
+        "/vercel/path0/public",
+        "/var/task/public",
+    ]
+    for public_path in possible_paths:
+        if os.path.isdir(public_path):
+            app.mount("/", StaticFiles(directory=public_path, html=True), name="frontend")
+            break
