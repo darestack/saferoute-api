@@ -97,7 +97,7 @@ OTEL_ENABLED=false
 - `API_KEY_SALT` — any random string, used to hash API keys
 - `RETRY_ENDPOINT_SECRET` — shared secret for `/internal/process-retries`
 - `ENCRYPTION_KEY` — required outside local development for webhook-secret encryption. Encryption is performed **in the application** by `app/crypto.py` using Fernet (prefix `v1:`), falling back to the `safe_plain:` prefix when no key is configured. (The older, DB-side `pgcrypto` scheme was removed.)
-- `FRONTEND_URL` — where Supabase redirects after OAuth (e.g. `http://localhost:8000` for dev, `https://your-app.vercel.app` for production)
+- `FRONTEND_URL` — where Supabase redirects after OAuth (e.g. `http://localhost:8000` for dev, `https://saferoute-api.vercel.app` for production)
 - `ALLOWED_HOSTS` — **required in production** (comma-separated). On Vercel set to your app domain(s); empty (or missing) makes the app refuse to start.
 - `TRUSTED_PROXIES` — comma-separated edge/CDN IPs whose `X-Forwarded-For` is trusted for per-IP rate limiting. **Required when deployed behind a CDN/Vercel** so clients aren't all grouped into one rate-limit bucket.
 - `RETENTION_DAYS` — how many days of webhook delivery history to retain (1-365). Defaults to 30.
@@ -158,7 +158,10 @@ Use `POST /v1/routes/{route_id}/rotate-key` to rotate a route's API key. The new
 ## Deploying
 
 1. Push to GitHub
-2. Deploy with Docker or an ASGI-compatible host
-3. Set environment variables in your hosting platform
-4. Update `FRONTEND_URL` to your production URL
-5. Add production URL to OAuth provider dashboards if needed
+2. Deploy the backend to Vercel using the existing `api/index.py` serverless function
+3. Set environment variables in Vercel project settings
+4. Update `FRONTEND_URL` to `https://saferoute-api.vercel.app`
+5. Add `https://saferoute-api.vercel.app` to OAuth provider redirect URIs
+6. The frontend is served from the same Vercel domain — no separate frontend deploy needed
+
+> **Note:** The frontend build output should be placed in the `public/` directory at the repo root for Vercel to serve it as static files alongside the API function.

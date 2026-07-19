@@ -8,6 +8,8 @@ https://saferoute-api.vercel.app
 
 All endpoints are prefixed with `/v1` unless noted.
 
+All endpoints are prefixed with `/v1` unless noted.
+
 ## Authentication
 
 ### User-Endpoints (Bearer Token)

@@ -412,7 +412,7 @@ async def root() -> JSONResponse:
             "status": "running",
             "docs": "/docs",
             "health": "/health",
-            "dashboard": "https://darestack.github.io/saferoute-api/",
+            "dashboard": "https://saferoute-api.vercel.app",
             "endpoints": {
                 "routes": "/v1/routes",
                 "proxy": "/v1/r/{slug}",
