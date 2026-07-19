@@ -21,6 +21,24 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
 ]
+dependencies = [
+    "fastapi==0.139.2",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+    "supabase==2.31.0",
+    "httpx==0.28.1",
+    "mangum==0.21.0",
+    "uvicorn[standard]==0.34.0",
+    "PyJWT[crypto]==2.13.0",
+    "cryptography==49.0.0",
+    "psycopg2-binary==2.9.12",
+    "resend==2.34.0",
+    "python-dotenv==1.2.2",
+    "tenacity==9.1.4",
+    "sentry-sdk==2.66.0",
+    "opentelemetry-api==1.24.0",
+    "opentelemetry-sdk==1.24.0",
+]
 
 [tool.setuptools]
 packages = ["app", "app.routes", "app.services", "app.utils", "app.repositories"]
