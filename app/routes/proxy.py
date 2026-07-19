@@ -38,7 +38,12 @@ from app.database import (
     get_http_client,
     verify_api_key,
 )
-from app.models import OutboundHealthResponse, RetryProcessResponse, CleanupResponse, SecretRotationResponse
+from app.models import (
+    OutboundHealthResponse,
+    RetryProcessResponse,
+    CleanupResponse,
+    SecretRotationResponse,
+)
 from app.utils.retry import should_retry, calculate_next_retry
 from app.utils.security import (
     verify_webhook_signature,
@@ -82,6 +87,7 @@ def _is_authorized_internal(
     ):
         return True
     return False
+
 
 # ---------------------------------------------------------------------------
 # IP reputation blocklist (global)
@@ -336,9 +342,13 @@ async def enforce_rate_limit(route_id: str, client_ip: str, max_requests: int) -
             row = result.data[0]
             if not row.get("success"):
                 async with _rate_limit_violations_lock:
-                    _rate_limit_violations[client_ip] = _rate_limit_violations.get(client_ip, 0) + 1
+                    _rate_limit_violations[client_ip] = (
+                        _rate_limit_violations.get(client_ip, 0) + 1
+                    )
                     violations = _rate_limit_violations[client_ip]
-                backoff = min(300, _RATE_LIMIT_WINDOW_SECONDS * (2 ** min(violations, 5)))
+                backoff = min(
+                    300, _RATE_LIMIT_WINDOW_SECONDS * (2 ** min(violations, 5))
+                )
                 raise HTTPException(
                     status_code=429,
                     detail="Too many requests",
@@ -1150,7 +1160,9 @@ async def proxy_webhook(
                 ).hexdigest()
                 outbound_headers["X-SafeRoute-Signature"] = f"sha256={signature}"
         except Exception:
-            logger.warning("Failed to compute outbound signature for route %s", route.get("id"))
+            logger.warning(
+                "Failed to compute outbound signature for route %s", route.get("id")
+            )
 
     # --- Concurrency control ---
     route_semaphore = await _get_route_semaphore(
@@ -1457,9 +1469,8 @@ async def check_secret_rotation(
     return result
 
 
-@router.get("/internal/cache/stats",
-
-
+@router.get(
+    "/internal/cache/stats",
     summary="Cache statistics",
     description="Return detailed metrics for all distributed caches.",
 )
@@ -1617,12 +1628,13 @@ async def update_admin_ips(
 
     ips = body.get("admin_allowed_ips", "")
     if not isinstance(ips, str):
-        raise HTTPException(status_code=400, detail="admin_allowed_ips must be a string")
+        raise HTTPException(
+            status_code=400, detail="admin_allowed_ips must be a string"
+        )
 
     try:
         await execute_query(
-            admin.table("app_settings")
-            .upsert(
+            admin.table("app_settings").upsert(
                 {
                     "key": "admin_allowed_ips",
                     "value": {"ips": ips},

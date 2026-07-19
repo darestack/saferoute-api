@@ -56,7 +56,9 @@ async def is_circuit_breaker_open(url: str) -> bool:
                 return False
 
             now = time.time()
-            opened_ts = calendar.timegm(time.strptime(opened_at[:19], "%Y-%m-%dT%H:%M:%S"))
+            opened_ts = calendar.timegm(
+                time.strptime(opened_at[:19], "%Y-%m-%dT%H:%M:%S")
+            )
             if now - opened_ts >= _CIRCUIT_BREAKER_COOLDOWN_SECONDS:
                 await _transition_to_half_open(url)
                 return False
@@ -73,9 +75,7 @@ async def record_circuit_breaker_success(url: str) -> None:
     try:
         async with await _acquire_advisory_lock(lock_id):
             await execute_query(
-                admin.table("circuit_breaker_state")
-                .delete()
-                .eq("destination_url", url)
+                admin.table("circuit_breaker_state").delete().eq("destination_url", url)
             )
     except Exception:
         logger.exception("Failed to record circuit breaker success for %s", url)
@@ -108,14 +108,15 @@ async def record_circuit_breaker_failure(url: str) -> None:
                 opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
             await execute_query(
-                admin.table("circuit_breaker_state")
-                .upsert(
+                admin.table("circuit_breaker_state").upsert(
                     {
                         "destination_url": url,
                         "state": new_state,
                         "failure_count": new_count,
                         "opened_at": opened_at,
-                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "updated_at": time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                        ),
                     },
                     on_conflict="destination_url",
                 )
@@ -130,9 +131,7 @@ async def clear_route_circuit_breaker(url: str) -> None:
     try:
         async with await _acquire_advisory_lock(lock_id):
             await execute_query(
-                admin.table("circuit_breaker_state")
-                .delete()
-                .eq("destination_url", url)
+                admin.table("circuit_breaker_state").delete().eq("destination_url", url)
             )
     except Exception:
         logger.exception("Failed to clear circuit breaker for %s", url)
@@ -143,7 +142,9 @@ async def get_circuit_breaker_stats() -> dict[str, dict]:
     try:
         result = await execute_query(
             admin.table("circuit_breaker_state")
-            .select("destination_url", "state", "failure_count", "opened_at", "updated_at")
+            .select(
+                "destination_url", "state", "failure_count", "opened_at", "updated_at"
+            )
             .order("updated_at", desc=True)
         )
 
@@ -163,6 +164,7 @@ async def get_circuit_breaker_stats() -> dict[str, dict]:
 
 async def _acquire_advisory_lock(lock_id: int) -> asyncio.Lock:
     """Return a context manager that acquires a PostgreSQL advisory lock."""
+
     class AdvisoryLockContext:
         def __init__(self, lock_id: int) -> None:
             self._lock_id = lock_id

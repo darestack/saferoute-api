@@ -1702,12 +1702,16 @@ class TestCircuitBreaker:
             query_type = type(query).__name__
             if "Select" in query_type:
                 if failure_count >= _CIRCUIT_BREAKER_THRESHOLD:
-                    result.data = [{
-                        "destination_url": url,
-                        "state": "open",
-                        "failure_count": failure_count,
-                        "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())),
-                    }]
+                    result.data = [
+                        {
+                            "destination_url": url,
+                            "state": "open",
+                            "failure_count": failure_count,
+                            "opened_at": time.strftime(
+                                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())
+                            ),
+                        }
+                    ]
                 else:
                     result.data = []
             elif "RPC" in query_type:
@@ -1717,7 +1721,9 @@ class TestCircuitBreaker:
                 result.data = [{"destination_url": url, "failure_count": failure_count}]
             return result
 
-        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+        with patch(
+            "app.services.circuit_breaker.execute_query", side_effect=mock_execute
+        ):
             for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
                 asyncio.run(_record_circuit_breaker_failure(url))
 
@@ -1750,7 +1756,9 @@ class TestCircuitBreaker:
                 result.data = [{"destination_url": url, "failure_count": failure_count}]
             return result
 
-        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+        with patch(
+            "app.services.circuit_breaker.execute_query", side_effect=mock_execute
+        ):
             for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
                 asyncio.run(_record_circuit_breaker_failure(url))
 
@@ -1784,7 +1792,9 @@ class TestCircuitBreaker:
                 result.data = [{"destination_url": url, "failure_count": failure_count}]
             return result
 
-        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+        with patch(
+            "app.services.circuit_breaker.execute_query", side_effect=mock_execute
+        ):
             for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
                 asyncio.run(_record_circuit_breaker_failure(url))
 
@@ -1810,12 +1820,14 @@ class TestCircuitBreaker:
             if "Select" in query_type:
                 if failure_count >= _CIRCUIT_BREAKER_THRESHOLD:
                     opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts))
-                    result.data = [{
-                        "destination_url": url,
-                        "state": "open",
-                        "failure_count": failure_count,
-                        "opened_at": opened_at,
-                    }]
+                    result.data = [
+                        {
+                            "destination_url": url,
+                            "state": "open",
+                            "failure_count": failure_count,
+                            "opened_at": opened_at,
+                        }
+                    ]
                 else:
                     result.data = []
             elif "RPC" in query_type:
@@ -1825,14 +1837,18 @@ class TestCircuitBreaker:
                 result.data = [{"destination_url": url, "failure_count": failure_count}]
             return result
 
-        with patch("app.services.circuit_breaker.execute_query", side_effect=mock_execute):
+        with patch(
+            "app.services.circuit_breaker.execute_query", side_effect=mock_execute
+        ):
             for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
                 asyncio.run(_record_circuit_breaker_failure(url))
 
             assert asyncio.run(_is_circuit_breaker_open(url)) is True
 
             past_time = now_ts + _CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1
-            with patch("app.services.circuit_breaker.time.time", return_value=past_time):
+            with patch(
+                "app.services.circuit_breaker.time.time", return_value=past_time
+            ):
                 assert asyncio.run(_is_circuit_breaker_open(url)) is False
 
 

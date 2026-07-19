@@ -960,7 +960,9 @@ async def rotate_api_key(
         )
 
 
-@router.get("/routes/{route_id}/signing-secret", response_model=RouteSigningSecretResponse)
+@router.get(
+    "/routes/{route_id}/signing-secret", response_model=RouteSigningSecretResponse
+)
 async def get_signing_secret(
     route_id: str,
     request: Request,

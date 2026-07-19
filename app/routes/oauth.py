@@ -318,7 +318,9 @@ async def oauth_callback_post(
     return await _exchange_code(code, code_challenge, client_ip)
 
 
-async def _exchange_code(code: str, code_challenge: Optional[str], client_ip: Optional[str] = None) -> CallbackResponse:
+async def _exchange_code(
+    code: str, code_challenge: Optional[str], client_ip: Optional[str] = None
+) -> CallbackResponse:
     """Common code exchange logic for OAuth callback.
 
     Args:

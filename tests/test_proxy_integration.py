@@ -319,7 +319,10 @@ class TestProxyWebhookIntegration:
             )
 
             assert response.status_code == 413
-            assert "max_payload_bytes" in response.json()["detail"].lower() or "limit" in response.json()["detail"].lower()
+            assert (
+                "max_payload_bytes" in response.json()["detail"].lower()
+                or "limit" in response.json()["detail"].lower()
+            )
 
     def test_per_route_payload_size_limit_allows_under_limit(self):
         """Test that requests under a route's max_payload_bytes are forwarded."""

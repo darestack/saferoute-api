@@ -3,7 +3,12 @@
 import asyncio
 from unittest.mock import patch
 
-from app.database import generate_api_key, verify_api_key, _hash_api_key, has_http_client
+from app.database import (
+    generate_api_key,
+    verify_api_key,
+    _hash_api_key,
+    has_http_client,
+)
 
 
 class TestGenerateApiKey:
@@ -62,6 +67,7 @@ class TestHasHttpClient:
         original = _http_client
         try:
             import app.database as db_mod
+
             db_mod._http_client = None
             assert has_http_client() is False
         finally:

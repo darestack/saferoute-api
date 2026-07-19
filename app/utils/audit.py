@@ -37,8 +37,7 @@ async def log_audit_event(
     """
     try:
         await execute_query(
-            admin.table("audit_logs")
-            .insert(
+            admin.table("audit_logs").insert(
                 {
                     "user_id": user_id,
                     "action": action,

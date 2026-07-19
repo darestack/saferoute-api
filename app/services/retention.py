@@ -64,6 +64,7 @@ async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
     if settings.BLOCKLIST_URL:
         try:
             from app.routes.proxy import _update_blocklist_from_url
+
             await _update_blocklist_from_url(settings.BLOCKLIST_URL)
             blocklist_updated = True
         except Exception:
@@ -73,9 +74,7 @@ async def run_cleanup(keep_days: int | None = None) -> CleanupResponse:
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
         result = await execute_query(
-            admin.table("audit_logs")
-            .delete()
-            .lt("created_at", cutoff.isoformat())
+            admin.table("audit_logs").delete().lt("created_at", cutoff.isoformat())
         )
         if hasattr(result, "data") and isinstance(result.data, list):
             audit_logs_removed = len(result.data)

@@ -374,7 +374,6 @@ async def get_rates(base: str = "USD", symbols: str = "NGN") -> dict[str, Any]:
     return {"base": base.upper(), "rates": rates, "errors": errors}
 
 
-
 app.include_router(rates_router)
 app.include_router(auth.router)
 app.include_router(oauth.router)
@@ -408,7 +407,7 @@ async def root() -> Response:
     """Serve the frontend dashboard in production, API info in development."""
     if settings.ENVIRONMENT == "production":
         index_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "app", "public", "index.html"
+            os.path.dirname(os.path.dirname(__file__)), "public", "index.html"
         )
         if os.path.isfile(index_path):
             return HTMLResponse(
@@ -503,6 +502,6 @@ if settings.ENVIRONMENT != "production":
     if os.path.isdir(frontend_path):
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
-    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "app", "public")
+    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public")
     if os.path.isdir(public_path):
         app.mount("/", StaticFiles(directory=public_path, html=True), name="frontend")

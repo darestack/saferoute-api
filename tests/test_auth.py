@@ -714,8 +714,6 @@ class TestReplayWebhookLog:
             assert exc.value.status_code == 400
 
 
-
-
 class TestOauthCallbackBody:
     """Regression: the frontend POSTs code/state in a JSON body.
 

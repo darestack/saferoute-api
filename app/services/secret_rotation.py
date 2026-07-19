@@ -26,8 +26,7 @@ async def record_secret_rotation(secret_name: str, owner: Optional[str] = None) 
     """
     try:
         await execute_query(
-            admin.table("secret_rotation_checks")
-            .upsert(
+            admin.table("secret_rotation_checks").upsert(
                 {
                     "secret_name": secret_name,
                     "last_rotated_at": datetime.now(timezone.utc).isoformat(),
@@ -40,7 +39,9 @@ async def record_secret_rotation(secret_name: str, owner: Optional[str] = None) 
         logger.exception("Failed to record secret rotation for %s", secret_name)
 
 
-async def check_stale_secrets(max_age_days: Optional[int] = None) -> SecretRotationResponse:
+async def check_stale_secrets(
+    max_age_days: Optional[int] = None,
+) -> SecretRotationResponse:
     """Check for secrets that haven't been rotated within the allowed age.
 
     Args:
@@ -63,7 +64,9 @@ async def check_stale_secrets(max_age_days: Optional[int] = None) -> SecretRotat
         checks = []
         stale_secrets = []
         for row in result.data:
-            last_rotated = datetime.fromisoformat(row["last_rotated_at"].replace("Z", "+00:00"))
+            last_rotated = datetime.fromisoformat(
+                row["last_rotated_at"].replace("Z", "+00:00")
+            )
             days_since = (datetime.now(timezone.utc) - last_rotated).days
             is_stale = last_rotated < cutoff
 
