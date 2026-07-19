@@ -57,6 +57,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           npm run release
 
+      - name: Authenticate gh CLI
+        if: steps.check-commits.outputs.should_release == 'true'
+        run: gh auth setup-git
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Get version
         id: version
         run: |
