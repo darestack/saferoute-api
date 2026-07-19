@@ -404,10 +404,9 @@ async def shutdown_event() -> None:
 
 
 @app.get("/")
-async def root(request: Request) -> Response:
-    """API root with links to documentation and health check."""
-    accept = request.headers.get("accept", "")
-    if settings.ENVIRONMENT == "production" and "text/html" in accept:
+async def root() -> Response:
+    """Serve the frontend dashboard in production, API info in development."""
+    if settings.ENVIRONMENT == "production":
         index_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "app", "public", "index.html"
         )
