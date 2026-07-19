@@ -1,5 +1,13 @@
 {
   "functions": { "api/index.py": { "maxDuration": 30 } },
+  "public": true,
+  "routes": [
+    { "src": "/assets/(.*)", "dest": "/public/assets/$1" },
+    { "src": "/auth/(.*)", "dest": "/public/auth/$1" },
+    { "src": "/images/(.*)", "dest": "/public/images/$1" },
+    { "src": "/(.*\\.html)", "dest": "/public/$1" },
+    { "src": "/(.*)", "dest": "/public/$1" }
+  ],
   "crons": [
     { "path": "/internal/process-retries", "schedule": "0 2 * * *" },
     { "path": "/internal/cleanup", "schedule": "0 2 * * *" }
