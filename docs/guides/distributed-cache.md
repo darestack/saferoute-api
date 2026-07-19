@@ -137,15 +137,14 @@ Returns detailed metrics per cache:
 
 ### Applying the Migration
 
-The distributed cache requires the `cache_entries` table and RPC functions,
-which are included in `schema.sql`:
+The distributed cache requires migration 013:
 
 ```bash
-# Option 1: Using Supabase CLI
-supabase migration up
+# Option 1: Apply via Supabase SQL Editor
+# Copy contents of schema.sql and run it
 
-# Option 2: Apply via Supabase SQL Editor
-# Copy contents of schema.sql
+# Option 2: Use Supabase CLI
+supabase migration up
 ```
 
 ### Environment Variables

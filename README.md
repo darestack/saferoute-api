@@ -1,7 +1,7 @@
 # SafeRoute API
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
-[![FastAPI 0.139](https://img.shields.io/badge/FastAPI-0.139-green)](https://fastapi.tiangolo.com/)
+[![FastAPI 0.139.2](https://img.shields.io/badge/FastAPI-0.139.2-green)](https://fastapi.tiangolo.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-Ready-3ECF8E)](https://supabase.com/)
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-white?logo=github)](https://github.com/sponsors/darestack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -11,8 +11,8 @@
 
 SafeRoute is a form backend for static sites. Point your HTML form at a SafeRoute endpoint, and we handle validation, spam filtering, email notifications, and secure delivery to your inbox or webhook.
 
-**Live demo (API):** https://saferoute-api.vercel.app
-**Dashboard (frontend):** https://saferoute-api.vercel.app
+**Live demo:** https://saferoute-api.vercel.app
+**Dashboard:** https://darestack.github.io/saferoute-api/
 
 ## Quick start
 
@@ -21,12 +21,17 @@ git clone https://github.com/darestack/saferoute-api.git
 cd saferoute-api
 cp .env.example .env
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-uvicorn app.main:app --reload
+pip install -r requirements.txt
 ```
 
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
+
+Then apply `schema.sql` to your Supabase project and run:
+
+```bash
+uvicorn app.main:app --reload
+```
 
 ## Why SafeRoute?
 
@@ -36,7 +41,7 @@ SafeRoute gives you a backend without the backend:
 
 | Problem | SafeRoute Solution |
 |---------|-------------------|
-| Exposing your real email/webhook | Secret endpoint masking (`/v1/route/contact-form`) |
+| Exposing your real email/webhook | Secret endpoint masking (`/v1/r/contact-form`) |
 | Spam and bots | Honeypot + rate limiting + User-Agent filtering |
 | Invalid submissions | Server-side form validation before delivery |
 | No visibility | Simple request logs with replay |
@@ -54,95 +59,49 @@ SafeRoute gives you a backend without the backend:
 ## Project layout
 
 ```
-├── api/
-│   └── index.py              # Mangum ASGI adapter for Vercel
 ├── app/
-│   ├── main.py               # FastAPI app, middleware, routes
-│   ├── config.py             # Pydantic settings
-│   ├── database.py           # Supabase clients
-│   ├── crypto.py             # Webhook secret encryption
-│   ├── logging_config.py     # Structured JSON logging
-│   ├── models.py             # Request/response schemas
-│   ├── monitoring.py         # Sentry / OpenTelemetry initialization
-│   ├── repositories/         # Data access layer
-│   ├── routes/               # HTTP route handlers
-│   │   ├── auth.py           # JWT auth, route CRUD, payments, admin
-│   │   ├── oauth.py          # Google/GitHub OAuth flows
-│   │   └── proxy.py          # Webhook forwarding engine
-│   ├── services/             # Business logic layer
-│   │   ├── cache.py          # Distributed cache (L1 + L2)
-│   │   ├── circuit_breaker.py # Outbound circuit breaker
-│   │   ├── exchange_rates.py # FX rate fetching
-│   │   ├── payments.py       # Paystack integration
-│   │   ├── retention.py      # Database cleanup jobs
-│   │   ├── retry_processor.py # Failed webhook retry logic
-│   │   └── route_cache.py    # Route config caching
-│   └── utils/                # Shared helpers
-│       ├── captcha.py        # Cloudflare Turnstile verification
-│       ├── disposable_domains.json # Embedded fallback list
-│       ├── email.py          # Resend email delivery
-│       ├── ip_allowlist.py   # Admin IP allowlist
-│       ├── pkce.py           # PKCE code verifier storage
-│       ├── retry.py          # Retry scheduling utilities
-│       ├── routes.py         # Route helper functions
-│       └── security.py       # IP extraction, URL validation
-├── frontend/                 # Static dashboard (GitHub Pages)
-│   ├── src/                  # TypeScript source
-│   │   ├── main.ts           # Homepage entry
-│   │   ├── dashboard.ts      # Dashboard SPA entry
-│   │   ├── login.ts          # Login page logic
-│   │   ├── callback.ts       # OAuth callback handler
-│   │   ├── components/       # Dashboard UI components
-│   │   ├── lib/              # API and auth utilities
-│   │   ├── types/            # TypeScript interfaces
-│   │   └── global.css        # Custom animations
-│   ├── auth/
-│   │   └── callback.html     # OAuth callback handler
-│   ├── dashboard.html        # Authenticated dashboard
-│   ├── login.html            # OAuth login
-│   ├── index.html            # Marketing homepage
-│   └── assets/               # CSS, JS, images
-├── tests/                    # Backend test suite
-├── load-tests/               # k6 load testing scripts
+│   ├── main.py              # FastAPI app, middleware, routes
+│   ├── config.py            # Pydantic settings
+│   ├── database.py          # Supabase clients
+│   ├── crypto.py            # Webhook secret encryption
+│   ├── models.py            # Request/response schemas
+│   ├── repositories/        # Data access layer
+│   ├── routes/              # HTTP route handlers
+│   │   ├── auth.py          # JWT auth, route CRUD, payments, admin
+│   │   ├── oauth.py         # Google/GitHub OAuth flows
+│   │   └── proxy.py         # Webhook forwarding engine
+│   ├── services/            # Business logic layer
+│   │   └── payments.py      # Paystack integration
+│   └── utils/               # Shared helpers
+├── frontend/                # Static dashboard (GitHub Pages)
+│   ├── dashboard.html       # Authenticated dashboard
+│   ├── login.html           # OAuth login
+│   ├── index.html           # Marketing homepage
+│   └── assets/              # CSS, JS, images
 ├── requirements.txt
-├── schema.sql                # Supabase tables + RLS policies
-└── docs/                     # Documentation
+├── schema.sql               # Supabase tables + RLS policies
+└── tests/                   # Test suite
 ```
 
 ## What's included
 
-- [x] Google/GitHub OAuth via Supabase Auth
-- [x] API key generation and verification for route management
-- [x] Proxy forwarding with rate limiting and webhook logging
-- [x] Retry processing for retryable delivery failures
-- [x] Optional webhook signature verification
-- [x] Security headers, CORS, request size limits
-- [x] Basic SSRF guardrails for outbound destinations
-- [x] Supabase schema with RLS, rate-limit table, webhook logs
-- [x] Webhook secret rotation support
-- [x] Form validation schema support
-- [x] Spam shield (honeypot + rate limiting + User-Agent filtering + country blocking + IP blacklist + disposable email detection + Cloudflare Turnstile)
-- [x] Manual replay queue for failed deliveries
-- [x] Bulk log cleanup endpoint
-- [x] Email notifications via Resend
-- [x] Standardized API responses with Pydantic models
-- [x] Credit-based usage system with atomic deduction
-- [x] Paystack payment integration for credit pack purchases
-- [x] Payment webhook verification and automatic credit top-up
-- [x] Admin manual credit adjustment endpoint
-- [x] Frontend dashboard with OAuth login, route management, and payment UI
-- [x] GitHub Pages deployment for frontend
-- [x] Sentry error tracking and OpenTelemetry tracing support
+- **Authentication & Access**: Google/GitHub OAuth via Supabase Auth, API key generation and verification
+- **Proxy & Delivery**: Webhook forwarding with rate limiting, webhook logging, retry processing, idempotency, and optional signature verification
+- **Security**: Security headers, CORS, request size limits, SSRF guardrails, honeypot, User-Agent filtering, country blocking, IP blacklist, disposable email detection, Cloudflare Turnstile
+- **Validation**: Server-side form validation with schema support
+- **Operations**: Manual replay queue for failed deliveries, bulk log cleanup endpoint, circuit breaker
+- **Email**: Email notifications via Resend (optional)
+- **Credits & Payments**: Credit-based usage system with atomic deduction, Paystack integration for credit pack purchases, payment webhook verification, admin credit adjustment
+- **Frontend**: Dashboard with OAuth login, route management, payment UI, and GitHub Pages deployment
+- **Observability**: Sentry error tracking and OpenTelemetry tracing support (optional)
 
 ## Deployment
 
 ### Vercel (recommended for backend)
 
-1. Clone and install dependencies
-2. Set environment variables in Vercel dashboard
-3. Deploy with `vercel --prod`
+See [docs/deployment.md](docs/deployment.md) for the full deployment guide.
 
-Required env vars: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `API_KEY_SALT`, `ENCRYPTION_KEY`, `ALLOWED_HOSTS`, `WEBHOOK_SECRET`, `RETRY_ENDPOINT_SECRET`
+Required env vars: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `API_KEY_SALT`, `ENCRYPTION_KEY`, `ALLOWED_HOSTS`, `RETRY_ENDPOINT_SECRET`
 
 ### Docker
 
@@ -160,7 +119,7 @@ The frontend dashboard is automatically deployed to GitHub Pages via the include
 ### Plain HTML
 
 ```html
-<form action="/v1/route/contact-form" method="POST">
+<form action="/v1/r/contact-form" method="POST">
   <input type="text" name="name" required>
   <input type="email" name="email" required>
   <textarea name="message" required></textarea>
@@ -172,7 +131,7 @@ The frontend dashboard is automatically deployed to GitHub Pages via the include
 
 ```html
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-<form action="/v1/route/contact-form" method="POST">
+<form action="/v1/r/contact-form" method="POST">
   <input type="text" name="name" required>
   <input type="email" name="email" required>
   <div class="cf-turnstile" data-sitekey="your-site-key"></div>
@@ -186,7 +145,7 @@ The frontend dashboard is automatically deployed to GitHub Pages via the include
 const form = document.querySelector('#contact-form');
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const response = await fetch('/v1/route/contact-form', {
+  const response = await fetch('/v1/r/contact-form', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'John', email: 'john@example.com', message: 'Hello' }),
@@ -205,11 +164,13 @@ form.addEventListener('submit', async (e) => {
 | Topic | Guide |
 |-------|-------|
 | Detailed setup (Supabase, OAuth, env vars) | [docs/guides/setup.md](docs/guides/setup.md) |
+| Deployment (Vercel, Docker, Uvicorn) | [docs/deployment.md](docs/deployment.md) |
 | API endpoint reference | [docs/reference/api.md](docs/reference/api.md) |
 | Architecture and data flow | [docs/reference/architecture.md](docs/reference/architecture.md) |
 | Operations and incident response | [docs/runbook.md](docs/runbook.md) |
 | Zero-dollar constraint & tradeoffs | [docs/reference/zero-dollar-constraint.md](docs/reference/zero-dollar-constraint.md) |
 | Database migrations | [docs/migrations.md](docs/migrations.md) |
+| Distributed cache architecture | [docs/guides/distributed-cache.md](docs/guides/distributed-cache.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |
 

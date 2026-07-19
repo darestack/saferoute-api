@@ -39,8 +39,6 @@ supabase migration up
 4. Paste into the SQL Editor
 5. Click **Run**
 
-The complete schema is in `schema.sql`. There are no separate incremental migration files.
-
 ## Step 2: Configure Environment Variables
 
 Ensure these environment variables are set in your deployment environment:
