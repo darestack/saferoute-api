@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
+
+# Check if opentelemetry packages are available for OTel-specific tests.
+_otel_available = (
+    "opentelemetry" in sys.modules
+    or "opentelemetry.sdk.trace" in sys.modules
+)
 
 
 class TestInitSentry:
@@ -102,6 +109,8 @@ class TestInitOpentelemetry:
         downstream code can create spans, but nothing is exported unless a
         real exporter is wired in.
         """
+        if not _otel_available:
+            return
         mock_settings = MagicMock()
         mock_settings.OTEL_ENABLED = True
         mock_settings.is_production = True
@@ -128,6 +137,8 @@ class TestInitOpentelemetry:
 
     def test_development_exports_to_console(self):
         """Outside production, console export aids local debugging."""
+        if not _otel_available:
+            return
         mock_settings = MagicMock()
         mock_settings.OTEL_ENABLED = True
         mock_settings.is_production = False

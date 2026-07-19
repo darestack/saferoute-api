@@ -191,7 +191,7 @@ async def _send_with_retry(email: dict[str, Any]) -> bool:
         try:
             # Resend 2.x SDK uses module-level functions; run in thread pool
             # to avoid blocking the event loop.
-            result = await asyncio.to_thread(resend.Emails.send, email)  # type: ignore[arg-type]
+            result = await asyncio.to_thread(resend.Emails.send, email)
             logger.info(
                 "Submission email sent",
                 extra={

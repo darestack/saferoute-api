@@ -101,7 +101,7 @@ class TestSendSubmissionEmail:
             patch("app.utils.email.resend") as mock_resend,
             patch("app.utils.email.asyncio.sleep", new=AsyncMock()),
         ):
-            err = ResendError("422", "invalid_request_error", "bad request")
+            err = ResendError("422", "invalid_request_error", "bad request", "fix the request")
             err.code = "422"
             mock_resend.Emails.send.side_effect = err
             ok = await send_submission_email(

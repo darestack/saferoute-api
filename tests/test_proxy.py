@@ -2467,7 +2467,7 @@ class TestEmailNotifications:
 
         class FakeResendError(ResendError):
             def __init__(self):
-                super().__init__("401", "authentication_error", "Invalid API key")
+                super().__init__("401", "authentication_error", "Invalid API key", "check your API key")
 
         with (
             patch("app.utils.email.settings.RESEND_API_KEY", "test-key"),
