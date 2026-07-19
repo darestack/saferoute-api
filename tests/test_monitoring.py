@@ -7,8 +7,7 @@ from unittest.mock import MagicMock, patch
 
 # Check if opentelemetry packages are available for OTel-specific tests.
 _otel_available = (
-    "opentelemetry" in sys.modules
-    or "opentelemetry.sdk.trace" in sys.modules
+    "opentelemetry" in sys.modules or "opentelemetry.sdk.trace" in sys.modules
 )
 
 
