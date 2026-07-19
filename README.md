@@ -11,8 +11,8 @@
 
 SafeRoute is a form backend for static sites. Point your HTML form at a SafeRoute endpoint, and we handle validation, spam filtering, email notifications, and secure delivery to your inbox or webhook.
 
-**Live demo:** https://saferoute-api.vercel.app
-**Dashboard:** https://darestack.github.io/saferoute-api/
+**Live demo (API):** https://saferoute-api.vercel.app
+**Dashboard (frontend):** https://saferoute-api.vercel.app
 
 ## Quick start
 
