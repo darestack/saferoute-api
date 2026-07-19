@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.3](https://github.com/darestack/saferoute-api/compare/v0.7.2...v0.7.3) (2026-07-19)
+
+
+### Bug Fixes
+
+* apply formatting and type ignore for CI compatibility ([748e9e4](https://github.com/darestack/saferoute-api/commit/748e9e43e8c2bd2a9e65062f22a816a9020a0bfc))
+
 ### [0.7.2](https://github.com/darestack/saferoute-api/compare/v0.7.1...v0.7.2) (2026-07-19)
 
 
