@@ -12,12 +12,13 @@ import time
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from typing import Callable, Awaitable, Any, MutableMapping, Optional, TypeAlias
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -403,8 +404,19 @@ async def shutdown_event() -> None:
 
 
 @app.get("/")
-async def root() -> JSONResponse:
+async def root(request: Request) -> Response:
     """API root with links to documentation and health check."""
+    accept = request.headers.get("accept", "")
+    if settings.ENVIRONMENT == "production" and "text/html" in accept:
+        index_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "public", "index.html"
+        )
+        if os.path.isfile(index_path):
+            return HTMLResponse(
+                status_code=200,
+                content=Path(index_path).read_text(encoding="utf-8"),
+                media_type="text/html",
+            )
     return JSONResponse(
         status_code=200,
         content={
@@ -492,6 +504,6 @@ if settings.ENVIRONMENT != "production":
     if os.path.isdir(frontend_path):
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
-    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "app", "public")
+    public_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public")
     if os.path.isdir(public_path):
         app.mount("/", StaticFiles(directory=public_path, html=True), name="frontend")

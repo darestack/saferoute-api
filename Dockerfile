@@ -38,6 +38,7 @@ COPY --from=builder /install /usr/local
 COPY app/ ./app/
 COPY api/ ./api/
 COPY public/ ./public/
+COPY public/ ./public/
 
 # Ensure the non-root user owns the application files
 RUN chown -R appuser:appuser /home/appuser/src
