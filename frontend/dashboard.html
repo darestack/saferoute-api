@@ -419,6 +419,11 @@
                     <div class="p-6">
                         <form id="admin-ips-form" class="space-y-4">
                             <div>
+                                <label class="block text-sm font-medium mb-2">Admin Secret</label>
+                                <input type="password" id="admin-secret" required class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all font-mono text-sm" placeholder="Enter admin secret">
+                                <p class="text-safe-muted text-xs mt-1">Required to modify IP allowlist settings.</p>
+                            </div>
+                            <div>
                                 <label class="block text-sm font-medium mb-2">Allowed IP Addresses</label>
                                 <textarea id="admin-allowed-ips" rows="4" class="w-full px-4 py-2 rounded-lg bg-safe-surface border border-safe-border focus:border-safe-accent focus:ring-2 focus:ring-safe-accent/20 outline-none transition-all font-mono text-sm" placeholder="192.168.1.1, 10.0.0.0/8"></textarea>
                                 <p class="text-safe-muted text-xs mt-1">Comma-separated IPs or CIDR ranges. One per line or comma-separated.</p>

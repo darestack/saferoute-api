@@ -68,6 +68,21 @@ __all__ = [
     "clear_circuit_breaker_for_url",
 ]
 
+
+def _is_authorized_internal(
+    x_retry_secret: Optional[str],
+    x_admin_secret: Optional[str],
+) -> bool:
+    if settings.RETRY_ENDPOINT_SECRET and compare_digest(
+        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
+    ):
+        return True
+    if settings.ADMIN_SECRET_KEY and compare_digest(
+        x_admin_secret or "", settings.ADMIN_SECRET_KEY
+    ):
+        return True
+    return False
+
 # ---------------------------------------------------------------------------
 # IP reputation blocklist (global)
 # ---------------------------------------------------------------------------
@@ -1558,11 +1573,10 @@ async def circuit_breaker_stats(
 async def get_admin_ips(
     request: Request,
     x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+    x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
 ):
     """Get the current admin allowed IPs from database or env var."""
-    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
-        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
-    ):
+    if not _is_authorized_internal(x_retry_secret, x_admin_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
@@ -1595,11 +1609,10 @@ async def update_admin_ips(
     request: Request,
     body: dict[str, Any],
     x_retry_secret: Optional[str] = Header(None, alias="X-Retry-Secret"),
+    x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret"),
 ):
     """Update the admin allowed IPs in the database."""
-    if not settings.RETRY_ENDPOINT_SECRET or not compare_digest(
-        x_retry_secret or "", settings.RETRY_ENDPOINT_SECRET
-    ):
+    if not _is_authorized_internal(x_retry_secret, x_admin_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     ips = body.get("admin_allowed_ips", "")

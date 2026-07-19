@@ -621,12 +621,29 @@ function closeRouteDetail(): void {
   state.currentRouteId = null;
 }
 
+let adminSecret: string | null = null;
+
 async function loadAdminData(): Promise<void> {
+  const secretInput = document.getElementById('admin-secret') as HTMLInputElement;
+  adminSecret = secretInput?.value || null;
+
+  if (!adminSecret) {
+    return;
+  }
+
   try {
-    const result = await apiRequest<{ admin_allowed_ips: string }>(API_ENDPOINTS.ADMIN_IPS);
-    const ipsTextarea = document.getElementById('admin-allowed-ips') as HTMLTextAreaElement;
-    if (ipsTextarea && result.admin_allowed_ips) {
-      ipsTextarea.value = result.admin_allowed_ips;
+    const response = await fetch(API_ENDPOINTS.ADMIN_IPS, {
+      headers: {
+        'X-Admin-Secret': adminSecret,
+      },
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      const ipsTextarea = document.getElementById('admin-allowed-ips') as HTMLTextAreaElement;
+      if (ipsTextarea && result.admin_allowed_ips) {
+        ipsTextarea.value = result.admin_allowed_ips;
+      }
     }
   } catch {
     // Admin section may not be accessible without proper permissions
@@ -634,27 +651,52 @@ async function loadAdminData(): Promise<void> {
 }
 
 async function saveAdminIps(ips: string): Promise<void> {
+  const secretInput = document.getElementById('admin-secret') as HTMLInputElement;
+  adminSecret = secretInput?.value || null;
+
+  if (!adminSecret) {
+    showError('Admin secret is required');
+    return;
+  }
+
   const statusEl = document.getElementById('admin-ips-status');
   if (statusEl) {
     statusEl.textContent = 'Saving...';
   }
 
   try {
-    await apiRequest(API_ENDPOINTS.ADMIN_IPS, {
+    const response = await fetch(API_ENDPOINTS.ADMIN_IPS, {
       method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Secret': adminSecret,
+      },
       body: JSON.stringify({ admin_allowed_ips: ips }),
     });
-    if (statusEl) {
-      statusEl.textContent = 'Saved successfully';
-      statusEl.classList.add('text-safe-accent');
-      setTimeout(() => {
-        statusEl.textContent = '';
-        statusEl.classList.remove('text-safe-accent');
-      }, 3000);
+
+    if (response.ok) {
+      if (statusEl) {
+        statusEl.textContent = 'Saved successfully';
+        statusEl.classList.add('text-safe-accent');
+        setTimeout(() => {
+          statusEl.textContent = '';
+          statusEl.classList.remove('text-safe-accent');
+        }, 3000);
+      }
+    } else {
+      const error = await response.json().catch(() => ({ detail: 'Failed to save' }));
+      if (statusEl) {
+        statusEl.textContent = error.detail || 'Failed to save';
+        statusEl.classList.add('text-safe-danger');
+        setTimeout(() => {
+          statusEl.textContent = '';
+          statusEl.classList.remove('text-safe-danger');
+        }, 3000);
+      }
     }
-  } catch (error) {
+  } catch {
     if (statusEl) {
-      statusEl.textContent = error instanceof Error ? error.message : 'Failed to save';
+      statusEl.textContent = 'Network error';
       statusEl.classList.add('text-safe-danger');
       setTimeout(() => {
         statusEl.textContent = '';
