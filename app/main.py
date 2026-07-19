@@ -80,7 +80,7 @@ app = FastAPI(
         "Secure, Zero-Config Webhook Proxy Shield. "
         "Forward webhooks safely without exposing your destination URLs."
     ),
-    version="1.0.0",
+    version=settings.APP_VERSION,
     contact={
         "name": "SafeRoute Team",
         "url": "https://saferouteapi.app",
@@ -373,6 +373,7 @@ async def get_rates(base: str = "USD", symbols: str = "NGN") -> dict[str, Any]:
     return {"base": base.upper(), "rates": rates, "errors": errors}
 
 
+
 app.include_router(rates_router)
 app.include_router(auth.router)
 app.include_router(oauth.router)
@@ -415,7 +416,7 @@ async def root() -> JSONResponse:
             "dashboard": "https://saferoute-api.vercel.app",
             "endpoints": {
                 "routes": "/v1/routes",
-                "proxy": "/v1/r/{slug}",
+                "proxy": "/v1/route/{slug}",
                 "payments": "/v1/payments",
                 "webhooks": "/v1/webhooks/paystack",
             },

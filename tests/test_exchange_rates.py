@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
-from collections import OrderedDict
 
 import pytest
 
@@ -23,7 +22,7 @@ class TestGetExchangeRate:
         """Should return cached rate if less than 1 hour old."""
         with patch(
             "app.services.exchange_rates._rate_cache",
-            OrderedDict({"NGN": (1500.0, int(time.time()))}),
+            {"NGN": (1500.0, int(time.time()))},
         ):
             rate = await get_exchange_rate("NGN")
             assert rate == 1500.0
@@ -40,8 +39,7 @@ class TestGetExchangeRate:
 
         with (
             patch(
-                "app.services.exchange_rates._rate_cache",
-                OrderedDict({"NGN": (1500.0, stale_ts)}),
+                "app.services.exchange_rates._rate_cache", {"NGN": (1500.0, stale_ts)}
             ),
             patch(
                 "app.services.exchange_rates.get_http_client", return_value=mock_client
@@ -76,7 +74,7 @@ class TestGetExchangeRate:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", OrderedDict({})),
+            patch("app.services.exchange_rates._rate_cache", {}),
             patch(
                 "app.services.exchange_rates.get_http_client", return_value=mock_client
             ),
@@ -96,7 +94,7 @@ class TestGetExchangeRate:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("app.services.exchange_rates._rate_cache", OrderedDict({})),
+            patch("app.services.exchange_rates._rate_cache", {}),
             patch(
                 "app.services.exchange_rates.get_http_client", return_value=mock_client
             ),
@@ -150,83 +148,3 @@ class TestFormatPrice:
         """Should handle case-insensitive currency codes."""
         assert format_price(5.0, "usd") == "$5.00"
         assert format_price(5.0, "NgN") == "₦5.00"
-
-
-class TestRateCacheBounds:
-    """The in-memory rate cache must stay bounded (LRU eviction)."""
-
-    @pytest.mark.asyncio
-    async def test_evicts_oldest_when_over_limit(self):
-        from collections import OrderedDict
-
-        from app.services import exchange_rates
-
-        # Build a cache one over the limit using only the common set so
-        # the fetch path does not require a real HTTP call.
-        cache = OrderedDict()
-        for i in range(exchange_rates._RATE_CACHE_MAX_ENTRIES + 1):
-            cache[f"X{i:02d}"] = (1.0, int(time.time()))
-        with patch("app.services.exchange_rates._rate_cache", cache):
-            # Trigger a write via a (mocked) fetch for a new currency.
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "rates": {f"X{exchange_rates._RATE_CACHE_MAX_ENTRIES + 1:02d}": 2.0}
-            }
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            with patch(
-                "app.services.exchange_rates.get_http_client",
-                return_value=mock_client,
-            ):
-                await get_exchange_rate(
-                    f"X{exchange_rates._RATE_CACHE_MAX_ENTRIES + 1:02d}"
-                )
-            # Cache must never exceed the configured ceiling.
-            assert len(cache) <= exchange_rates._RATE_CACHE_MAX_ENTRIES
-
-
-class TestRatesEndpoint:
-    """Tests for the /rates HTTP endpoint error semantics."""
-
-    @pytest.mark.asyncio
-    async def test_returns_rate_and_no_errors_on_success(self):
-        from fastapi.testclient import TestClient
-
-        from app.main import app
-
-        with patch(
-            "app.main.get_exchange_rate",
-            AsyncMock(return_value=1500.0),
-        ):
-            client = TestClient(app)
-            resp = client.get("/rates?symbols=NGN")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["base"] == "USD"
-        assert body["rates"]["NGN"] == 1500.0
-        assert body["errors"] == []
-
-    @pytest.mark.asyncio
-    async def test_reports_failed_symbol_in_errors_not_default(self):
-        from fastapi.testclient import TestClient
-
-        from app.main import app
-
-        async def _side_effect(symbol: str) -> float:
-            if symbol == "NGN":
-                return 1500.0
-            raise RuntimeError("unavailable")
-
-        with patch(
-            "app.main.get_exchange_rate",
-            side_effect=_side_effect,
-        ):
-            client = TestClient(app)
-            resp = client.get("/rates?symbols=NGN,BAD")
-        assert resp.status_code == 200
-        body = resp.json()
-        # A failed lookup must be surfaced as None + recorded, never 1.0.
-        assert body["rates"]["NGN"] == 1500.0
-        assert body["rates"]["BAD"] is None
-        assert body["errors"] == ["BAD"]

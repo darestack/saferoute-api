@@ -513,9 +513,12 @@ async def retry_failed_webhooks(
 ):
     """Retry failed payment webhooks.
 
-    Admin-only endpoint protected by ADMIN_SECRET_KEY.
-    Processes webhook_failures entries for payment events.
+    Admin-only endpoint protected by ADMIN_SECRET_KEY. Re-processes any
+    dead-lettered ``webhook_failures`` entry whose payload is a Paystack
+    ``charge.*`` event. Payment webhooks always carry the originating route's
+    ``route_id``, so they cannot be selected via a null ``route_id``.
     """
+
     if not settings.ADMIN_SECRET_KEY or not compare_digest(
         x_admin_secret or "", settings.ADMIN_SECRET_KEY
     ):
@@ -524,27 +527,26 @@ async def retry_failed_webhooks(
             detail="Invalid admin secret",
         )
 
-    # Find failed payment webhooks
-    result = await execute_query(
-        admin.table("webhook_failures")
-        .select("*")
-        .eq("route_id", None)  # Payment webhooks have no route_id
-        .eq("retry_count", 0)
-        .limit(10)
-    )
+    # Payment webhooks are dead-lettered into webhook_failures with a Paystack
+    # event payload in ``request_body``. Identify them by the ``charge.`` event
+    # prefix rather than a (non-existent) null route_id.
+    result = await execute_query(admin.table("webhook_failures").select("*").limit(50))
 
     retried = 0
-    for failure in result.data:
+    for failure in result.data or []:
         try:
-            body = failure["request_body"]
-            if body:
-                payload = json.loads(body)
-                event = payload.get("event", "")
-                data = payload.get("data", {})
-                await process_webhook(event, data)
-                retried += 1
+            body = failure.get("request_body")
+            if not body:
+                continue
+            payload = json.loads(body)
+            event = payload.get("event", "")
+            if not event.startswith("charge."):
+                continue
+            data = payload.get("data", {})
+            await process_webhook(event, data)
+            retried += 1
         except Exception:
-            pass
+            logger.exception("Failed to retry payment webhook failure")
 
     await log_audit_event(
         action="payment_webhooks.retried",
@@ -627,11 +629,22 @@ async def admin_adjust_credits(
             )
         )
 
-    # Fetch new balance
-    result = await execute_query(
-        admin.table("user_profiles").select("credits, tier").eq("id", user_id).limit(1)
-    )
-    new_credits = result.data[0]["credits"] if result.data else 0
+    # Fetch new balance. Guard against a missing profile row so a dangling
+    # user (auth user without a user_profiles row) returns a 0 balance
+    # instead of raising IndexError -> 500.
+    new_credits = 0
+    try:
+        result = await execute_query(
+            admin.table("user_profiles")
+            .select("credits, tier")
+            .eq("id", user_id)
+            .limit(1)
+        )
+        if result.data:
+            row = result.data[0]
+            new_credits = row["credits"] if isinstance(row, dict) else 0
+    except Exception:
+        logger.exception("Failed to fetch balance for user_id=%s", user_id)
 
     await log_audit_event(
         action="credits.adjusted",

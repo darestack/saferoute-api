@@ -274,19 +274,12 @@ async def verify_payment(reference: str, user_id: str | None = None) -> dict[str
             detail="Transaction not found",
         )
     if tx["status"] == "success":
-        balance_result = await execute_query(
-            admin.table("user_profiles")
-            .select("credits")
-            .eq("id", tx["user_id"])
-            .limit(1)
-        )
-        new_balance = balance_result.data[0]["credits"] if balance_result.data else 0
         return {
             "status": "success",
             "reference": reference,
             "amount": tx["amount"],
             "credits_added": tx["credits_to_add"],
-            "new_balance": new_balance,
+            "new_balance": 0,  # Caller can fetch from /v1/me
         }
 
     try:
@@ -335,11 +328,8 @@ async def verify_payment(reference: str, user_id: str | None = None) -> dict[str
         paystack_status = data["data"].get("status")
         is_success = paystack_status == "success"
 
-        # Idempotent transition: only flip a "pending" transaction. The
-        # conditional UPDATE returns the matched row only on the first
-        # success transition, so a repeated verify (e.g. the user refreshes
-        # the return URL) credits the user exactly once.
-        transition = await execute_query(
+        # Update transaction
+        await execute_query(
             admin.table("payment_transactions")
             .update(
                 {
@@ -348,58 +338,36 @@ async def verify_payment(reference: str, user_id: str | None = None) -> dict[str
                 }
             )
             .eq("reference", reference)
-            .eq("status", "pending")
         )
 
-        new_balance = 0
-        if is_success and transition.data:
-            tx_row = transition.data[0]
-            # Credit the user's account
+        if is_success:
+            # Grant credits exactly once, idempotent across the webhook and
+            # return-verify paths. ``grant_credits_once`` flips
+            # ``credits_granted`` false->true and only adds credits when that
+            # flip succeeds, so concurrent/duplicate calls cannot double-credit.
             await execute_query(
                 admin.rpc(
-                    "add_user_credits",
+                    "grant_credits_once",
                     {
-                        "p_user_id": tx_row["user_id"],
-                        "p_amount": tx_row["credits_to_add"],
+                        "p_reference": reference,
+                        "p_user_id": tx["user_id"],
+                        "p_amount": tx["credits_to_add"],
                     },
                 )
             )
-            # Update tier
+            # Update tier (best-effort; safe to repeat).
             await execute_query(
                 admin.table("user_profiles")
-                .update({"tier": tx_row["tier"]})
-                .eq("id", tx_row["user_id"])
+                .update({"tier": tx["tier"]})
+                .eq("id", tx["user_id"])
             )
-            # Read the resulting balance so the client does not have to
-            # immediately re-fetch /v1/me.
-            balance_result = await execute_query(
-                admin.table("user_profiles")
-                .select("credits")
-                .eq("id", tx_row["user_id"])
-                .limit(1)
-            )
-            new_balance = (
-                balance_result.data[0]["credits"] if balance_result.data else 0
-            )
-            credits_added = tx_row["credits_to_add"]
-        else:
-            # Already processed (or not a success): report the stored amount.
-            credits_added = tx["credits_to_add"] if is_success else 0
-            if not is_success:
-                # Reflect the failure status even when no row transitioned.
-                logger.info(
-                    "Payment verify for reference=%s resolved as %s "
-                    "(no pending transition)",
-                    reference,
-                    paystack_status,
-                )
 
         return {
             "status": paystack_status,
             "reference": reference,
             "amount": tx["amount"],
-            "credits_added": credits_added,
-            "new_balance": new_balance,
+            "credits_added": tx["credits_to_add"] if is_success else 0,
+            "new_balance": 0,
         }
 
     except HTTPException:
@@ -450,50 +418,48 @@ async def process_webhook(event: str, data: dict[str, Any]) -> None:
         return
 
     if event == "charge.success":
-        # Idempotent credit: transition the transaction to "success" ONLY when
-        # it is not already success. The conditional UPDATE returns the matched
-        # row only on the first transition; duplicate webhooks (which Paystack
-        # can send) see zero affected rows and are skipped, so the user is
-        # credited exactly once. Crediting before the status flip would risk
-        # double-crediting if the webhook is delivered twice.
-        transition = await execute_query(
+        # Mark transaction as success and credit user
+        tx_result = await execute_query(
             admin.table("payment_transactions")
-            .update(
-                {
-                    "status": "success",
-                    "paystack_response": data,
-                }
-            )
+            .select("*")
             .eq("reference", reference)
-            .eq("status", "pending")
+            .limit(1)
         )
 
-        if transition.data:
-            tx = transition.data[0]
-            await execute_query(
-                admin.rpc(
-                    "add_user_credits",
-                    {
-                        "p_user_id": tx["user_id"],
-                        "p_amount": tx["credits_to_add"],
-                    },
+        if tx_result.data:
+            tx = tx_result.data[0]
+            if tx["status"] != "success":
+                await execute_query(
+                    admin.table("payment_transactions")
+                    .update(
+                        {
+                            "status": "success",
+                            "paystack_response": data,
+                        }
+                    )
+                    .eq("reference", reference)
                 )
-            )
-            await execute_query(
-                admin.table("user_profiles")
-                .update({"tier": tx["tier"]})
-                .eq("id", tx["user_id"])
-            )
-            logger.info(
-                "Credited %s credits to user %s via webhook",
-                tx["credits_to_add"],
-                tx["user_id"],
-            )
-        else:
-            logger.info(
-                "Duplicate or non-pending webhook for reference=%s; skipping credit",
-                reference,
-            )
+                # Idempotent credit grant shared with the return-verify path.
+                await execute_query(
+                    admin.rpc(
+                        "grant_credits_once",
+                        {
+                            "p_reference": reference,
+                            "p_user_id": tx["user_id"],
+                            "p_amount": tx["credits_to_add"],
+                        },
+                    )
+                )
+                await execute_query(
+                    admin.table("user_profiles")
+                    .update({"tier": tx["tier"]})
+                    .eq("id", tx["user_id"])
+                )
+                logger.info(
+                    "Credited %s credits to user %s via webhook",
+                    tx["credits_to_add"],
+                    tx["user_id"],
+                )
     elif event == "charge.failed":
         await execute_query(
             admin.table("payment_transactions")

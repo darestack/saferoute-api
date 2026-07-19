@@ -206,7 +206,10 @@ class TestRootEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["service"] == "SafeRoute API"
-        assert data["version"] == "0.7.0"
+        # Version is sourced from settings.APP_VERSION (single source of truth).
+        from app.config import settings
+
+        assert data["version"] == settings.APP_VERSION
         assert data["status"] == "running"
         assert data["docs"] == "/docs"
         assert data["health"] == "/health"
@@ -235,7 +238,74 @@ class TestHealthEndpoint:
             assert "database" in data
 
 
-class TestStructuralErrorMatching:
+class TestAdminAdjustCredits:
+    """Tests for the admin credit-adjustment endpoint guard rails."""
+
+    def _patch_env(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.routes.auth.settings.ADMIN_SECRET_KEY", "super-secret-admin"
+        )
+
+    def test_missing_profile_does_not_500(self, monkeypatch):
+        """A user with no user_profiles row returns a 0 balance, not 500."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        self._patch_env(monkeypatch)
+
+        def _seq():
+            # 1st call: add_user_credits RPC (no data needed)
+            # 2nd call: balance select -> empty (missing profile)
+            yield MagicMock(data=[])
+            yield MagicMock(data=[])
+
+        seq = _seq()
+        with (
+            patch(
+                "app.routes.auth.execute_query", side_effect=lambda *a, **k: next(seq)
+            ),
+            patch("app.routes.auth.admin"),
+        ):
+            client = TestClient(app)
+            response = client.post(
+                "/v1/admin/credits/adjust?user_id=user-x&amount=50",
+                headers={"X-Admin-Secret": "super-secret-admin"},
+            )
+        assert response.status_code == 200
+        assert response.json()["new_balance"] == 0
+
+    def test_invalid_admin_secret_rejected(self, monkeypatch):
+        self._patch_env(monkeypatch)
+        with (
+            patch("app.routes.auth.execute_query", return_value=MagicMock(data=[])),
+            patch("app.routes.auth.admin"),
+        ):
+            from fastapi.testclient import TestClient
+            from app.main import app
+
+            client = TestClient(app)
+            response = client.post(
+                "/v1/admin/credits/adjust?user_id=user-x&amount=50",
+                headers={"X-Admin-Secret": "wrong"},
+            )
+        assert response.status_code == 401
+
+    def test_exceeding_max_adjustment_rejected(self, monkeypatch):
+        self._patch_env(monkeypatch)
+        with (
+            patch("app.routes.auth.execute_query", return_value=MagicMock(data=[])),
+            patch("app.routes.auth.admin"),
+        ):
+            from fastapi.testclient import TestClient
+            from app.main import app
+
+            client = TestClient(app)
+            response = client.post(
+                "/v1/admin/credits/adjust?user_id=user-x&amount=999999",
+                headers={"X-Admin-Secret": "super-secret-admin"},
+            )
+        assert response.status_code == 400
+
     """Tests that Postgres unique violations are detected by error code."""
 
     def test_unique_violation_detected_by_code(self):

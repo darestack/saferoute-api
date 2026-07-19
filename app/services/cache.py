@@ -77,18 +77,19 @@ class DistributedCache:
 
             raw = await _cache_get(key)
             if raw is not None:
-                self._l2_hits += 1
-                value = json.loads(raw) if isinstance(raw, str) else raw
-                # Repopulate L1
                 async with self._lock:
+                    self._l2_hits += 1
+                    value = json.loads(raw) if isinstance(raw, str) else raw
+                    # Repopulate L1
                     self._cache[key] = (value, time.monotonic() + self._default_ttl)
                     self._evict()
                 return value
         except Exception:
             logger.exception("L2 cache get failed for key=%s", key)
 
-        self._misses += 1
-        self._l2_misses += 1
+        async with self._lock:
+            self._misses += 1
+            self._l2_misses += 1
         return None
 
     async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
@@ -196,6 +197,11 @@ class DistributedCache:
         }
 
     def _evict(self) -> None:
-        """Evict oldest entries if L1 exceeds max size."""
+        """Evict least-recently-used entries when L1 exceeds max size.
+
+        The cache is an ``OrderedDict`` promoted to the end on every access
+        (see ``get``), so the oldest entry is at the front — this is LRU
+        eviction, not strictly FIFO. Bounded by ``_max_size``.
+        """
         while len(self._cache) > self._max_size:
             self._cache.popitem(last=False)
