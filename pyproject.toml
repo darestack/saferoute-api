@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "app.routes", "app.services", "app.utils", "app.repositories"]
 
 [project.urls]
 Homepage = "https://github.com/darestack/saferoute-api"
