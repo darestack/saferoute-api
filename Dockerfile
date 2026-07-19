@@ -37,8 +37,6 @@ COPY --from=builder /install /usr/local
 # Copy application code (only what is needed at runtime)
 COPY app/ ./app/
 COPY api/ ./api/
-COPY frontend-dist/ ./frontend-dist/
-COPY frontend-dist/ ./frontend-dist/
 
 # Ensure the non-root user owns the application files
 RUN chown -R appuser:appuser /home/appuser/src
