@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.4](https://github.com/darestack/saferoute-api/compare/v0.7.3...v0.7.4) (2026-07-19)
+
+
+### Bug Fixes
+
+* remove frontend-dist from Dockerfile to match CI build ([245f8c2](https://github.com/darestack/saferoute-api/commit/245f8c2a70f8d971ba08f31680724a62b795ee6c))
+
 ### [0.7.3](https://github.com/darestack/saferoute-api/compare/v0.7.2...v0.7.3) (2026-07-19)
 
 
