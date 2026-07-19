@@ -407,10 +407,10 @@ async def root() -> Response:
     """Serve the frontend dashboard in production, API info in development."""
     if settings.ENVIRONMENT == "production":
         possible_paths = [
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "public", "index.html"),
-            os.path.join(os.getcwd(), "public", "index.html"),
-            "/vercel/path0/public/index.html",
-            "/var/task/public/index.html",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend-dist", "index.html"),
+            os.path.join(os.getcwd(), "frontend-dist", "index.html"),
+            "/vercel/path0/frontend-dist/index.html",
+            "/var/task/frontend-dist/index.html",
         ]
         for index_path in possible_paths:
             if os.path.isfile(index_path):
@@ -507,10 +507,10 @@ if settings.ENVIRONMENT != "production":
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
     possible_paths = [
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "public"),
-        os.path.join(os.getcwd(), "public"),
-        "/vercel/path0/public",
-        "/var/task/public",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend-dist"),
+        os.path.join(os.getcwd(), "frontend-dist"),
+        "/vercel/path0/frontend-dist",
+        "/var/task/frontend-dist",
     ]
     for public_path in possible_paths:
         if os.path.isdir(public_path):

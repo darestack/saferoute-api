@@ -5,7 +5,7 @@ export default defineConfig({
   root: '.',
   publicDir: 'public',
   build: {
-    outDir: '../public',
+    outDir: '../frontend-dist',
     emptyOutDir: true,
     rollupOptions: {
       input: {
