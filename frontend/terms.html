@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms of Service | SafeRoute</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        safe: {
+                            bg: '#0a0e17',
+                            surface: '#0f172a',
+                            card: '#1e293b',
+                            border: '#334155',
+                            accent: '#10b981',
+                            accent2: '#06b6d4',
+                            text: '#f8fafc',
+                            muted: '#94a3b8',
+                            danger: '#f43f5e',
+                            warning: '#f59e0b',
+                        }
+                    },
+                    fontFamily: {
+                        display: ['Space Grotesk', 'sans-serif'],
+                        body: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-display { font-family: 'Space Grotesk', sans-serif; }
+    </style>
+</head>
+<body class="bg-safe-bg text-safe-text font-body antialiased">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <h1 class="font-display text-4xl font-bold mb-8">Terms of Service</h1>
+        <div class="space-y-6 text-safe-muted">
+            <p>Last updated: July 2026</p>
+            <h2 class="font-display text-2xl font-bold text-safe-text">1. Acceptance of Terms</h2>
+            <p>By accessing or using SafeRoute, you agree to be bound by these Terms of Service.</p>
+            <h2 class="font-display text-2xl font-bold text-safe-text">2. Description of Service</h2>
+            <p>SafeRoute provides form handling, webhook routing, spam protection, and bot verification services for static websites.</p>
+            <h2 class="font-display text-2xl font-bold text-safe-text">3. User Responsibilities</h2>
+            <p>You are responsible for maintaining the confidentiality of your account credentials and for all activities under your account.</p>
+            <h2 class="font-display text-2xl font-bold text-safe-text">4. Acceptable Use</h2>
+            <p>You agree not to use the service for any illegal or unauthorized purpose.</p>
+            <h2 class="font-display text-2xl font-bold text-safe-text">5. Contact</h2>
+            <p>For questions about these Terms, contact us at support@saferoute.dev.</p>
+        </div>
+        <div class="mt-12">
+            <a href="/login.html" class="text-safe-accent hover:underline">← Back to login</a>
+        </div>
+    </div>
+</body>
+</html>

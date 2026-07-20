@@ -39,7 +39,7 @@ htmlcov/
 .vercel
 
 # Frontend build output
-frontend-dist/
+# frontend-dist/ is committed so Vercel can serve static files
 
 # Playwright MCP browser session artifacts
 .playwright-mcp/
