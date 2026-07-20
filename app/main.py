@@ -209,7 +209,8 @@ def _apply_security_headers(response: Response, path: str) -> None:
             "style-src 'self' https://unpkg.com https://cdn.jsdelivr.net "
             "https://fonts.googleapis.com 'unsafe-inline'; "
             "font-src 'self' https://fonts.gstatic.com; "
-            "connect-src 'self'"
+            "connect-src 'self' https://raw.githubusercontent.com; "
+            "frame-src 'self' https://github.com https://accounts.google.com https://*.supabase.co"
         )
     else:
         response.headers["Content-Security-Policy"] = "default-src 'none'"
