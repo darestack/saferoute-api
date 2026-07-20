@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.10](https://github.com/darestack/saferoute-api/compare/v0.7.9...v0.7.10) (2026-07-20)
+
+
+### Bug Fixes
+
+* replace JWT OAuth state with short random state tokens ([2ac3a0b](https://github.com/darestack/saferoute-api/commit/2ac3a0b3dfe418714e7809c1bd02bc47c5226d53))
+
 ### [0.7.9](https://github.com/darestack/saferoute-api/compare/v0.7.8...v0.7.9) (2026-07-20)
 
 
