@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.7](https://github.com/darestack/saferoute-api/compare/v0.7.6...v0.7.7) (2026-07-20)
+
+
+### Bug Fixes
+
+* add changelog, terms, privacy to frontend CSP paths ([e413c74](https://github.com/darestack/saferoute-api/commit/e413c74d1ca1e64276904f394c6252337cac7f18))
+
 ### [0.7.6](https://github.com/darestack/saferoute-api/compare/v0.7.5...v0.7.6) (2026-07-20)
 
 ### [0.7.5](https://github.com/darestack/saferoute-api/compare/v0.7.4...v0.7.5) (2026-07-20)
