@@ -173,6 +173,7 @@ _FRONTEND_PATHS = {
     "/terms.html",
     "/privacy.html",
     "/auth/callback.html",
+    "/api/changelog",
     "/assets/css/styles.css",
     "/assets/js/main.js",
     "/assets/js/dashboard.js",
@@ -505,6 +506,16 @@ async def security_txt() -> PlainTextResponse:
 async def well_known_security_txt() -> PlainTextResponse:
     """Serve the security.txt contact policy at the well-known location."""
     return await security_txt()
+
+
+@app.get("/api/changelog")
+async def get_changelog() -> JSONResponse:
+    """Serve the CHANGELOG.md content as markdown."""
+    changelog_path = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    if not changelog_path.exists():
+        raise HTTPException(status_code=404, detail="CHANGELOG.md not found")
+    content = changelog_path.read_text(encoding="utf-8")
+    return JSONResponse(content={"markdown": content})
 
 
 # Serve frontend files in development/test environments.

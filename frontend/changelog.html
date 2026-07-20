@@ -82,11 +82,12 @@
         async function loadChangelog() {
             const container = document.getElementById('changelog-content');
             try {
-                const response = await fetch('https://raw.githubusercontent.com/darestack/saferoute-api/main/CHANGELOG.md');
+                const response = await fetch('/api/changelog');
                 if (!response.ok) {
                     throw new Error('Failed to load changelog');
                 }
-                const text = await response.text();
+                const data = await response.json();
+                const text = data.markdown || '';
                 container.innerHTML = renderMarkdown(text);
             } catch (error) {
                 container.innerHTML = `
