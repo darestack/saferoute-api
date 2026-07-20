@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.5](https://github.com/darestack/saferoute-api/compare/v0.7.4...v0.7.5) (2026-07-20)
+
+
+### Bug Fixes
+
+* add missing frontend pages, fix routing, CSP, and dead links ([618fc59](https://github.com/darestack/saferoute-api/commit/618fc5953599f096e9a543e6a7bcde9e362776e8))
+
 ### [0.7.4](https://github.com/darestack/saferoute-api/compare/v0.7.3...v0.7.4) (2026-07-19)
 
 
