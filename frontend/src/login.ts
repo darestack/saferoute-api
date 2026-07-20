@@ -15,6 +15,12 @@ function showAuthError(message: string): void {
 }
 
 async function signInWith(provider: 'google' | 'github'): Promise<void> {
+  const googleBtn = document.getElementById('google-signin-btn') as HTMLButtonElement | null;
+  const githubBtn = document.getElementById('github-signin-btn') as HTMLButtonElement | null;
+
+  if (googleBtn) googleBtn.disabled = true;
+  if (githubBtn) githubBtn.disabled = true;
+
   try {
     const response = await fetch(`${API_BASE}${API_ENDPOINTS.OAUTH(provider)}`);
     if (!response.ok) {
@@ -40,9 +46,11 @@ async function signInWith(provider: 'google' | 'github'): Promise<void> {
     const left = window.screenX + (window.outerWidth - width) / 2;
     const top = window.screenY + (window.outerHeight - height) / 2;
 
+    const popupName = `OAuth-${provider}-${Date.now()}`;
+
     const popup = window.open(
       data.auth_url,
-      'OAuth',
+      popupName,
       `width=${width},height=${height},left=${left},top=${top}`
     );
 
@@ -61,6 +69,9 @@ async function signInWith(provider: 'google' | 'github'): Promise<void> {
     }, 500);
   } catch (error) {
     showAuthError(error instanceof Error ? error.message : 'Unknown error');
+  } finally {
+    if (googleBtn) googleBtn.disabled = false;
+    if (githubBtn) githubBtn.disabled = false;
   }
 }
 

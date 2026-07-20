@@ -17,6 +17,7 @@ from app.utils.pkce import (
     generate_pkce_pair,
     store_pkce_verifier,
     retrieve_and_delete_pkce_verifier,
+    retrieve_and_delete_pkce_verifier_by_state,
     PKCE_CODE_VERIFIER_LENGTH,
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     "generate_pkce_pair",
     "store_pkce_verifier",
     "retrieve_and_delete_pkce_verifier",
+    "retrieve_and_delete_pkce_verifier_by_state",
     "PKCE_CODE_VERIFIER_LENGTH",
 ]

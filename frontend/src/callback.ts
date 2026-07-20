@@ -21,10 +21,19 @@ async function handleCallback(): Promise<void> {
   }
 
   try {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const state = params.get('state');
+
+    if (!code) {
+      window.location.href = '/login.html?error=no_code';
+      return;
+    }
+
     const response = await fetch(`${API_BASE}${API_ENDPOINTS.CALLBACK}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, state }),
     });
 
     if (!response.ok) {

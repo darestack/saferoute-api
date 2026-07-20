@@ -150,10 +150,12 @@ create table public.pkce_verifiers (
     id uuid default uuid_generate_v4() primary key,
     code_challenge text not null unique,
     code_verifier text not null,
+    state text not null unique,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 create index idx_pkce_verifiers_challenge on public.pkce_verifiers(code_challenge);
+create index idx_pkce_verifiers_state on public.pkce_verifiers(state);
 
 -- ========================================
 -- Row Level Security (RLS)
@@ -371,6 +373,16 @@ returns table (code_verifier text) as $$
 begin
     delete from public.pkce_verifiers
     where code_challenge = p_code_challenge
+    returning code_verifier into code_verifier;
+end;
+$$ language plpgsql;
+
+-- Atomically retrieve and delete a PKCE verifier by state (prevents reuse race)
+create or replace function public.consume_pkce_verifier_by_state(p_state text)
+returns table (code_verifier text) as $$
+begin
+    delete from public.pkce_verifiers
+    where state = p_state
     returning code_verifier into code_verifier;
 end;
 $$ language plpgsql;

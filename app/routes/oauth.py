@@ -9,7 +9,6 @@ for a Supabase JWT session.
 
 from __future__ import annotations
 import asyncio
-import datetime
 import inspect
 import logging
 import secrets
@@ -17,41 +16,22 @@ import time
 from typing import Optional
 from urllib.parse import urlencode, urljoin
 
-import jwt
-
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.config import settings
 from app.database import admin, supabase_client
+from app.utils.audit import log_audit_event  # noqa: E402
 from app.utils.pkce import (
     generate_pkce_pair,
     store_pkce_verifier,
     retrieve_and_delete_pkce_verifier,
+    retrieve_and_delete_pkce_verifier_by_state,
 )
-from app.utils.audit import log_audit_event  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["OAuth Authentication"])
-
-# When ENCRYPTION_KEY is not configured (non-production only), generate a
-# per-process random key for signing OAuth state JWTs instead of using a
-# predictable hardcoded fallback. This prevents state-forgery attacks during
-# development and testing while keeping the app runnable.
-_DEV_JWT_KEY: str = ""
-
-
-def _get_jwt_signing_key() -> str:
-    global _DEV_JWT_KEY
-    if not _DEV_JWT_KEY:
-        _DEV_JWT_KEY = secrets.token_urlsafe(32)
-        logger.warning(
-            "ENCRYPTION_KEY is not set. Using per-process random JWT signing key. "
-            "OAuth state tokens will not survive process restarts."
-        )
-    return _DEV_JWT_KEY
-
 
 __all__ = [
     "router",
@@ -182,19 +162,10 @@ async def oauth_redirect(provider: str):
 
     code_verifier, code_challenge = _generate_pkce_pair()
 
-    # Use JWT for stateless CSRF protection
-    payload = {
-        "challenge": code_challenge,
-        "exp": datetime.datetime.now(datetime.timezone.utc)
-        + datetime.timedelta(seconds=600),
-        "iat": datetime.datetime.now(datetime.timezone.utc),
-    }
-    state = jwt.encode(
-        payload, settings.ENCRYPTION_KEY or _get_jwt_signing_key(), algorithm="HS256"
-    )
+    state = secrets.token_urlsafe(32)
 
     try:
-        await _store_pkce_verifier(code_challenge, code_verifier)
+        await _store_pkce_verifier(code_challenge, code_verifier, state)
     except Exception:
         raise HTTPException(
             status_code=500,
@@ -283,26 +254,9 @@ async def oauth_callback_post(
             detail="Missing state parameter",
         )
 
-    try:
-        payload = jwt.decode(
-            state,
-            settings.ENCRYPTION_KEY or _get_jwt_signing_key(),
-            algorithms=["HS256"],
-        )
-        code_challenge = payload["challenge"]
-    except jwt.ExpiredSignatureError:
-        await log_audit_event(
-            action="oauth.auth_failed",
-            resource_type="oauth",
-            ip_address=client_ip,
-            user_agent=request.headers.get("user-agent"),
-            metadata={"reason": "expired_state"},
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="State parameter expired",
-        )
-    except jwt.InvalidTokenError:
+    # Look up PKCE verifier by state token
+    code_verifier = await retrieve_and_delete_pkce_verifier_by_state(admin, state)
+    if not code_verifier:
         await log_audit_event(
             action="oauth.auth_failed",
             resource_type="oauth",
@@ -312,38 +266,32 @@ async def oauth_callback_post(
         )
         raise HTTPException(
             status_code=400,
-            detail="Invalid state parameter",
+            detail="Invalid or expired state parameter",
         )
 
-    return await _exchange_code(code, code_challenge, client_ip)
+    return await _exchange_code(code, code_verifier, client_ip)
 
 
 async def _exchange_code(
-    code: str, code_challenge: Optional[str], client_ip: Optional[str] = None
+    code: str, code_verifier: str, client_ip: Optional[str] = None
 ) -> CallbackResponse:
     """Common code exchange logic for OAuth callback.
 
     Args:
         code: The authorization code from the OAuth provider.
-        code_challenge: The PKCE challenge from the authorize request.
+        code_verifier: The PKCE verifier looked up by state token.
+        client_ip: Client IP address for audit logging.
 
     Returns:
         Access token and user info on success.
 
     Raises:
-        HTTPException: 400 if the code exchange fails or state is missing.
+        HTTPException: 400 if the code exchange fails.
     """
-    if not code_challenge:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing code_challenge parameter.",
-        )
-
-    code_verifier = await _retrieve_and_delete_pkce_verifier(code_challenge)
     if not code_verifier:
         raise HTTPException(
             status_code=400,
-            detail="Invalid or expired code_challenge.",
+            detail="Missing code_verifier.",
         )
 
     try:

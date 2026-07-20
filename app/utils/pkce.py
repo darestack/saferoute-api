@@ -30,7 +30,7 @@ def generate_pkce_pair() -> tuple[str, str]:
 
 
 async def store_pkce_verifier(
-    admin_client: "Client", code_challenge: str, code_verifier: str
+    admin_client: "Client", code_challenge: str, code_verifier: str, state: Optional[str] = None
 ) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table.
 
@@ -41,17 +41,18 @@ async def store_pkce_verifier(
         admin_client: The Supabase admin client.
         code_challenge: The S256 challenge sent to the OAuth provider.
         code_verifier: The corresponding verifier to store.
+        state: Optional short state token for lookup.
     """
     from app.database import execute_query
 
+    payload = {
+        "code_challenge": code_challenge,
+        "code_verifier": code_verifier,
+        "state": state or "",
+    }
     try:
         await execute_query(
-            admin_client.table("pkce_verifiers").insert(
-                {
-                    "code_challenge": code_challenge,
-                    "code_verifier": code_verifier,
-                }
-            )
+            admin_client.table("pkce_verifiers").insert(payload)
         )
     except Exception:
         logger.exception("Failed to store PKCE verifier")
@@ -85,5 +86,36 @@ async def retrieve_and_delete_pkce_verifier(
             return cast(str, result.data[0]["code_verifier"])
     except Exception:
         logger.exception("Failed to retrieve PKCE verifier")
+
+    return None
+
+
+async def retrieve_and_delete_pkce_verifier_by_state(
+    admin_client: "Client", state: str
+) -> Optional[str]:
+    """Atomically retrieve and delete a PKCE verifier by state token.
+
+    Uses the ``consume_pkce_verifier_by_state`` SQL function to prevent reuse races.
+
+    Args:
+        admin_client: The Supabase admin client.
+        state: The state token to look up.
+
+    Returns:
+        The code verifier string, or ``None`` if not found.
+    """
+    from app.database import execute_query
+
+    try:
+        result = await execute_query(
+            admin_client.rpc(
+                "consume_pkce_verifier_by_state", {"p_state": state}
+            )
+        )
+
+        if result.data:
+            return cast(str, result.data[0]["code_verifier"])
+    except Exception:
+        logger.exception("Failed to retrieve PKCE verifier by state")
 
     return None

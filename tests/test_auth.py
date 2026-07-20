@@ -340,35 +340,6 @@ class TestAdminAdjustCredits:
             assert exc_info.value.status_code == 409
 
 
-class TestOAuthJwtFallbackKey:
-    """Tests for OAuth state JWT fallback key generation."""
-
-    def test_fallback_key_is_random_and_not_hardcoded(self):
-        from app.routes.oauth import _get_jwt_signing_key
-
-        key1 = _get_jwt_signing_key()
-        key2 = _get_jwt_signing_key()
-        # Should be cached after first call
-        assert key1 == key2
-        # Should NOT be the old hardcoded fallback
-        assert key1 != "fallback-dev-key"
-        # Should be a reasonable length for a URL-safe token
-        assert len(key1) >= 20
-
-    def test_different_processes_get_different_keys(self):
-        """Each process should get a unique random key."""
-
-        # Reset the cached key to simulate a new process
-        oauth_module._DEV_JWT_KEY = ""
-        key1 = oauth_module._get_jwt_signing_key()
-
-        oauth_module._DEV_JWT_KEY = ""
-        key2 = oauth_module._get_jwt_signing_key()
-
-        assert key1 != key2
-        assert key1 != "fallback-dev-key"
-
-
 class TestOAuthRedirectUrl:
     """Tests for OAuth redirect URI construction."""
 
@@ -727,7 +698,7 @@ class TestOauthCallbackBody:
 
         from app.main import app
 
-        async def _fake_exchange(code, code_challenge, client_ip=None):
+        async def _fake_exchange(code, code_verifier, client_ip=None):
             return oauth_module.CallbackResponse(
                 access_token="tok",
                 token_type="bearer",
@@ -741,16 +712,12 @@ class TestOauthCallbackBody:
                 new=AsyncMock(),
             ),
             patch(
+                "app.routes.oauth.retrieve_and_delete_pkce_verifier_by_state",
+                return_value="verifier",
+            ),
+            patch(
                 "app.routes.oauth._exchange_code",
                 side_effect=_fake_exchange,
-            ),
-            patch(
-                "app.routes.oauth._get_jwt_signing_key",
-                return_value="test-signing-key-0123456789ab",
-            ),
-            patch(
-                "app.routes.oauth.jwt.decode",
-                return_value={"challenge": "chal", "exp": 9999999999, "iat": 1},
             ),
         ):
             client = TestClient(app)

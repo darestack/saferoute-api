@@ -617,13 +617,7 @@ class TestOAuthCallbackPost:
     def test_post_callback_success(self):
         from app.routes.oauth import _exchange_code
 
-        with (
-            patch(
-                "app.routes.oauth._retrieve_and_delete_pkce_verifier",
-                return_value="verifier",
-            ),
-            patch("app.routes.oauth.supabase_client") as mock_client,
-        ):
+        with patch("app.routes.oauth.supabase_client") as mock_client:
             mock_session = MagicMock()
             mock_session.access_token = "token-123"
             mock_user = MagicMock()
@@ -633,7 +627,7 @@ class TestOAuthCallbackPost:
                 session=mock_session, user=mock_user
             )
 
-            result = asyncio.run(_exchange_code("auth-code", "challenge-123"))
+            result = asyncio.run(_exchange_code("auth-code", "verifier-123"))
             assert result.access_token == "token-123"
             assert result.user_id == "user-123"
 
@@ -641,19 +635,13 @@ class TestOAuthCallbackPost:
         from app.routes.oauth import _exchange_code
         from fastapi import HTTPException
 
-        with (
-            patch(
-                "app.routes.oauth._retrieve_and_delete_pkce_verifier",
-                return_value="verifier",
-            ),
-            patch("app.routes.oauth.supabase_client") as mock_client,
-        ):
+        with patch("app.routes.oauth.supabase_client") as mock_client:
             mock_client.auth.exchange_code_for_session.side_effect = Exception(
                 "Internal Supabase error"
             )
 
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(_exchange_code("bad-code", "challenge-123"))
+                asyncio.run(_exchange_code("bad-code", "verifier-123"))
             assert exc_info.value.status_code == 400
             assert "Internal Supabase error" not in exc_info.value.detail
             assert exc_info.value.detail == "OAuth callback failed"
