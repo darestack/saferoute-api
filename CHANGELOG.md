@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.8](https://github.com/darestack/saferoute-api/compare/v0.7.7...v0.7.8) (2026-07-20)
+
+
+### Bug Fixes
+
+* allow external resources in CSP for frontend pages ([2d63bff](https://github.com/darestack/saferoute-api/commit/2d63bff74058d99be8fe28a1cc48fde533f0cb4c))
+
 ### [0.7.7](https://github.com/darestack/saferoute-api/compare/v0.7.6...v0.7.7) (2026-07-20)
 
 
