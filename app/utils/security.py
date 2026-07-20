@@ -76,21 +76,16 @@ def validate_destination_url(url: str, resolve_dns: bool = True) -> None:
 
     hostname = parsed.hostname.rstrip(".")
     try:
-        ipaddress.ip_address(hostname)
-    except ValueError:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError as exc:
         if not resolve_dns:
-            return
+            raise ValueError(
+                "Destination URL must resolve to a public IP (DNS resolution disabled)"
+            ) from exc
+        pass  # It's a hostname, proceed to DNS resolution
     else:
-        try:
-            if not _is_public_ip(hostname):
-                raise ValueError("Destination URL must resolve to a public IP")
-        except ValueError as exc:
-            # Re-raise malformed IP errors with a clearer message.
-            if "Invalid IP address" in str(exc):
-                raise ValueError(
-                    f"Destination URL contains invalid IP address: {hostname}"
-                ) from exc
-            raise
+        if not ip.is_global:
+            raise ValueError("Destination URL must resolve to a public IP")
         return
 
     if not resolve_dns:

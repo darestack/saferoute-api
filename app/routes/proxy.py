@@ -1082,13 +1082,13 @@ async def proxy_webhook(
 
     destination = route["destination_url"]
     try:
-        # Cheap, DNS-free request-time guard. A full DNS-resolution SSRF check
-        # (which also rejects DNS-rebound names) is performed at write time in
-        # create_route/update_route, where the destination is server-controlled
-        # and validated once. Re-resolving DNS on every forwarded webhook would
-        # add latency on the hot path and reintroduce a TOCTOU window, so we
-        # only re-check the scheme/credential/literal-IP invariants here.
-        await validate_destination_url_async(destination, resolve_dns=False)
+        # Enforce full DNS resolution at request-time to prevent DNS rebinding attacks.
+        # While validating at write-time prevents simple SSRF payloads, an attacker
+        # can still register a benign domain, configure it as a destination, and then
+        # immediately change its A record to point to an internal network IP before
+        # triggering the webhook proxy (Time-Of-Check to Time-Of-Use bypass).
+        # Re-resolving here guarantees we validate the *actual* IP being connected to.
+        await validate_destination_url_async(destination, resolve_dns=True)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

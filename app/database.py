@@ -74,9 +74,13 @@ def get_http_client_pool_stats() -> dict[str, Any]:
         return {}
 
     client = _http_client
+    if client is None:
+        return {}
+
+    limits = getattr(client, "_limits", None)
     stats: dict[str, Any] = {
-        "max_connections": client._limits.max_connections,
-        "max_keepalive_connections": client._limits.max_keepalive_connections,
+        "max_connections": getattr(limits, "max_connections", None) if limits else None,
+        "max_keepalive_connections": getattr(limits, "max_keepalive_connections", None) if limits else None,
     }
 
     pool = getattr(client, "_pool", None)

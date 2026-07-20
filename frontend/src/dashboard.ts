@@ -178,6 +178,17 @@ function setupEventListeners(): void {
     });
   }
 
+  const deleteRouteBtn = document.getElementById('delete-route-btn');
+  if (deleteRouteBtn) {
+    deleteRouteBtn.addEventListener('click', async () => {
+      const routeId = (document.getElementById('detail-route-id') as HTMLInputElement)?.value;
+      if (routeId) {
+        await deleteRoute(routeId);
+        hideRouteDetailModal();
+      }
+    });
+  }
+
   const revealSigningSecretBtn = document.getElementById('reveal-signing-secret-btn');
   if (revealSigningSecretBtn) {
     revealSigningSecretBtn.addEventListener('click', async () => {

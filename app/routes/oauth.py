@@ -95,9 +95,9 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return generate_pkce_pair()
 
 
-async def _store_pkce_verifier(code_challenge: str, code_verifier: str) -> None:
+async def _store_pkce_verifier(code_challenge: str, code_verifier: str, state: Optional[str] = None) -> None:
     """Persist a PKCE verifier to the ``pkce_verifiers`` table."""
-    await store_pkce_verifier(admin, code_challenge, code_verifier)
+    await store_pkce_verifier(admin, code_challenge, code_verifier, state)
 
     # State is now stateless (JWT), no caching needed.
 
@@ -252,6 +252,19 @@ async def oauth_callback_post(
         raise HTTPException(
             status_code=400,
             detail="Missing state parameter",
+        )
+
+    if not code:
+        await log_audit_event(
+            action="oauth.auth_failed",
+            resource_type="oauth",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            metadata={"reason": "missing_code"},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Missing authorization code",
         )
 
     # Look up PKCE verifier by state token

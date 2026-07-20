@@ -8,6 +8,7 @@ from app.config import settings
 from app.models import RetryProcessResponse
 from app.utils.retry import should_retry, calculate_next_retry, get_retry_window_cutoff
 from app.utils.transform import render_template
+from app.utils.security import validate_destination_url_async
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,7 @@ async def update_retry_outcome(
     return outcome
 
 
-async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
+async def process_pending_retries(forward_payload_fn) -> RetryProcessResponse:
     """Process pending webhook delivery retries."""
     now = datetime.now(timezone.utc).isoformat()
 
@@ -233,12 +234,18 @@ async def process_pending_retries(forward_payload_fn) -> dict[str, Any]:
         if transform_headers:
             outbound_headers.update(transform_headers)
 
-        status_code, response_body, _ = await forward_payload_fn(
-            method=route_info.get("method", "POST"),
-            url=destination_url,
-            body=forward_body,
-            headers=outbound_headers,
-        )
+        try:
+            await validate_destination_url_async(destination_url, resolve_dns=True)
+            status_code, response_body, _ = await forward_payload_fn(
+                method=route_info.get("method", "POST"),
+                url=destination_url,
+                body=forward_body,
+                headers=outbound_headers,
+            )
+        except ValueError as exc:
+            logger.warning("SSRF validation failed during retry for log_id=%s: %s", log_id, exc)
+            status_code = 400
+            response_body = "SSRF Validation Failed"
 
         if 200 <= status_code < 300:
             new_status = "succeeded"

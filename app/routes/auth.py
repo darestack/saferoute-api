@@ -261,8 +261,8 @@ async def _fetch_and_cache_user(user_id: str) -> User:
             email=result.user.email or "",
             full_name=getattr(result.user, "full_name", None),
             created_at=result.user.created_at,
-            credits=credits,
-            tier=tier,
+            credits=int(cast(Any, credits)) if credits is not None else 0,
+            tier=str(cast(Any, tier)) if tier is not None else "free",
         )
 
         # Cache the user after the DB call completes.
@@ -329,7 +329,7 @@ async def get_current_user_from_jwt(
 
         payload = jwt.decode(
             token_str,
-            public_key,
+            cast(Any, public_key),
             algorithms=["RS256", "ES256"],
             audience="authenticated",
             issuer=f"{settings.SUPABASE_URL}/auth/v1",
@@ -692,7 +692,7 @@ async def create_route(
             detail=str(exc),
         ) from exc
 
-    insert_data = {
+    insert_data: dict[str, Any] = {
         "user_id": current_user.id,
         "name": route_data.name,
         "slug": slug,
@@ -986,6 +986,11 @@ async def get_signing_secret(
         )
     else:
         secret = decrypt_webhook_secret(secret)
+        if not secret:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to decrypt signing secret for route.",
+            )
 
     await log_audit_event(
         action="signing_secret.revealed",
