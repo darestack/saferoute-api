@@ -743,7 +743,7 @@ let exchangeRates: Record<string, number> = {};
 
 async function loadExchangeRates(): Promise<void> {
   try {
-    const response = await fetch(API_BASE + '/v1/rates?base=USD&symbols=NGN,EUR,GBP,ZAR,KES,GHS,CAD,AUD');
+    const response = await fetch(API_BASE + '/rates?base=USD&symbols=NGN,EUR,GBP,ZAR,KES,GHS,CAD,AUD');
     if (response.ok) {
       const data = await response.json();
       exchangeRates = data.rates || {};

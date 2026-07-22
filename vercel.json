@@ -1,8 +1,5 @@
 {
   "functions": { "api/index.py": { "maxDuration": 30 } },
-  "build": {
-    "command": "bash vercel-build.sh"
-  },
   "routes": [
     { "src": "/(.*)", "dest": "/api/index.py" }
   ],
