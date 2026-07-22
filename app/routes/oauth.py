@@ -180,7 +180,7 @@ async def oauth_redirect(provider: str, request: Request):
         proto = request.headers.get("x-forwarded-proto", "https")
         base_url = f"{proto}://{host}"
 
-    redirect_uri = urljoin(base_url + "/", "auth/callback")
+    redirect_uri = urljoin(base_url + "/", "auth/callback.html")
 
     params = {
         "provider": provider,

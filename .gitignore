@@ -39,6 +39,7 @@ htmlcov/
 .vercel
 
 # Frontend build output
+frontend-dist/
 
 # Playwright MCP browser session artifacts
 .playwright-mcp/

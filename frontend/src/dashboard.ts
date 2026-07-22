@@ -363,7 +363,7 @@ async function loadLogs(): Promise<void> {
   try {
     const allLogs: LogEntry[] = [];
     const logPromises = state.routes.slice(0, 5).map(async (route) => {
-      const response = await fetch(`${API_ENDPOINTS.ROUTES}/${route.id}/logs?limit=10`, {
+      const response = await fetch(`${API_BASE}${API_ENDPOINTS.ROUTES}/${route.id}/logs?limit=10`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (response.ok) {
@@ -390,7 +390,7 @@ async function loadStats(): Promise<void> {
 
   try {
     const statsPromises = state.routes.slice(0, 10).map(async (route) => {
-      const response = await fetch(`${API_ENDPOINTS.ROUTES}/${route.id}/stats`, {
+      const response = await fetch(`${API_BASE}${API_ENDPOINTS.ROUTES}/${route.id}/stats`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (response.ok) {
@@ -414,7 +414,7 @@ async function loadPaymentHistory(): Promise<void> {
   if (!token) return;
 
   try {
-    const response = await fetch(API_ENDPOINTS.PAYMENTS_HISTORY, {
+    const response = await fetch(API_BASE + API_ENDPOINTS.PAYMENTS_HISTORY, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -433,7 +433,7 @@ async function loadWebhookFailures(): Promise<void> {
   if (!token) return;
 
   try {
-    const response = await fetch(API_ENDPOINTS.WEBHOOKS_FAILURES, {
+    const response = await fetch(API_BASE + API_ENDPOINTS.WEBHOOKS_FAILURES, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -486,7 +486,7 @@ async function checkPaymentResult(): Promise<void> {
 
     try {
       const authHeader = `Bearer ${token}`;
-      const response = await fetch(API_ENDPOINTS.PAYMENTS_VERIFY(ref), {
+      const response = await fetch(API_BASE + API_ENDPOINTS.PAYMENTS_VERIFY(ref), {
         headers: { Authorization: authHeader },
       });
 
@@ -643,7 +643,7 @@ async function loadAdminData(): Promise<void> {
   }
 
   try {
-    const response = await fetch(API_ENDPOINTS.ADMIN_IPS, {
+    const response = await fetch(API_BASE + API_ENDPOINTS.ADMIN_IPS, {
       headers: {
         'X-Admin-Secret': adminSecret,
       },
@@ -676,7 +676,7 @@ async function saveAdminIps(ips: string): Promise<void> {
   }
 
   try {
-    const response = await fetch(API_ENDPOINTS.ADMIN_IPS, {
+    const response = await fetch(API_BASE + API_ENDPOINTS.ADMIN_IPS, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -784,7 +784,7 @@ async function purchaseCredits(tier: string): Promise<void> {
   if (errorEl) errorEl.classList.add('hidden');
 
   try {
-    const response = await fetch(API_ENDPOINTS.PAYMENTS_INITIALIZE, {
+    const response = await fetch(API_BASE + API_ENDPOINTS.PAYMENTS_INITIALIZE, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
