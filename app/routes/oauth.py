@@ -166,10 +166,10 @@ async def oauth_redirect(provider: str):
 
     try:
         await _store_pkce_verifier(code_challenge, code_verifier, state)
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Failed to initiate OAuth flow",
+            detail=f"Failed to initiate OAuth flow: {str(e)}",
         )
 
     redirect_uri = urljoin(settings.FRONTEND_URL.rstrip("/") + "/", "auth/callback")
