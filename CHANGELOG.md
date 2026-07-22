@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.17](https://github.com/darestack/saferoute-api/compare/v0.7.16...v0.7.17) (2026-07-22)
+
+
+### Features
+
+* add debug endpoint for OAuth URL formation and enhance logging ([1ee2961](https://github.com/darestack/saferoute-api/commit/1ee29618d3e73605e389dce6ef811e5d98e0f475))
+
 ### [0.7.16](https://github.com/darestack/saferoute-api/compare/v0.7.15...v0.7.16) (2026-07-22)
 
 
