@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.16](https://github.com/darestack/saferoute-api/compare/v0.7.15...v0.7.16) (2026-07-22)
+
+
+### Bug Fixes
+
+* correct OAuth redirect URI, frontend API prefixes, and dev proxy ([70e6a8b](https://github.com/darestack/saferoute-api/commit/70e6a8b461e68da1e1ff061397a0bdae8db33af8))
+
 ### [0.7.15](https://github.com/darestack/saferoute-api/compare/v0.7.14...v0.7.15) (2026-07-22)
 
 
