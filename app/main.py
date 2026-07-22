@@ -174,9 +174,6 @@ _FRONTEND_PATHS = {
     "/privacy.html",
     "/auth/callback.html",
     "/api/changelog",
-    "/assets/css/styles.css",
-    "/assets/js/main.js",
-    "/assets/js/dashboard.js",
     "/docs/api.md",
     "/security.txt",
     "/.well-known/security.txt",
@@ -201,7 +198,7 @@ def _apply_security_headers(response: Response, path: str) -> None:
     # ``X-XSS-Protection`` is omitted on purpose: it is deprecated and can
     # introduce vulnerabilities in legacy browsers; modern browsers ignore
     # it in favour of CSP.
-    if path in _ALLOWED_PATHS:
+    if path in _ALLOWED_PATHS or path.startswith("/assets/"):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "img-src 'self' data: https:; "
