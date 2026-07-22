@@ -59,9 +59,15 @@ async function signInWith(provider: 'google' | 'github'): Promise<void> {
     }
 
     const pollTimer = setInterval(() => {
-      if (popup.closed) {
+      let isClosed = false;
+      try {
+        isClosed = popup.closed;
+      } catch {
+        // Cross-Origin-Opener-Policy might block reading popup.closed across origins
+      }
+      const token = localStorage.getItem('saferoute_token');
+      if (token || isClosed) {
         clearInterval(pollTimer);
-        const token = localStorage.getItem('saferoute_token');
         if (token) {
           window.location.href = '/dashboard.html';
         }

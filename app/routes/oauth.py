@@ -136,7 +136,7 @@ class CallbackResponse(BaseModel):
 # OAuth endpoints
 # ---------------------------------------------------------------------------
 @router.get("/oauth/{provider}", response_model=OAuthRedirectResponse)
-async def oauth_redirect(provider: str):
+async def oauth_redirect(provider: str, request: Request):
     """Initiate an OAuth flow with the given provider.
 
     Supported providers: ``google``, ``github``.
@@ -147,6 +147,7 @@ async def oauth_redirect(provider: str):
 
     Args:
         provider: The OAuth provider name.
+        request: Incoming HTTP request to infer origin when needed.
 
     Returns:
         The Supabase-hosted OAuth URL to redirect the user to.
@@ -172,7 +173,14 @@ async def oauth_redirect(provider: str):
             detail=f"Failed to initiate OAuth flow: {str(e)}",
         )
 
-    redirect_uri = urljoin(settings.FRONTEND_URL.rstrip("/") + "/", "auth/callback")
+    base_url = settings.FRONTEND_URL.rstrip("/")
+    # If FRONTEND_URL is not set or defaults to localhost in production, infer from request headers
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if host and ("localhost" not in host and "127.0.0.1" not in host):
+        proto = request.headers.get("x-forwarded-proto", "https")
+        base_url = f"{proto}://{host}"
+
+    redirect_uri = urljoin(base_url + "/", "auth/callback")
 
     params = {
         "provider": provider,
