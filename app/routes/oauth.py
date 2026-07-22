@@ -189,9 +189,55 @@ async def oauth_redirect(provider: str, request: Request):
         "code_challenge_method": "S256",
         "state": state,
     }
+    logger.info(
+        "OAuth redirect generated: provider=%s redirect_uri=%s state=%s",
+        provider,
+        redirect_uri,
+        state,
+    )
     auth_url = f"{settings.SUPABASE_URL}/auth/v1/authorize?" + urlencode(params)
 
+    logger.info(
+        "Supabase OAuth authorize URL: %s",
+        auth_url,
+    )
+
     return OAuthRedirectResponse(auth_url=auth_url, state=state)
+
+
+# Temporary debug endpoint to inspect Supabase OAuth authorize URL formation.
+# Remove after diagnosing the bad_oauth_state issue.
+@router.get("/debug/oauth-url")
+async def debug_oauth_url(provider: str = "google"):
+    if provider not in ("google", "github"):
+        raise HTTPException(status_code=400, detail="Use google or github")
+    code_verifier, code_challenge = _generate_pkce_pair()
+    state = secrets.token_urlsafe(32)
+    try:
+        await _store_pkce_verifier(code_challenge, code_verifier, state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    base_url = settings.FRONTEND_URL.rstrip("/")
+    host = "saferoute-api.vercel.app"
+    proto = "https"
+    base_url = f"{proto}://{host}"
+    redirect_uri = urljoin(base_url + "/", "auth/callback.html")
+    params = {
+        "provider": provider,
+        "redirect_to": redirect_uri,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    auth_url = f"{settings.SUPABASE_URL}/auth/v1/authorize?" + urlencode(params)
+    return {
+        "provider": provider,
+        "base_url": base_url,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "auth_url": auth_url,
+    }
 
 
 @router.post("/callback", response_model=CallbackResponse)
@@ -244,6 +290,13 @@ async def oauth_callback_post(
             code_challenge = code_challenge or body.get("code_challenge")
         except Exception:
             pass
+
+    logger.info(
+        "OAuth callback received: code_present=%s state_present=%s challenge_present=%s",
+        bool(code),
+        bool(state),
+        bool(code_challenge),
+    )
 
     client_ip = get_client_ip(request)
     await _check_oauth_rate_limit(client_ip)
