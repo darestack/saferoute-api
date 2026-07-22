@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.15](https://github.com/darestack/saferoute-api/compare/v0.7.14...v0.7.15) (2026-07-22)
+
+
+### Bug Fixes
+
+* auto-detect production OAuth redirect URI and handle COOP in login popup ([139f8b4](https://github.com/darestack/saferoute-api/commit/139f8b4b104bccf277c2990a267c9bde82948477))
+
 ### [0.7.14](https://github.com/darestack/saferoute-api/compare/v0.7.13...v0.7.14) (2026-07-22)
 
 
