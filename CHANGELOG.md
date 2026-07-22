@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.14](https://github.com/darestack/saferoute-api/compare/v0.7.13...v0.7.14) (2026-07-22)
+
+
+### Bug Fixes
+
+* allow dynamically hashed frontend assets in CSP ([3515366](https://github.com/darestack/saferoute-api/commit/3515366ba9a25302bca1e63cb16e54a497194ac0))
+
 ### [0.7.13](https://github.com/darestack/saferoute-api/compare/v0.7.12...v0.7.13) (2026-07-22)
 
 
