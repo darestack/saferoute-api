@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.12](https://github.com/darestack/saferoute-api/compare/v0.7.11...v0.7.12) (2026-07-22)
+
+
+### Bug Fixes
+
+* expose oauth error details, fix database type safety issues ([b87cb9a](https://github.com/darestack/saferoute-api/commit/b87cb9a589cad579efc90c5c91cb618642c8ef45))
+
 ### [0.7.11](https://github.com/darestack/saferoute-api/compare/v0.7.10...v0.7.11) (2026-07-20)
 
 ### [0.7.10](https://github.com/darestack/saferoute-api/compare/v0.7.9...v0.7.10) (2026-07-20)
